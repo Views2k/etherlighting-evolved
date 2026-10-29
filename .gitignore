@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local settings and anything with a login in it
+ee.toml
+.env
+
+# The UI's own build tooling, if it lives in web/
+web/node_modules/
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
