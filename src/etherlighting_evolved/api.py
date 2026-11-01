@@ -4,30 +4,51 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import html
+import json
 import logging
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
+from weakref import ref
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import DISCLAIMER, PROJECT_NAME, SHORT_NAME, TAGLINE, __version__
 from .color import NAMED_COLORS, Color
 from .config import Config
+from .controller_api import ControllerIntegration
 from .effects import list_effects
 from .engine import Engine, NotFound
-from .presets import PresetStore
+from .guard import LOOPBACK_BINDS, RequestGuard
+from .presets import PresetStore, ProfileStoreError
 from .rules import FIELDS, STYLES, TEMPLATES
-from .schedules import ACTIONS, Scheduler, ScheduleStore
+from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
 from .session import LoginError, SessionManager
-from .transport import SimulatedTransport
+from .transport import SimulatedTransport, TransportError
 
 log = logging.getLogger(__name__)
 
 ColorValue = str | list[int] | dict[str, int]
+
+
+class UIStaticFiles(StaticFiles):
+    """Keep a saved browser profile from reusing an earlier app's interface."""
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
 
 class LoginRequest(BaseModel):
@@ -38,9 +59,16 @@ class LoginRequest(BaseModel):
     remember: bool = False
 
 
+class SceneChoiceRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=128)
+    choice: str
+    legacy_revision: str = Field(default="", max_length=128)
+
+
 class EffectRequest(BaseModel):
     id: str
     params: dict[str, Any] = Field(default_factory=dict)
+    clear_overrides: bool = False
 
 
 class ParamsRequest(BaseModel):
@@ -59,6 +87,13 @@ class OrderRequest(BaseModel):
     ids: list[str]
 
 
+class SceneRestore(BaseModel):
+    scene: dict[str, Any]
+    expected_revision: str = Field(min_length=1)
+    preserve_unchanged: bool = False
+    confirm_output: bool = False
+
+
 class PortColor(BaseModel):
     color: ColorValue
     brightness: int | None = Field(default=None, ge=0, le=100)
@@ -72,8 +107,20 @@ class NumberValue(BaseModel):
     value: float
 
 
+class OutputSettings(BaseModel):
+    gamma: float | None = Field(default=None, ge=1.0, le=3.0)
+    transition: float | None = Field(default=None, ge=0.0, le=5.0)
+    max_commands: float | None = Field(default=None, ge=5.0, le=200.0)
+
+
 class PresetSave(BaseModel):
     name: str
+
+
+class PresetAction(BaseModel):
+    name: str
+    action: str
+    target: str | None = None
 
 
 class SimLink(BaseModel):
@@ -93,6 +140,20 @@ class HostKeyForget(BaseModel):
     port: int = 22
 
 
+def scene_envelope(scene: dict) -> dict:
+    def canonical(value):
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, dict):
+            return {key: canonical(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [canonical(item) for item in value]
+        return value
+
+    encoded = json.dumps(canonical(scene), sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return {"scene": scene, "revision": hashlib.sha256(encoded).hexdigest()}
+
+
 def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
     """The quick, high-frequency controls. Everything else goes through REST."""
     kind = msg.get("type")
@@ -105,7 +166,10 @@ def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
     elif kind == "clear_port":
         engine.clear_override(msg.get("port"))
     elif kind == "set_effect":
-        engine.set_effect(msg["id"], msg.get("params"), zone=msg.get("zone"))
+        clear = msg.get("clear_overrides", False)
+        if not isinstance(clear, bool):
+            raise ValueError("clear_overrides must be true or false")
+        engine.set_effect(msg["id"], msg.get("params"), zone=msg.get("zone"), clear_overrides=clear)
     elif kind == "set_params":
         engine.update_params(msg["params"], zone=msg.get("zone"))
     elif kind == "update_rule":
@@ -122,28 +186,46 @@ def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
 
 
 def create_app(config: Config | None = None, *, demo: bool = False, autoconnect: bool = True,
-               transport_factory=None) -> FastAPI:
-    """Build the API. demo=True logs straight in to the simulator (no switch needed)."""
+               transport_factory=None, on_show=None, on_quit=None) -> FastAPI:
+    """Build the API. demo=True logs straight in to the simulator (no switch needed).
+
+    on_show and on_quit come from the desktop app. A second copy of the app uses them to bring the running copy's
+    window to the front, and the installer uses them to stop it.
+    """
     config = config or Config()
+    config.api.validate()
     sessions = SessionManager(config, transport_factory=transport_factory)
+    controller = ControllerIntegration(sessions, data_dir=config.data_dir)
     presets = PresetStore(config.data_dir / "presets.json")
     schedules = ScheduleStore(config.data_dir / "schedules.json")
     scheduler = Scheduler(schedules, presets, sessions)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        startup = None
         if demo:
             await sessions.connect("demo")
         elif autoconnect:
-            asyncio.create_task(sessions.auto_connect())
+            startup = asyncio.create_task(sessions.auto_connect(), name="ee-autoconnect")
         clock = asyncio.create_task(scheduler.run_forever(), name="ee-scheduler")
+        topology = asyncio.create_task(controller.run(), name="ee-controller")
         try:
             yield
         finally:
+            if startup is not None:
+                startup.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await startup
             clock.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await clock
-            await sessions.close()
+            topology.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await topology
+            try:
+                await controller.close()
+            finally:
+                await sessions.close()
 
     app = FastAPI(
         title=f"{PROJECT_NAME} API",
@@ -151,12 +233,41 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         description=f"{TAGLINE}\n\n**{DISCLAIMER}**",
         lifespan=lifespan,
     )
+    expected_workspace: ContextVar[str | None] = ContextVar("ee_expected_workspace", default=None)
+
+    @app.middleware("http")
+    async def workspace_context(request, call_next):
+        marker = expected_workspace.set(request.headers.get("X-EE-Workspace"))
+        try:
+            return await call_next(request)
+        finally:
+            expected_workspace.reset(marker)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        if request.url.path in {"/api/session/login", "/api/controller/connect", "/api/controller/consoles",
+                                "/api/controller/preferences",
+                                "/api/session/forget-host-key"}:
+            return JSONResponse(status_code=422, content={"detail": {
+                "code": "invalid_credentials", "message": "Check the connection fields and try again."
+            }})
+        return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(ProfileStoreError)
+    @app.exception_handler(ScheduleStoreError)
+    async def saved_data_storage_error(request, exc):
+        return JSONResponse(status_code=409, content={"detail": {"code": exc.code, "message": str(exc)}})
     app.state.sessions = sessions
+    app.state.controller = controller
     app.state.presets = presets
     app.state.schedules = schedules
     app.state.scheduler = scheduler
+    if config.api.cors_origins:
+        app.add_middleware(
+            CORSMiddleware, allow_origins=config.api.cors_origins, allow_methods=["*"], allow_headers=["*"]
+        )
     app.add_middleware(
-        CORSMiddleware, allow_origins=config.api.cors_origins, allow_methods=["*"], allow_headers=["*"]
+        RequestGuard, allowed_origins=config.api.cors_origins, local_only=config.api.host in LOOPBACK_BINDS
     )
 
     token = config.api.token
@@ -165,7 +276,17 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         if token and authorization != f"Bearer {token}":
             raise HTTPException(401, detail={"code": "bad_token", "message": "missing or wrong API token"})
 
+    def require_workspace() -> None:
+        expected = expected_workspace.get()
+        if expected is not None and expected != sessions.workspace_id():
+            raise HTTPException(409, detail={"code": "workspace_changed", "message":
+                                            "The connected switch changed. Review your changes before applying."})
+
     def engine() -> Engine:
+        require_workspace()
+        if sessions.handoff_pending:
+            raise HTTPException(409, detail={"code": "handoff_unconfirmed", "message":
+                                            "Finish the pending handoff before changing lighting."})
         if sessions.engine is None:
             raise HTTPException(409, detail={"code": "not_logged_in", "message": "log in to a switch first"})
         return sessions.engine
@@ -175,8 +296,16 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             return fn(*args, **kwargs)
         except NotFound as exc:
             raise HTTPException(404, detail={"code": "not_found", "message": str(exc)}) from exc
-        except (ValueError, KeyError, TypeError) as exc:
+        except TransportError as exc:
+            raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
             raise HTTPException(400, detail={"code": "invalid", "message": str(exc).strip("'\"")}) from exc
+
+    async def await_output(fn, *args):
+        try:
+            return await fn(*args)
+        except (TransportError, ValueError) as exc:
+            raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
 
     def simulator() -> SimulatedTransport:
         transport = engine().switch.transport
@@ -185,6 +314,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         return transport
 
     api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+    controller.routes(api)
 
     # About and login
 
@@ -209,9 +339,54 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         except LoginError as exc:
             return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
 
+    @api.post("/session/scene-choice")
+    async def scene_choice(body: SceneChoiceRequest):
+        try:
+            return await sessions.choose_scene(body.connection_id, body.choice, body.legacy_revision)
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
     @api.post("/session/logout")
     async def logout(forget: bool = False):
-        return await sessions.disconnect(forget=forget)
+        require_workspace()
+        try:
+            return await sessions.disconnect(forget=forget)
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @api.post("/session/restore")
+    async def restore_saved_login(resume: bool = False):
+        try:
+            return await sessions.restore_saved(resume=resume)
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @api.post("/session/handoff")
+    async def handoff_to_unifi():
+        require_workspace()
+        try:
+            return await sessions.handoff()
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @api.post("/session/forget")
+    async def forget_saved_login():
+        try:
+            return await sessions.forget_saved_login()
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    if on_show is not None:
+        @api.post("/desktop/show", include_in_schema=False)
+        async def desktop_show():
+            on_show()
+            return {"ok": True}
+
+    if on_quit is not None:
+        @api.post("/desktop/quit", include_in_schema=False)
+        async def desktop_quit():
+            on_quit()
+            return {"ok": True}
 
     @api.post("/session/forget-host-key")
     async def forget_host_key(body: HostKeyForget):
@@ -239,11 +414,11 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.get("/state")
     async def state():
-        return engine().state()
+        return controller.state(engine().state())
 
     @api.get("/ports")
     async def ports():
-        return engine().ports()
+        return controller.ports(engine().ports())
 
     # Zones and their effects
 
@@ -262,13 +437,14 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         """One effect on every port (replaces all zones)."""
         e = engine()
         apply(e.set_zones, [{"id": "all", "name": "All ports", "ports": list(range(1, e.num_ports + 1)),
-                             "effect": {"id": body.id, "params": body.params}}])
+                             "effect": {"id": body.id, "params": body.params}}],
+              clear_overrides=body.clear_overrides)
         return e.state()
 
     @api.put("/zones/{zone_id}/effect")
     async def set_zone_effect(zone_id: str, body: EffectRequest):
         e = engine()
-        apply(e.set_effect, body.id, body.params, zone=zone_id)
+        apply(e.set_effect, body.id, body.params, zone=zone_id, clear_overrides=body.clear_overrides)
         return e.state()
 
     @api.patch("/zones/{zone_id}/params")
@@ -293,7 +469,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     async def add_rule(rule: dict[str, Any] = Body(...)):
         e = engine()
         position = rule.pop("position", None)
-        return apply(e.add_rule, rule, position=None if position is None else int(position)).to_dict()
+        return apply(e.add_rule, rule, position=None if position is None else apply(int, position)).to_dict()
 
     @api.put("/rules/order")
     async def order_rules(body: OrderRequest):
@@ -312,6 +488,23 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         return e.state()["rules"]
 
     # Colors set by hand
+
+    @api.put("/sfp/sync")
+    async def set_sfp_sync(settings: dict[str, Any] = Body(...)):
+        e = engine()
+        apply(e.set_sfp_sync, settings)
+        await await_output(e.wait_for_sfp_sync)
+        return controller.state(e.state())
+
+    @api.put("/sfp/{port}")
+    async def set_sfp(port: int, settings: dict[str, Any] = Body(...)):
+        e = engine()
+        apply(e.set_sfp, port, settings)
+        if e.sfp_sync.mode == "together" and port == 9:
+            await await_output(e.wait_for_sfp_sync)
+        else:
+            await await_output(e.wait_for_sfp, port)
+        return e.state()
 
     @api.put("/ports")
     async def set_ports(body: BulkPorts):
@@ -351,17 +544,70 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         apply(e.set_fps, body.value)
         return e.state()
 
+    @api.put("/output")
+    async def output(body: OutputSettings):
+        e = engine()
+        apply(e.set_output, **body.model_dump())
+        return e.state()
+
     @api.post("/release")
     async def release():
         e = engine()
         e.release()
+        await await_output(e.wait_for_output_idle)
         return e.state()
 
     @api.post("/resume")
     async def resume():
         e = engine()
-        e.resume()
+        apply(e.resume)
         return e.state()
+
+    @api.post("/session/recover")
+    async def recover_connection():
+        async with sessions._lock:
+            e = engine()
+            await await_output(e.recover_connection)
+            return e.state()
+
+    # Scene history
+
+    @api.get("/scene")
+    async def get_scene():
+        return scene_envelope(engine().snapshot())
+
+    @api.put("/scene")
+    async def restore_scene(body: SceneRestore):
+        e = engine()
+        current = scene_envelope(e.snapshot())
+        if body.expected_revision != current["revision"]:
+            raise HTTPException(409, detail={
+                "code": "scene_changed",
+                "message": "The lighting setup changed. Review the current setup before applying.",
+            })
+        try:
+            affected_sfp = apply(e.apply_snapshot, body.scene, preserve_unchanged=body.preserve_unchanged)
+        except AttributeError as exc:
+            raise HTTPException(400, detail={
+                "code": "invalid", "message": "The lighting setup has invalid settings.",
+            }) from exc
+        accepted = scene_envelope(e.snapshot())
+        expected_sfp = {port: e._sfp_revisions[port] for port in affected_sfp}
+        if body.confirm_output:
+            for port in sorted(affected_sfp):
+                if e._sfp_revisions[port] != expected_sfp[port]:
+                    raise HTTPException(409, detail={
+                        "code": "output_unconfirmed",
+                        "message": "SFP settings changed during confirmation. Review the current setup.",
+                    })
+                await await_output(e.wait_for_sfp, port)
+            if any(e._sfp_revisions[p] != expected_sfp[p] for p in affected_sfp):
+                raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
+                                                "SFP settings changed during confirmation. Review the current setup."})
+            if e.mode == "running" and any(e._sfp_acknowledged[p] != expected_sfp[p] for p in affected_sfp):
+                raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
+                                                "Lighting settings were saved, but SFP output is still pending."})
+        return accepted
 
     # Presets
 
@@ -392,28 +638,74 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             raise HTTPException(404, detail={"code": "not_found", "message": f"no preset named {name!r}"}) from None
         return presets.list()
 
+    def transfer_preset(action, source: str, target: str):
+        try:
+            action(source, target)
+        except KeyError:
+            raise HTTPException(404, detail={
+                "code": "not_found", "message": "The saved profile could not be found."
+            }) from None
+        except FileExistsError as exc:
+            raise HTTPException(409, detail={"code": "already_exists", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail={"code": "invalid", "message": str(exc)}) from exc
+        return presets.list()
+
+    @api.post("/presets/{name}/duplicate", status_code=201)
+    async def duplicate_preset(name: str, body: PresetSave):
+        return transfer_preset(presets.duplicate, name, body.name)
+
+    @api.post("/presets/{name}/rename")
+    async def rename_preset(name: str, body: PresetSave):
+        return transfer_preset(presets.rename, name, body.name)
+
+    @api.post("/presets/action")
+    async def preset_action(body: PresetAction):
+        if body.action == "apply":
+            return await apply_preset(body.name)
+        if body.action == "delete":
+            return await delete_preset(body.name)
+        if body.action in {"rename", "duplicate"} and body.target is not None:
+            operation = presets.rename if body.action == "rename" else presets.duplicate
+            return transfer_preset(operation, body.name, body.target)
+        raise HTTPException(400, detail={"code": "invalid", "message": "Choose a profile action and provide "
+                                        "a new name when renaming or duplicating."})
+
     # Schedules
 
     @api.get("/schedules")
     async def list_schedules():
-        return {"schedules": schedules.list(), "actions": list(ACTIONS), "history": scheduler.history}
+        return {"schedules": scheduler.list(), "actions": list(ACTIONS), "history": scheduler.history}
+
+    def bind_schedule(data):
+        require_workspace()
+        identity = sessions.schedule_identity()
+        if identity is None:
+            raise HTTPException(409, detail={"code": "not_logged_in", "message": "Connect a switch before "
+                                            "applying a schedule."})
+        return {**data, "device_binding": identity}
 
     @api.post("/schedules", status_code=201)
     async def add_schedule(schedule: dict[str, Any] = Body(...)):
-        return apply(schedules.add, schedule).to_dict()
+        return scheduler.describe(apply(schedules.add, bind_schedule(schedule)))
 
     @api.patch("/schedules/{schedule_id}")
     async def update_schedule(schedule_id: str, changes: dict[str, Any] = Body(...)):
-        return apply(schedules.update, schedule_id, changes).to_dict()
+        return scheduler.describe(apply(schedules.update, schedule_id, bind_schedule(changes)))
 
     @api.delete("/schedules/{schedule_id}")
     async def delete_schedule(schedule_id: str):
         apply(schedules.delete, schedule_id)
-        return schedules.list()
+        return scheduler.list()
 
     @api.post("/schedules/{schedule_id}/run")
     async def run_schedule(schedule_id: str):
-        scheduler.run(apply(schedules.get, schedule_id))
+        require_workspace()
+        schedule = apply(schedules.get, schedule_id)
+        if not scheduler.is_bound(schedule):
+            raise HTTPException(409, detail={"code": "schedule_confirmation_required", "message":
+                                            "Review and apply this schedule for the connected switch first."})
+        scheduler.run(schedule)
         return scheduler.history[0]
 
     # Simulator controls (demo login only)
@@ -440,9 +732,15 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @app.websocket("/api/ws")
     async def websocket(ws: WebSocket):
-        if token and ws.query_params.get("token") != token:
+        authorization = ws.headers.get("authorization")
+        authenticated = authorization == f"Bearer {token}" if authorization else ws.query_params.get("token") == token
+        if token and not authenticated:
             await ws.close(code=4401)
             return
+        bound_engine = (ref(sessions.engine) if sessions.engine is not None and sessions.engine.connected
+                        and not sessions.handoff_pending else None)
+        bound_workspace = sessions.workspace_id()
+        handshake_workspace = ws.headers.get("X-EE-Workspace")
         await ws.accept()
         mailbox = sessions.listen()
         mailbox.put({"type": "session", "session": sessions.info()})
@@ -452,7 +750,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
         async def sender() -> None:
             while True:
-                await ws.send_json(await mailbox.get())
+                await ws.send_json(controller.message(await mailbox.get()))
 
         send_task = asyncio.create_task(sender())
         try:
@@ -461,15 +759,29 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
                 if not isinstance(msg, dict):
                     mailbox.put({"type": "error", "code": "invalid", "message": "messages must be objects"})
                     continue
-                current = sessions.engine
+                current = None if sessions.handoff_pending else sessions.engine
                 if current is None and msg.get("type") != "ping":
                     mailbox.put({"type": "error", "id": msg.get("id"), "code": "not_logged_in",
                                          "message": "log in to a switch first"})
                     continue
+                if msg.get("type") != "ping" and (
+                    bound_engine is None or current is not bound_engine()
+                    or sessions.workspace_id() != bound_workspace
+                    or handshake_workspace is not None and handshake_workspace != bound_workspace
+                    or "workspace_id" in msg and msg["workspace_id"] != bound_workspace
+                ):
+                    mailbox.put({"type": "error", "id": msg.get("id"), "code": "workspace_changed",
+                                 "message": "The switch session changed. Reopen this connection before "
+                                            "changing lighting."})
+                    continue
                 try:
                     reply = handle_ws_command(current, msg) if current else {"type": "pong", "id": msg.get("id")}
+                    if current and msg.get("type") == "release":
+                        await current.wait_for_output_idle()
                 except NotFound as exc:
                     reply = {"type": "error", "id": msg.get("id"), "code": "not_found", "message": str(exc)}
+                except TransportError as exc:
+                    reply = {"type": "error", "id": msg.get("id"), "code": "output_unconfirmed", "message": str(exc)}
                 except (ValueError, KeyError, TypeError) as exc:
                     reply = {"type": "error", "id": msg.get("id"), "code": "invalid",
                              "message": str(exc).strip("'\"")}
@@ -488,11 +800,43 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     # The web UI, if one has been built into static_dir
     static_dir = config.resolve(config.api.static_dir)
     if (static_dir / "index.html").is_file():
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="ui")
+        app.mount("/", UIStaticFiles(directory=static_dir, html=True), name="ui")
     else:
-        @app.get("/", include_in_schema=False)
+        @app.get("/", include_in_schema=False, response_class=HTMLResponse)
         async def root():
-            return {"name": PROJECT_NAME, "tagline": TAGLINE, "disclaimer": DISCLAIMER, "api": "/api",
-                    "docs": "/docs", "ui": f"no web UI found; put the UI build (index.html) in {static_dir}"}
+            return NO_UI_PAGE.format(name=PROJECT_NAME, version=__version__, disclaimer=html.escape(DISCLAIMER),
+                                     folder=html.escape(str(static_dir)))
 
     return app
+
+
+NO_UI_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{name}</title>
+<style>
+  :root {{ color-scheme: light dark; --bg: #f5f5f7; --fg: #1d1d1f; --muted: #6e6e73; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg: #1c1c1e; --fg: #f5f5f7; --muted: #98989d; }} }}
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }}
+  main {{ max-width: 34rem; padding: 2rem; }}
+  h1 {{ font-size: 1.4rem; margin: 0 0 .75rem; }}
+  p {{ margin: 0 0 .75rem; }}
+  .muted {{ color: var(--muted); font-size: .85rem; }}
+  code {{ font-size: .9em; }}
+  a {{ color: #0a84ff; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{name} {version}</h1>
+  <p>The server is running, but this copy doesn't include the web interface.</p>
+  <p>Add the interface's build to <code>{folder}</code>, or use the <a href="/docs">API documentation</a> in the
+  meantime.</p>
+  <p class="muted">{disclaimer}</p>
+</main>
+</body>
+</html>
+"""

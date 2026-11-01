@@ -113,6 +113,16 @@ def parse_clock(text: str) -> int:
     return int(m.group(1)) * 60 + int(m.group(2))
 
 
+def finite_number(value: Any, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} must be a finite number") from None
+    if isinstance(value, bool) or not math.isfinite(number):
+        raise ValueError(f"{label} must be a finite number")
+    return number
+
+
 @dataclass(frozen=True)
 class Condition:
     field: str
@@ -135,10 +145,10 @@ class Condition:
             value = value if isinstance(value, bool) else str(value).lower() in ("true", "1", "yes", "on")
         elif spec.type == "number":
             if op == "between":
-                low, high = (float(v) for v in value)
+                low, high = (finite_number(v, key) for v in value)
                 value = (min(low, high), max(low, high))
             else:
-                value = float(value)
+                value = finite_number(value, key)
         elif spec.type == "choice":
             values = list(value) if op in ("in", "not_in") else [value]
             for v in values:
@@ -207,14 +217,20 @@ class Look:
 
     @classmethod
     def parse(cls, data: dict) -> Look:
+        if not isinstance(data, dict):
+            raise ValueError("a rule appearance must be an object")
         style = data.get("style", "solid")
         if style not in STYLES:
             raise ValueError(f"style must be one of {', '.join(STYLES)}")
         color = Color.parse(data.get("color", "#000000"))
-        rate = min(10.0, max(0.05, float(data.get("rate", 1.0))))
+        default_rate = 0.25 if style == "pulse" else 0.5 if style in ("blink", "flash") else 1.0
+        limit = {"pulse": 0.33, "blink": 1.0, "flash": 0.5}.get(style, 1.0)
+        rate = finite_number(data.get("rate", default_rate), "rule rate")
+        rate = min(limit, max(0.05, rate))
         brightness = data.get("brightness")
         if brightness is not None:
-            brightness = int(round(min(100.0, max(0.0, float(brightness)))))
+            brightness = finite_number(brightness, "rule brightness")
+            brightness = int(round(min(100.0, max(0.0, brightness))))
         return cls(color, style, rate, brightness)
 
     def render(self, t: float, underneath: Color) -> Color:
@@ -224,7 +240,7 @@ class Look:
         if self.style == "pulse":
             return self.color.scaled(0.15 + 0.85 * (0.5 - 0.5 * math.cos(2 * math.pi * phase)))
         if self.style == "flash":
-            return self.color if phase < 0.12 else BLACK
+            return self.color if phase < 0.2 else BLACK
         if self.style == "effect":
             return underneath
         return self.color
@@ -244,7 +260,7 @@ class Rule:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     @classmethod
-    def parse(cls, data: dict, *, num_ports: int) -> Rule:
+    def parse(cls, data: dict, *, num_ports: int, extra_ports: tuple[int, ...] = ()) -> Rule:
         if not isinstance(data, dict):
             raise ValueError("a rule must be an object")
         name = str(data.get("name") or "Rule").strip()[:60]
@@ -253,9 +269,12 @@ class Rule:
             raise ValueError("match must be 'all' or 'any'")
         ports = data.get("ports")
         if ports is not None:
-            ports = tuple(sorted({int(p) for p in ports}))
-            if any(not 1 <= p <= num_ports for p in ports):
-                raise ValueError(f"rule ports must be between 1 and {num_ports}")
+            numbers = [finite_number(p, "rule port") for p in ports]
+            if any(not p.is_integer() for p in numbers):
+                raise ValueError("rule ports must be whole numbers")
+            ports = tuple(sorted({int(p) for p in numbers}))
+            if any(not 1 <= p <= num_ports and p not in extra_ports for p in ports):
+                raise ValueError("rule targets must be available lighting ports")
         rule = cls(
             name=name,
             look=Look.parse(data.get("look") or {}),
@@ -303,11 +322,11 @@ TEMPLATES: list[dict] = [
     {"name": "Offline", "conditions": [_when("link", "is", False)],
      "look": {"color": "#ff0000", "style": "solid"}},
     {"name": "Anomaly", "conditions": [_when("anomaly", "is", True)],
-     "look": {"color": "#ff9f0a", "style": "blink", "rate": 2}},
+     "look": {"color": "#ff9f0a", "style": "blink", "rate": 0.5}},
     {"name": "Uplink", "conditions": [_when("uplink", "is", True)],
      "look": {"color": "#0a84ff", "style": "solid"}},
     {"name": "Spanning tree blocking", "conditions": [_when("stp_state", "in", ["blocking", "discarding"])],
-     "look": {"color": "#ff9f0a", "style": "pulse", "rate": 0.5}},
+     "look": {"color": "#ff9f0a", "style": "pulse", "rate": 0.25}},
     {"name": "PoE", "conditions": [_when("poe", "is", "poe")], "look": {"color": "#30d158"}},
     {"name": "PoE+", "conditions": [_when("poe", "is", "poe+")], "look": {"color": "#64d2ff"}},
     {"name": "PoE++", "conditions": [_when("poe", "is", "poe++")], "look": {"color": "#bf5af2"}},
@@ -321,7 +340,7 @@ TEMPLATES: list[dict] = [
     {"name": "Half duplex", "conditions": [_when("link", "is", True), _when("full_duplex", "is", False)],
      "look": {"color": "#ff9f0a", "style": "pulse"}},
     {"name": "Busy", "conditions": [_when("traffic", "ge", 500)],
-     "look": {"color": "#ff453a", "style": "pulse", "rate": 2}},
+     "look": {"color": "#ff453a", "style": "pulse", "rate": 0.25}},
     {"name": "Night dim", "conditions": [_when("time", "between", ["22:00", "07:00"])],
      "look": {"style": "effect", "brightness": 15}},
     {"name": "Weekend", "conditions": [_when("weekday", "in", ["sat", "sun"])],

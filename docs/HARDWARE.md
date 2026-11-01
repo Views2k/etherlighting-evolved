@@ -1,61 +1,78 @@
-# Hardware notes
+# Hardware qualification
 
-## Tested
+EE identifies the switch during login and uses its physical port layout. Output requires a matching model
+and system ID, the exact running lighting-daemon hash, the corresponding MCU image hash, and the required
+method schema on the current SSH lighting connection. A different firmware build requires another review.
+`eectl probe` performs read-only discovery and returns success only when this output gate passes.
 
-USW-Pro-XG-8-PoE: eight 10 GbE RJ45 ports with Etherlighting (ports 1-8) and two SFP+ ports without LEDs.
+## Firmware coverage in 0.4.10
 
-On this switch:
+The following profiles have been traced through the official firmware's board dispatch, per-port RGB16
+parser, MCU output mapping, native fade code, and scoped optical ownership operations. Offline fixtures
+exercise their port addresses, acknowledgment handling, acquisition, and cleanup. These checks establish
+the reviewed command path; physical appearance and sustained load on additional models still need testing.
 
-- `ubus list` includes `etherlight` and `etherlight.mcu`, and `ubus -v list etherlight.mcu` shows a `set` method
-  that accepts `port_rgb`.
-- `ubus call etherlight.mcu set '{"port_rgb":"<port> <rrggbb> <level>"}'` sets the color of one port
-  immediately. `<level>` is 0-100. Port numbers match the front panel.
-- The switch's `etherlightd` service reapplies its own colors every couple of seconds. EE leaves it running and
-  re-sends every port at least every 1.5 seconds (`keepalive`), and changed ports in between. When EE stops, the
-  switch's colors return.
-- `swctrl port show` lists each port's link state (`U/U` linked, `U/D` enabled without a link, `D/D` disabled),
-  speed and duplex (`10000F`), packet and byte counters, STP state, an anomaly bit field (`0x0` when there are no
-  anomalies) and LAG membership. A `U` before the port number marks the uplink.
+| Models | Copper ports | Optical indicators | Firmware family / release |
+| --- | --- | --- | --- |
+| Pro XG 8 PoE | 1–8 | 9–10 | USWED72 / 7.5.15+17146 |
+| Pro XG 10 PoE | 1–10 | 11–12 | USWED72 / 7.5.15+17146 |
+| Pro HD 24, Pro HD 24 PoE | 1–24 | 25–28 | USWED72 / 7.5.15+17146 |
+| Pro XG 24, Pro XG 24 PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146 |
+| Pro XG 48, Pro XG 48 PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146 |
+| Pro XG Aggregation | — | 1–32 | USWED42 / 7.5.15+17146 |
+| ECS-24-PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146 |
+| ECS-48-PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146 |
+| ECS-24S, ECS-24S-PoE | 1–24 | 25–28 | USWF004 / 7.4.119+17363 |
+| ECS-48S, ECS-48S-PoE | 1–48 | 49–52 | USWF004 / 7.4.119+17363 |
+| EAV-XG-24-PoE | 1–24 | 25–28 | USWF001 / 7.5.15+17146 |
+| EAV-Fiber | — | 1–22 | USWF001 / 7.5.15+17146 |
 
-## Not yet verified
+The Pro XG 8 PoE has prior owner-confirmed copper and two-indicator visual testing. The other profiles
+are firmware-qualified candidates. Stacking ports and extra internal MCU records are excluded from output.
+Optical-only models use indicator controls without creating a fictitious copper bank.
 
-PoE status: EE reads `swctrl poe show` and expects the table format used by other UniFi switches (port, op mode,
-PoE mode, power limit, class, on/off, power good, watts, volts, milliamps). This hasn't been checked on the
-USW-Pro-XG-8-PoE. If the output is different, EE reads no PoE data and PoE rules don't match; everything else
-works normally. `eectl probe` reports when no PoE data was read. In that case, please open an issue with the output
-of `swctrl poe show` and the switch model.
+The six Pro Max models, ECS-Aggregation, and ECS-Core remain output-blocked. The reviewed Pro Max helper
+commits all staged MCU records and hides commit errors. The SONiC models require a separate ownership and
+cleanup adapter. Detection of a device or a similarly named command does not grant output permission.
 
-The PoE type is based on the class requested by the powered device:
+## Port controls and saved profiles
 
-| Class | Standard | EE value |
-|---|---|---|
-| 0-3 | 802.3af | `poe` |
-| 4 | 802.3at | `poe+` |
-| 5-6 | 802.3bt type 3 | `poe++` |
-| 7-8 | 802.3bt type 4 | `poe+++` |
+Copper ports use their group effect, matching rules, or an individual color. Optical indicators have
+independent Steady, Gentle pulse, Color cycle, Two-color fade, Off, and Link status controls. Together uses
+the first indicator's settings; Follow Ethernet uses a selected copper port's composed color.
 
-Other Etherlighting switches may use the same `etherlight.mcu` interface, but EE hasn't been tested on them. To
-check a switch:
+Scenes record the model and exact copper/optical membership. A scene from a different topology is rejected
+before changing output. Existing Pro XG 8 device-specific saved data retains the same identity. Legacy
+port-specific profiles keep their original layout rather than reinterpreting their port numbers.
 
-```bash
-eectl probe <switch-ip> -u <ssh-user> --ports <number of LED ports>
-```
+## Output and cleanup
 
-This logs in, checks for `port_rgb` and prints the status of each port without changing anything. `eectl set` can
-then light a single port to confirm the numbering. If it works, set `num_ports` in `ee.toml`, and please report the
-model so it can be added here.
+The adapter leaves the vendor lighting service running. It uses the existing ubus socket over SSH and
+keeps one acknowledged request in flight. RGB16 fields are limited to three integers from 0 through 65280,
+with white fixed at zero. Positive port IDs must belong to the qualified profile.
 
-## Commands EE never sends
+Optical acquisition and release use explicit one-record masks with `soc_port_map` and `blink_port_map`.
+Masks use the reviewed high-24/low-32 word encoding. Release applies the status-controlled baseline after
+draining writes; it does not claim to recover a previous controller color policy. Failed cleanup suspends
+output. Reconnect rechecks firmware, identity, topology, and ownership before resuming a retained scene.
 
-`etherlight.mcu` accepts other `set` options. These have been reported to corrupt the LED controller's state or
-break LED output (see [unifi-lightshow](https://github.com/Ozark-Connect/unifi-lightshow)), so EE never uses them,
-and they should be avoided when testing by hand:
+EE does not flash firmware, load modules, stop vendor services, or change network configuration. Its typed
+writer excludes reset, LED-stop, global port-zero writes, unqualified masks, and arbitrary shell input.
+The transport starts unbound and rejects every lighting setter until qualification. Reprobing or closing
+revokes that binding, including already queued writes.
 
-`led_stop`, `reset`, `mode_color`, `led_mode`, `port_pwm`
+## Timing and physical acceptance
 
-## Speed
+Synchronized copper Breathing uses the MCU's shared phase. Optical fades use finite native segments and
+separately acknowledged per-port targets. Grouped target submission is not an atomic frame operation.
+At the initial 30-command/s budget, enrolling 32 optical indicators takes at least 1.033 seconds from the
+first target to the last. Large-group synchronization and visible smoothness therefore remain acceptance
+gates; firmware parsing and simulated output do not establish those properties.
 
-All commands go through one persistent SSH shell, so there is no new login per command, and changed ports are sent
-in a single batch. `eectl benchmark` measures the time for one command, for a batch, and the highest full-frame
-rate. Animated effects run at 10 frames per second by default; adjust `fps` based on the benchmark. Only ports that
-change are sent, so a static color uses very little bandwidth.
+EE starts at at most 30 commands per second. Direct output can increase only with fresh CPU-idle and
+acknowledgment headroom, up to the configured ceiling. Stale readings, slow responses, or CPU pressure
+reduce the rate. Each setup, target, keepalive, and cleanup write shares that budget. Larger port counts
+do not multiply the ceiling or remove the one-request acknowledgment boundary.
+
+Link, traffic, PoE, and health readings use the existing read-only parsers. Missing readings remain missing
+rather than becoming invented values. Controller metadata supplies device names and topology when connected.

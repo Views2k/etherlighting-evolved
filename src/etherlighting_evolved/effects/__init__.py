@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from .ambient import AMBIENT_EFFECTS
 from .base import Effect, Param, RenderContext
 from .library import ALL_EFFECTS
+from .power import PoeUsage
 
-EFFECTS: dict[str, type[Effect]] = {cls.id: cls for cls in ALL_EFFECTS}
+EFFECTS: dict[str, type[Effect]] = {cls.id: cls for cls in ALL_EFFECTS + AMBIENT_EFFECTS + (PoeUsage,)}
 
 
 def create_effect(effect_id: str, num_ports: int, params: dict | None = None, *, seed: int | None = None) -> Effect:

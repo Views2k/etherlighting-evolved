@@ -43,5 +43,6 @@ async def test_simulator_output_parses():
     sim = SimulatedTransport()
     await sim.connect()
     ports = parse_poe_show(await sim.run("swctrl poe show"))
-    assert ports[2].tier == "poe+" and ports[6].tier == "poe++" and ports[7].tier == "poe+++"
+    assert ports[2].tier == "poe+" and ports[6].tier == "poe++" and ports[7].tier == "poe++"
     assert ports[1].tier == "off"
+    assert all(port.power_w <= 60 and port.mode == "Dot3bt-Type3" for port in ports.values())

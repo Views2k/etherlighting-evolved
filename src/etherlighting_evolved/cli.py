@@ -19,21 +19,27 @@ import sys
 from pathlib import Path
 
 from . import DISCLAIMER, PROJECT_NAME, TAGLINE, __version__
+from .app_lock import AppInstanceLock, AppLockError
 from .color import Color
 from .config import EXAMPLE_CONFIG, data_dir, load_config
 from .effects import list_effects
+from .engine import to_output
+from .ownership import OutputJournal
 from .switch import EtherlightSwitch
-from .transport import HostKeyStore, SSHTransport, TransportError
+from .transport import HostKeyStore, SimulatedTransport, SSHTransport, TransportError
 
 
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from .api import create_app
+    from .websocket_protocol import websocket_protocol
 
     config = load_config(args.config)
-    host = args.host or config.api.host
-    port = args.port or config.api.port
+    config.api.host = args.host or config.api.host
+    config.api.port = args.port or config.api.port
+    config.api.validate()
+    host, port = config.api.host, config.api.port
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
     print(f"{PROJECT_NAME} {__version__}  ·  {TAGLINE}")
@@ -44,8 +50,9 @@ def _serve(args: argparse.Namespace) -> int:
         print("Demo mode: logged in to the simulator, no switch needed.")
     print()
 
-    app = create_app(config, demo=args.demo, autoconnect=not args.no_autoconnect)
-    uvicorn.run(app, host=host, port=port, log_level=args.log_level.lower())
+    with AppInstanceLock():
+        app = create_app(config, demo=args.demo, autoconnect=not args.no_autoconnect)
+        uvicorn.run(app, host=host, port=port, log_level=args.log_level.lower(), ws=websocket_protocol())
     return 0
 
 
@@ -61,7 +68,7 @@ def _switch(args: argparse.Namespace) -> EtherlightSwitch:
         key_file=args.key_file,
         host_keys=HostKeyStore(data_dir() / "known_switches.json"),
     )
-    return EtherlightSwitch(transport, num_ports=args.ports)
+    return EtherlightSwitch(transport, num_ports=args.ports, auto_detect=True)
 
 
 async def _probe(args: argparse.Namespace) -> int:
@@ -69,17 +76,29 @@ async def _probe(args: argparse.Namespace) -> int:
     await switch.connect()
     try:
         info = await switch.probe()
+        output_error = ""
+        if not info.get("etherlight_mcu") or not info.get("port_rgb"):
+            output_error = "The switch does not expose the required per-port color command."
+        else:
+            try:
+                switch.require_output_profile()
+            except (ValueError, TransportError) as exc:
+                output_error = str(exc)
         links = await switch.read_links()
         poe = await switch.read_poe()
     finally:
         await switch.close()
 
     print(f"Switch          {info['hostname'] or '?'}")
+    profile = switch.hardware_profile
+    print(f"Model           {profile.model if profile else 'Unknown'}")
     print(f"etherlight.mcu  {'yes' if info['etherlight_mcu'] else 'no'}")
     print(f"port_rgb        {'yes' if info['port_rgb'] else 'no'}")
+    print(f"EE output       {'verified' if not output_error else 'not verified'}")
     print()
     print("Port  Link   Speed   PoE      Anomaly")
-    for port in range(1, args.ports + 1):
+    ports = (*profile.copper_ports, *profile.optical_ports) if profile else range(1, switch.num_ports + 1)
+    for port in ports:
         link, p = links.get(port), poe.get(port)
         state = "up" if link and link.link_up else "down"
         speed = f"{link.speed_mbps}M" if link and link.link_up else "-"
@@ -89,36 +108,70 @@ async def _probe(args: argparse.Namespace) -> int:
     if not poe:
         print("\nNo PoE status read. If your switch has PoE, please open an issue with the output of")
         print("`swctrl poe show` so EE can learn its format.")
-    if not info["port_rgb"]:
-        print("\nThis switch doesn't expose per-port RGB control, so EE can't drive it.")
+    if output_error:
+        print(f"\n{output_error}")
         return 1
     return 0
 
 
 async def _set(args: argparse.Namespace) -> int:
-    switch = _switch(args)
-    await switch.connect()
-    try:
-        await switch.set_port(args.port, Color.parse(args.color), args.level)
-    finally:
-        await switch.close()
+    if not 1 <= args.port <= 64:
+        raise ValueError("port must be between 1 and 64")
+    color = Color.parse(args.color)
+    output = to_output(color, args.level)
+    await _controlled_output(args, lambda switch: switch.set_port(args.port, output.color, output.level))
     print(f"Port {args.port} set to {Color.parse(args.color).to_hex()} at {args.level}%.")
     print("The switch's own Etherlighting takes the port back within a few seconds; run the server to keep it.")
     return 0
 
 
 async def _benchmark(args: argparse.Namespace) -> int:
-    switch = _switch(args)
-    await switch.connect()
-    try:
-        result = await switch.benchmark(count=args.count, port=args.port)
-    finally:
-        await switch.close()
+    if not 1 <= args.port <= 64:
+        raise ValueError("port must be between 1 and 64")
+    result = await _controlled_output(args, lambda switch: switch.benchmark(count=args.count, port=args.port))
     print(f"One command                {result['single_command_ms']} ms")
     print(f"Per command, batched       {result['batched_per_command_ms']} ms")
-    print(f"Full frame ({args.ports} ports)       {result['full_frame_ms']} ms")
-    print(f"Highest full-frame rate    {result['max_full_frame_fps']} fps")
+    print(f"Full frame                 {result['full_frame_ms']} ms")
+    print(f"Measured full-frame rate   {result['max_full_frame_fps']} fps")
     return 0
+
+
+async def _controlled_output(args, operation):
+    with AppInstanceLock():
+        switch = _switch(args)
+        lease = None
+        try:
+            await switch.connect()
+            await _require_rgb(switch)
+            if not isinstance(switch.transport, SimulatedTransport):
+                lease = OutputJournal().claim(
+                    args.host, args.ssh_port, switch.transport.host_key_fingerprint)
+                switch.output_lease = lease
+            result = await operation(switch)
+        finally:
+            await switch.close()
+        if lease is not None:
+            lease.finish()
+        return result
+
+
+async def _require_rgb(switch: EtherlightSwitch) -> None:
+    info = await switch.probe()
+    if not info.get("etherlight_mcu") or not info.get("port_rgb"):
+        raise TransportError("The switch does not expose the required per-port color command")
+    switch.require_output_profile()
+
+
+def bounded_int(low: int, high: int):
+    def parse(value: str) -> int:
+        try:
+            number = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("enter a whole number") from None
+        if not low <= number <= high:
+            raise argparse.ArgumentTypeError(f"enter a number from {low} to {high}")
+        return number
+    return parse
 
 
 def _effects(args: argparse.Namespace) -> int:
@@ -153,8 +206,9 @@ def _ssh_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-u", "--username", default=os.environ.get("EE_USERNAME", ""), help="SSH username")
     parser.add_argument("-p", "--password", default=None, help="SSH password (prompted for if not given)")
     parser.add_argument("-i", "--key-file", default=os.environ.get("EE_KEY_FILE") or None, help="SSH private key")
-    parser.add_argument("--ssh-port", type=int, default=22)
-    parser.add_argument("--ports", type=int, default=8, help="number of Etherlighting ports (default 8)")
+    parser.add_argument("--ssh-port", type=bounded_int(1, 65535), default=22)
+    parser.add_argument("--ports", type=bounded_int(1, 64), default=8,
+                        help="fallback port count for identification; known switches are detected automatically")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -181,15 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_ = commands.add_parser("set", help="set one port's color once")
     _ssh_args(set_)
-    set_.add_argument("port", type=int)
+    set_.add_argument("port", type=bounded_int(1, 64))
     set_.add_argument("color", help="hex (ff00ff, #f0f) or a name (white, red, ...)")
-    set_.add_argument("--level", type=int, default=100, help="brightness 0-100")
+    set_.add_argument("--level", type=bounded_int(0, 100), default=100, help="brightness 0-100")
     set_.set_defaults(func=_set)
 
-    bench = commands.add_parser("benchmark", help="measure how fast the switch takes LED commands")
+    bench = commands.add_parser("benchmark", help="measure LED command timing with paced writes")
     _ssh_args(bench)
-    bench.add_argument("--count", type=int, default=20)
-    bench.add_argument("--port", type=int, default=1, help="port that flashes white during the test")
+    bench.add_argument("--count", type=bounded_int(1, 60), default=20)
+    bench.add_argument("--port", type=bounded_int(1, 64), default=1, help="port set to white during the test")
     bench.set_defaults(func=_benchmark)
 
     effects = commands.add_parser("effects", help="list the effects")
@@ -220,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         result = args.func(args)
         if asyncio.iscoroutine(result):
             result = asyncio.run(result)
-    except TransportError as exc:
+    except (TransportError, ValueError, AppLockError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

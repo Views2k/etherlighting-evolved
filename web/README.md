@@ -1,24 +1,17 @@
-# EE web UI
+# Standalone frontend
 
-The server serves the contents of this folder at `/`. Put the UI's production build here (with `index.html` at the
-top level), or set `static_dir` in `ee.toml` to another folder.
+The current EE workspace lives in `preview/` and starts with `npm start` from the repository root. The Windows installer packages that workspace.
 
-The API is described in [docs/API.md](../docs/API.md). To develop against the simulator without a switch, start
-the backend with:
+The older standalone frontend is retained at the root `index.html`, `src/app.mjs`, and `assets/style.css` for existing integrations. It shares the effect, color, and state modules under `src/`.
 
-```bash
-etherlighting-evolved --demo
+To generate its static files:
+
+[WINDOWS POWERSHELL]
+
+```powershell
+npm run build:legacy
 ```
 
-## Requirements for the UI
+The build writes `dist/` and a SHA-256 asset manifest. Serve that generated directory with the backend's configured static-file path when using the standalone interface. This `web/` directory holds documentation rather than a second editable copy of the browser source.
 
-- Login: one screen with IP address, SSH username, password, *Remember me* and a Connect button, plus an option
-  to log in to the demo. Show the error message from the API when a login fails.
-- Ports: show ports 1-8 in their current colors using `preview` from each WebSocket frame. Selecting a port opens
-  its color picker and brightness control, its status (link, speed, PoE, traffic), and what set its color
-  (`source`).
-- Color picker: send `set_port` over the WebSocket on every change, not only when the picker is released.
-- Effects: list the 16 effects and generate each effect's controls from its `params`.
-- Rules: list rules in order with drag to reorder, an on/off toggle per rule, and adding rules from the templates.
-- Disclaimer: show the text from `GET /api/about` on the login screen and an About page.
-- Respect `prefers-reduced-motion`, and show a warning before starting the Strobe effect.
+Use [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md) for the current workspace and installer commands.

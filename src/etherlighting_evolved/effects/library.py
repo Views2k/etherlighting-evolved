@@ -2,6 +2,9 @@
 
 Each effect returns one color per port in its zone. Colors based on port status (offline, PoE, anomaly, ...) come
 from rules, which are applied after the effect.
+
+Moving light has soft edges wider than a port (see `soft`), which makes neighboring ports crossfade as it travels.
+Colors are in perceived brightness; the engine applies gamma correction at output.
 """
 
 from __future__ import annotations
@@ -10,17 +13,32 @@ import itertools
 import math
 
 from ..color import BLACK, Color
-from .base import Effect, Param, RenderContext
-
-
-def pulse(phase: float) -> float:
-    """0 -> 1 -> 0 over one unit of phase, with soft ends."""
-    return 0.5 - 0.5 * math.cos(2 * math.pi * phase)
+from .base import Effect, Param, RenderContext, hash01
 
 
 def triangle(x: float) -> float:
     """0 at 0, 1 at 0.5, back to 0 at 1, repeating."""
     return 1.0 - abs(2.0 * (x % 1.0) - 1.0)
+
+
+def breath(phase: float) -> float:
+    """One smooth rise and fall, with zero slope at both ends."""
+    return 0.5 - 0.5 * math.cos(2 * math.pi * phase)
+
+
+def soft(distance: float, width: float) -> float:
+    """1 at distance 0, easing to 0 at `width` ports away (a raised cosine)."""
+    x = abs(distance) / width
+    return 0.0 if x >= 1.0 else 0.5 + 0.5 * math.cos(math.pi * x)
+
+
+def ease(x: float) -> float:
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def inverse_ease(x: float) -> float:
+    return 0.5 - math.sin(math.asin(1 - 2 * min(1.0, max(0.0, x))) / 3)
 
 
 def bounce(position: float, length: int) -> tuple[float, int]:
@@ -32,10 +50,10 @@ def bounce(position: float, length: int) -> tuple[float, int]:
     return (x, 1) if x <= length - 1 else (period - x, -1)
 
 
-def hash01(i: int, seed: int) -> float:
-    x = (i * 374761393 + seed * 668265263) & 0xFFFFFFFF
-    x = ((x ^ (x >> 13)) * 1274126177) & 0xFFFFFFFF
-    return (x ^ (x >> 16)) / 0xFFFFFFFF
+def ring_distance(a: float, b: float, n: int) -> float:
+    """Signed distance from b to a going forward around n ports in a loop, between -n/2 and n/2."""
+    d = (a - b) % n
+    return d - n if d > n / 2 else d
 
 
 def noise(x: float, seed: int) -> float:
@@ -63,7 +81,7 @@ class Static(Effect):
     params = (Param("color", "Color", "color", "#ffffff"),)
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        return [self.p["color"]] * self.num_ports
+        return [self.colors(t)["color"]] * self.num_ports
 
 
 class Breathing(Effect):
@@ -72,17 +90,32 @@ class Breathing(Effect):
     description = "Fades in and out."
     params = (
         Param("color", "Color", "color", "#0a84ff"),
-        Param("period", "Breath length", "float", 4.0, min=0.5, max=20.0, step=0.5, unit="s"),
-        Param("floor", "Lowest brightness", "float", 0.05, min=0.0, max=1.0, step=0.05),
+        Param("playback", "Playback", "choice", "custom", choices=("synchronized", "custom")),
+        Param("pace", "Shared speed", "int", 2, min=1, max=3, step=1),
+        Param("period", "Breath length", "float", 5.0, min=1.0, max=30.0, step=0.5, unit="s"),
+        Param("floor", "Lowest brightness", "float", 0.1, min=0.0, max=1.0, step=0.05),
         Param("ripple", "Ripple across ports", "bool", False),
     )
 
+    def animation_rate(self) -> float:
+        period = ({1: 3.08, 2: 2.0, 3: 1.0}[self.p["pace"]]
+                  if self.p["playback"] == "synchronized" else self.p["period"])
+        return 1 / period
+
+    def colors(self, t: float) -> dict[str, Color]:
+        if self.p["playback"] == "synchronized":
+            return {"color": self.adjust_color("color", self.p["color"])}
+        return super().colors(t)
+
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        floor, period = self.p["floor"], self.p["period"]
+        color = self.colors(t)["color"]
+        synchronized = self.p["playback"] == "synchronized"
+        floor = 0.0 if synchronized else self.p["floor"]
+        phase = self.phase(t, self.animation_rate())
         colors = []
         for i in range(self.num_ports):
-            offset = i / self.num_ports if self.p["ripple"] else 0.0
-            colors.append(self.p["color"].scaled(floor + (1 - floor) * pulse(t / period + offset)))
+            offset = i / (2 * self.num_ports) if self.p["ripple"] and not synchronized else 0.0
+            colors.append(color.scaled(floor + (1 - floor) * breath(phase - offset)))
         return colors
 
 
@@ -91,12 +124,12 @@ class ColorCycle(Effect):
     name = "Color Cycle"
     description = "All ports move through the color wheel together."
     params = (
-        Param("speed", "Speed", "float", 0.1, min=0.01, max=2.0, step=0.01, unit="cycles/s"),
+        Param("speed", "Speed", "float", 0.05, min=0.01, max=1.0, step=0.01, unit="cycles/s"),
         Param("saturation", "Saturation", "float", 1.0, min=0.0, max=1.0, step=0.05),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        return [Color.from_hsv(t * self.p["speed"], self.p["saturation"])] * self.num_ports
+        return [Color.from_hsv(self.phase(t, self.p["speed"]), self.p["saturation"])] * self.num_ports
 
 
 class RainbowWave(Effect):
@@ -104,7 +137,7 @@ class RainbowWave(Effect):
     name = "Rainbow Wave"
     description = "A rainbow that moves along the ports."
     params = (
-        Param("speed", "Speed", "float", 0.2, min=0.0, max=3.0, step=0.05, unit="cycles/s"),
+        Param("speed", "Speed", "float", 0.1, min=0.0, max=1.0, step=0.01, unit="cycles/s"),
         Param("spread", "Spread", "float", 1.0, min=0.1, max=3.0, step=0.05,
               description="How much of the color wheel fits across the ports."),
         Param("saturation", "Saturation", "float", 1.0, min=0.0, max=1.0, step=0.05),
@@ -112,7 +145,7 @@ class RainbowWave(Effect):
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        start = (-1 if self.p["reverse"] else 1) * t * self.p["speed"]
+        start = (-1 if self.p["reverse"] else 1) * self.phase(t, self.p["speed"])
         step = self.p["spread"] / self.num_ports
         return [Color.from_hsv(start + i * step, self.p["saturation"]) for i in range(self.num_ports)]
 
@@ -124,27 +157,31 @@ class Comet(Effect):
     params = (
         Param("color", "Color", "color", "#64d2ff"),
         Param("background", "Background", "color", "#000000"),
-        Param("speed", "Speed", "float", 6.0, min=0.5, max=30.0, step=0.5, unit="ports/s"),
-        Param("tail", "Tail", "int", 3, min=0, max=7, step=1, unit="ports"),
+        Param("speed", "Speed", "float", 1.0, min=0.25, max=12.0, step=0.25, unit="ports/s"),
+        Param("tail", "Tail", "float", 3.0, min=0.5, max=8.0, step=0.5, unit="ports"),
         Param("bounce", "Bounce", "bool", False),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        n, span = self.num_ports, self.p["tail"] + 1
-        travel = t * self.p["speed"]
-        head, heading = bounce(travel, n) if self.p["bounce"] else (travel % n, 1)
-
+        palette = self.colors(t)
+        n, tail = self.num_ports, self.p["tail"]
+        travel = self.phase(t, self.p["speed"])
+        if n == 1:
+            return [palette["color"]]
+        head = travel % n
+        trail = [(bounce(travel - tail * step / 16, n)[0], math.exp(-3 * step / 16))
+                 for step in range(17)] if self.p["bounce"] else []
         colors = []
         for i in range(n):
-            if self.p["bounce"]:
-                behind = (head - i) * heading
+            if trail:
+                # The trail follows earlier positions through the turn instead of switching sides instantly.
+                glow = max(soft(i - position, 1.5) * strength for position, strength in trail)
             else:
                 behind = (head - i) % n
-                if behind > n - 1:  # the head is wrapping round onto this port
-                    behind -= n
-            # In front of the head it drops off within a port; behind, it fades over the tail.
-            glow = max(0.0, 1.0 + behind) if behind < 0 else max(0.0, 1.0 - behind / span)
-            colors.append(self.p["background"].lerp(self.p["color"], glow))
+                head_glow = soft(ring_distance(head, i, n), 1.5)
+                tail_glow = math.exp(-3 * behind / tail) * ease((n - behind) / 1.5)
+                glow = max(head_glow, tail_glow)
+            colors.append(palette["background"].lerp(palette["color"], glow))
         return colors
 
 
@@ -155,17 +192,19 @@ class Scanner(Effect):
     params = (
         Param("color", "Color", "color", "#ff453a"),
         Param("background", "Background", "color", "#000000"),
-        Param("speed", "Speed", "float", 5.0, min=0.5, max=30.0, step=0.5, unit="ports/s"),
-        Param("width", "Width", "float", 1.5, min=0.5, max=4.0, step=0.1, unit="ports"),
+        Param("speed", "Speed", "float", 1.0, min=0.25, max=12.0, step=0.25, unit="ports/s"),
+        Param("width", "Width", "float", 2.0, min=2.0, max=4.0, step=0.1, unit="ports"),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        head, _ = bounce(t * self.p["speed"], self.num_ports)
-        width = self.p["width"]
-        return [
-            self.p["background"].lerp(self.p["color"], max(0.0, 1.0 - abs(i - head) / width))
-            for i in range(self.num_ports)
-        ]
+        palette = self.colors(t)
+        n = self.num_ports
+        if n == 1:
+            return [palette["color"]]
+        # Slows down and turns around at each end instead of bouncing off it.
+        sweep = self.phase(t, self.p["speed"]) / (2 * (n - 1))
+        head = (n - 1) * (0.5 - 0.5 * math.cos(2 * math.pi * sweep))
+        return [palette["background"].lerp(palette["color"], soft(i - head, self.p["width"])) for i in range(n)]
 
 
 class Marquee(Effect):
@@ -175,45 +214,60 @@ class Marquee(Effect):
     params = (
         Param("color", "Color", "color", "#ffd60a"),
         Param("background", "Background", "color", "#000000"),
-        Param("speed", "Speed", "float", 4.0, min=0.5, max=20.0, step=0.5, unit="steps/s"),
+        Param("speed", "Speed", "float", 0.75, min=0.25, max=10.0, step=0.25, unit="ports/s"),
         Param("spacing", "Spacing", "int", 3, min=2, max=4, step=1, unit="ports"),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        step = int(t * self.p["speed"])
-        lit, unlit = self.p["color"], self.p["background"]
-        return [lit if (i - step) % self.p["spacing"] == 0 else unlit for i in range(self.num_ports)]
+        palette = self.colors(t)
+        spacing = self.p["spacing"]
+        shift = self.phase(t, self.p["speed"])
+        colors = []
+        for i in range(self.num_ports):
+            offset = (i - shift) % spacing
+            nearest = min(offset, spacing - offset)  # distance to the closest lit position
+            colors.append(palette["background"].lerp(palette["color"], soft(nearest, 1.25)))
+        return colors
 
 
 class StarryNight(Effect):
     id = "starry_night"
     name = "Starry Night"
-    description = "Random ports flash and fade out."
+    description = "Random ports light up and fade out."
+    exclusive_params = (("random_color", "rainbow"),)
     params = (
         Param("color", "Color", "color", "#ffffff"),
         Param("background", "Background", "color", "#000000"),
-        Param("rainbow", "Random colors", "bool", False),
-        Param("rate", "Sparkles", "float", 0.8, min=0.05, max=5.0, step=0.05, unit="per port/s"),
-        Param("fade", "Fade", "float", 0.6, min=0.1, max=3.0, step=0.1, unit="s"),
+        Param("rainbow", "Different color per sparkle", "bool", False),
+        Param("rate", "Sparkles", "float", 0.3, min=0.05, max=2.0, step=0.05, unit="per port/s"),
+        Param("fade", "Fade", "float", 2.5, min=1.5, max=6.0, step=0.1, unit="s"),
     )
 
+    RISE = 1.5
+
     def setup(self) -> None:
-        self._glow = [0.0] * self.num_ports
+        self._born: list[float | None] = [None] * self.num_ports
         self._hue = [0.0] * self.num_ports
         self._last: float | None = None
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        dt = 0.0 if self._last is None else min(0.5, max(0.0, t - self._last))
+        palette = self.colors(t)
+        dt = 0.0 if self._last is None else max(0.0, t - self._last)
         self._last = t
+        life = self.RISE + self.p["fade"]
         colors = []
         for i in range(self.num_ports):
-            glow = max(0.0, self._glow[i] - dt / self.p["fade"])
-            if self.rng.random() < self.p["rate"] * dt:
-                glow = 1.0
+            born = self._born[i]
+            if (born is None or t - born > life) and self.rng.random() < -math.expm1(-self.p["rate"] * dt):
+                born = self._born[i] = t
                 self._hue[i] = self.rng.random()
-            self._glow[i] = glow
-            star = Color.from_hsv(self._hue[i]) if self.p["rainbow"] else self.p["color"]
-            colors.append(self.p["background"].lerp(star, glow))
+            glow = 0.0
+            if born is not None and t - born <= life:
+                age = t - born
+                glow = ease(age / self.RISE) if age < self.RISE else 1 - ease((age - self.RISE) / self.p["fade"])
+            star = (self.adjust_color("color", Color.from_hsv(self._hue[i]))
+                    if self.p["rainbow"] else palette["color"])
+            colors.append(palette["background"].lerp(star, glow))
         return colors
 
 
@@ -234,16 +288,16 @@ class Fire(Effect):
     params = (
         Param("palette", "Palette", "choice", "fire", choices=tuple(FIRE_PALETTES)),
         Param("intensity", "Intensity", "float", 0.85, min=0.1, max=1.0, step=0.05),
-        Param("speed", "Flicker", "float", 1.0, min=0.1, max=4.0, step=0.1),
+        Param("speed", "Flicker", "float", 1.0, min=0.1, max=3.0, step=0.1),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
         stops = FIRE_PALETTES[self.p["palette"]]
-        speed = self.p["speed"]
+        phase = self.phase(t, self.p["speed"])
         colors = []
         for i in range(self.num_ports):
-            slow = noise(t * speed * 4 + i * 7.31, seed=i + 1)
-            fast = noise(t * speed * 11 + i * 3.7, seed=100 + i)
+            slow = noise(phase * 1.2 + i * 7.31, seed=i + 1)
+            fast = noise(phase * 3.0 + i * 3.7, seed=100 + i)
             colors.append(gradient_at(stops, self.p["intensity"] * (0.25 + 0.55 * slow + 0.2 * fast)))
         return colors
 
@@ -255,50 +309,54 @@ class Police(Effect):
     params = (
         Param("color_a", "Left color", "color", "#ff0000"),
         Param("color_b", "Right color", "color", "#0040ff"),
-        Param("speed", "Speed", "float", 1.5, min=0.25, max=5.0, step=0.25, unit="cycles/s"),
+        Param("speed", "Speed", "float", 0.4, min=0.1, max=3.0, step=0.05, unit="cycles/s"),
         Param("pattern", "Pattern", "choice", "split", choices=("split", "alternate", "together")),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        phase = (t * self.p["speed"]) % 1.0
+        phase = self.phase(t, self.p["speed"]) % 1.0
         first_half = phase < 0.5
-        within = (phase % 0.5) / 0.5
-        double_flash = within < 0.3 or 0.45 <= within < 0.75
-        a, b, n = self.p["color_a"], self.p["color_b"], self.num_ports
+        flash = math.sin(math.pi * ((phase % 0.5) / 0.5)) ** 2  # ramps up and down within each half
+        palette = self.colors(t)
+        a, b, n = palette["color_a"], palette["color_b"], self.num_ports
 
         colors = []
         for i in range(n):
             if self.p["pattern"] == "split":
                 left = i < n // 2
-                on = double_flash and (first_half == left)
-                colors.append((a if left else b) if on else BLACK)
+                lit = first_half == left
+                colors.append((a if left else b).scaled(flash) if lit else BLACK)
             elif self.p["pattern"] == "alternate":
-                if i % 2 == 0:
-                    colors.append(a if first_half else BLACK)
-                else:
-                    colors.append(BLACK if first_half else b)
+                even = i % 2 == 0
+                lit = first_half == even
+                colors.append((a if even else b).scaled(flash) if lit else BLACK)
             else:
-                colors.append((a if first_half else b) if double_flash else BLACK)
+                colors.append((a if first_half else b).scaled(flash))
         return colors
 
 
 class Strobe(Effect):
     id = "strobe"
     name = "Strobe"
+    exclusive_params = (("random_color", "random_colors"),)
     description = "Fast flashes. Can affect people who are sensitive to flashing light."
     params = (
         Param("color", "Color", "color", "#ffffff"),
-        Param("rate", "Rate", "float", 4.0, min=0.5, max=12.0, step=0.5, unit="Hz"),
-        Param("duty", "On time", "float", 0.25, min=0.05, max=0.9, step=0.05),
+        Param("rate", "Rate", "float", 0.5, min=0.25, max=4.0, step=0.25, unit="Hz"),
+        Param("duty", "On time", "float", 0.5, min=0.4, max=0.6, step=0.05),
         Param("random_colors", "New color each flash", "bool", False),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        beat = t * self.p["rate"]
+        beat = self.phase(t, self.p["rate"])
         if beat % 1.0 >= self.p["duty"]:
             return [BLACK] * self.num_ports
-        color = Color.from_hsv(hash01(int(beat), 99)) if self.p["random_colors"] else self.p["color"]
-        return [color] * self.num_ports
+        color = (self.adjust_color("color", Color.from_hsv(hash01(int(beat), 99)))
+                 if self.p["random_colors"] else self.colors(t)["color"])
+        phase = beat % 1.0
+        edge = min(0.1 * self.p["rate"], self.p["duty"] / 2)
+        envelope = ease(phase / edge) * ease((self.p["duty"] - phase) / edge)
+        return [color.scaled(envelope)] * self.num_ports
 
 
 class Gradient(Effect):
@@ -306,24 +364,27 @@ class Gradient(Effect):
     name = "Gradient"
     description = "A blend between two colors, static or moving."
     params = (
-        Param("color_a", "From", "color", "#ff2d55"),
-        Param("color_b", "To", "color", "#0a84ff"),
-        Param("speed", "Speed", "float", 0.0, min=0.0, max=3.0, step=0.05, unit="cycles/s",
+        Param("color_a", "From", "color", "#79dcc0"),
+        Param("color_b", "To", "color", "#a38de0"),
+        Param("speed", "Speed", "float", 0.0, min=0.0, max=3.0, step=0.01, unit="cycles/s",
               description="0 keeps the gradient still."),
         Param("mirror", "Mirror", "bool", True,
-              description="When moving, blend back to the first color instead of jumping to it."),
+              description="Use an even back-and-forth blend instead of a longer sweep and shorter return."),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
+        palette = self.colors(t)
         n = self.num_ports
+        travel = self.phase(t, self.p["speed"])
         colors = []
         for i in range(n):
             x = i / (n - 1) if n > 1 else 0.0
             if self.p["mirror"]:
-                mix = triangle(x * 0.5 + t * self.p["speed"])
+                mix = 0.5 - 0.5 * math.cos(math.acos(1 - 2 * x) + 2 * math.pi * travel)
             else:
-                mix = (x + t * self.p["speed"]) % 1.0 if self.p["speed"] else x
-            colors.append(self.p["color_a"].lerp(self.p["color_b"], mix))
+                phase = (0.8 * inverse_ease(x) + travel) % 1.0
+                mix = ease(phase / 0.8) if phase < 0.8 else 1 - ease((phase - 0.8) / 0.2)
+            colors.append(palette["color_a"].lerp(palette["color_b"], mix))
         return colors
 
 
@@ -335,19 +396,21 @@ class Ripple(Effect):
         Param("color", "Color", "color", "#64d2ff"),
         Param("background", "Background", "color", "#000000"),
         Param("center", "Center port", "int", 0, min=0, max=48, step=1, description="0 = the middle."),
-        Param("speed", "Speed", "float", 4.0, min=0.5, max=20.0, step=0.5, unit="ports/s"),
-        Param("spacing", "Ring spacing", "float", 4.0, min=1.5, max=12.0, step=0.5, unit="ports"),
+        Param("speed", "Speed", "float", 1.0, min=0.25, max=10.0, step=0.25, unit="ports/s"),
+        Param("spacing", "Ring spacing", "float", 4.0, min=2.0, max=12.0, step=0.5, unit="ports"),
     )
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
+        palette = self.colors(t)
         n = self.num_ports
         center = (n - 1) / 2 if self.p["center"] == 0 else min(self.p["center"], n) - 1
         spacing = self.p["spacing"]
+        travel = self.phase(t, self.p["speed"])
         colors = []
         for i in range(n):
-            behind_front = (t * self.p["speed"] - abs(i - center)) % spacing
-            glow = max(0.0, 1.0 - behind_front / min(2.0, spacing))
-            colors.append(self.p["background"].lerp(self.p["color"], glow))
+            behind_front = (travel - abs(i - center)) % spacing
+            nearest = min(behind_front, spacing - behind_front)
+            colors.append(palette["background"].lerp(palette["color"], soft(nearest, 1.75)))
         return colors
 
 
@@ -358,7 +421,7 @@ class Lightning(Effect):
     params = (
         Param("color", "Flash", "color", "#e8f0ff"),
         Param("sky", "Sky", "color", "#050a24"),
-        Param("rate", "Strikes", "float", 0.4, min=0.05, max=3.0, step=0.05, unit="per s"),
+        Param("rate", "Strikes", "float", 0.3, min=0.05, max=2.0, step=0.05, unit="per s"),
         Param("reach", "Reach", "int", 2, min=0, max=4, step=1, unit="ports",
               description="How many neighboring ports a flash spreads to."),
     )
@@ -369,20 +432,18 @@ class Lightning(Effect):
 
     @staticmethod
     def _flash(age: float) -> float:
-        if age < 0.05:
-            return 1.0
-        if age < 0.10:
-            return 0.15
-        if age < 0.16:
-            return 1.0
-        return math.exp(-(age - 0.16) * 10)
+        """Two rounded flashes followed by a soft afterglow."""
+        if age < 0:
+            return 0.0
+        return max(soft(age - 0.5, 0.5), 0.8 * soft(age - 1.5, 0.65), 0.2 * soft(age - 1.8, 1.2))
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        dt = 0.0 if self._last is None else min(0.5, max(0.0, t - self._last))
+        palette = self.colors(t)
+        dt = 0.0 if self._last is None else max(0.0, t - self._last)
         self._last = t
-        if self.rng.random() < self.p["rate"] * dt:
+        if self.rng.random() < -math.expm1(-self.p["rate"] * dt):
             self._strikes.append((t, self.rng.randrange(self.num_ports)))
-        self._strikes = [(start, port) for start, port in self._strikes if t - start < 1.5]
+        self._strikes = [(start, port) for start, port in self._strikes if t - start < 3.0]
 
         colors = []
         for i in range(self.num_ports):
@@ -391,7 +452,7 @@ class Lightning(Effect):
                 distance = abs(i - port)
                 if distance <= self.p["reach"]:
                     light = max(light, self._flash(t - start) * (1.0 - distance / (self.p["reach"] + 1)))
-            colors.append(self.p["sky"].lerp(self.p["color"], light))
+            colors.append(palette["sky"].lerp(palette["color"], light))
         return colors
 
 
@@ -428,47 +489,60 @@ class Daylight(Effect):
         hour = now.hour + now.minute / 60 + now.second / 3600
         stops = DAYLIGHT_PALETTES[self.p["palette"]]
         color = gradient_at(tuple((h / 24, c) for h, c in stops), hour / 24)
-        night = hour < 6 or hour >= 22
-        if night:
-            color = color.scaled(self.p["night_brightness"])
+        daylight = ease((hour - 6) / 2) * (1 - ease((hour - 20) / 2))
+        color = color.scaled(self.p["night_brightness"] + (1 - self.p["night_brightness"]) * daylight)
         return [color] * self.num_ports
 
 
 class TrafficMeter(Effect):
     id = "traffic"
-    name = "Traffic Meter"
+    name = "Live Traffic"
     category = "data"
-    description = "Each port moves from the idle color to the busy color as its throughput rises."
+    description = "Colors follow each device’s traffic, scaled automatically to its link speed."
     params = (
         Param("idle_color", "Idle", "color", "#0a3cff"),
         Param("busy_color", "Busy", "color", "#ff3b30"),
-        Param("max_mbps", "Full scale", "float", 1000.0, min=1, max=10000, step=1, unit="Mbps"),
-        Param("scale", "Scale", "choice", "log", choices=("log", "linear")),
         Param("smoothing", "Smoothing", "float", 0.6, min=0.0, max=0.95, step=0.05),
         Param("offline_color", "No link", "color", "#000000"),
+        Param("custom_uplink", "Customize uplink", "bool", False),
+        Param("uplink_color", "Uplink", "color", "#ffffff"),
     )
+
+    def update(self, params: dict, *, reset: bool = False) -> None:
+        # Older scenes stored a manual scale. Link speed now supplies it per port.
+        params = dict(params)
+        if "max_mbps" in params:
+            Param("max_mbps", "", "float", 1000.0).coerce(params.pop("max_mbps"))
+        if "scale" in params:
+            Param("scale", "", "choice", "log", choices=("log", "linear")).coerce(params.pop("scale"))
+        super().update(params, reset=reset)
 
     def setup(self) -> None:
         self._level = [0.0] * self.num_ports
+        self._last: float | None = None
 
     def render(self, t: float, ctx: RenderContext) -> list[Color]:
-        full_scale = self.p["max_mbps"] * 1e6
-        smoothing = self.p["smoothing"]
+        palette = self.colors(t)
+        dt = 0.25 if self._last is None else max(0.0, t - self._last)
+        self._last = t
+        smoothing = self.p["smoothing"] ** (dt * 4)
         colors = []
         for i in range(self.num_ports):
             link = ctx.links.get(i + 1)
             if link is None or not link.link_up:
                 self._level[i] = 0.0
-                colors.append(self.p["offline_color"])
+                colors.append(palette["offline_color"])
                 continue
-            bps = ctx.traffic_bps.get(i + 1, 0.0)
-            if self.p["scale"] == "log":
-                load = 0.0 if bps <= 1e3 else math.log10(bps / 1e3) / math.log10(max(full_scale / 1e3, 10.0))
-            else:
-                load = bps / full_scale
+            if link.uplink and self.p["custom_uplink"]:
+                self._level[i] = 0.0
+                colors.append(palette["uplink_color"])
+                continue
+            bps = 0.0 if link.uplink else ctx.traffic_bps.get(i + 1, 0.0)
+            full_scale = (link.speed_mbps if link.speed_mbps > 0 else 1000) * 1e6
+            load = 0.0 if bps <= 1e3 else math.log10(bps / 1e3) / math.log10(max(full_scale / 1e3, 10.0))
             load = min(1.0, max(0.0, load))
             self._level[i] = smoothing * self._level[i] + (1 - smoothing) * load
-            colors.append(self.p["idle_color"].lerp(self.p["busy_color"], self._level[i]))
+            colors.append(palette["idle_color"].lerp(palette["busy_color"], self._level[i]))
         return colors
 
 

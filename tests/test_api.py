@@ -5,10 +5,12 @@ from fastapi.testclient import TestClient
 
 from etherlighting_evolved.api import create_app
 
+LOCAL = "http://127.0.0.1:8787"
+
 
 @pytest.fixture
 def client(config):
-    with TestClient(create_app(config, autoconnect=False)) as c:
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
         yield c
 
 
@@ -35,7 +37,7 @@ def test_about_says_unofficial(client):
 
 
 def test_catalogs_work_before_login(client):
-    assert len(client.get("/api/effects").json()) == 16
+    assert len(client.get("/api/effects").json()) == 33
     fields = client.get("/api/rules/fields").json()
     assert {"link", "poe", "anomaly", "time", "weekday"} <= {f["key"] for f in fields["fields"]}
     assert any(t["name"] == "PoE+++" for t in client.get("/api/rules/templates").json())
@@ -86,7 +88,8 @@ def test_set_any_color_on_any_port(demo):
     assert r.json()["overrides"]["5"] == {"color": "#ff00ff", "brightness": 60}
     assert eventually(lambda: demo.get("/api/ports").json()[4]["source"]["kind"] == "override")
     port = demo.get("/api/ports").json()[4]
-    assert port["color"] == "#ff00ff" and port["output"]["level"] == 60
+    assert port["color"] == "#ff00ff"
+    assert port["output"] == {"color": "#530053", "level": 100}  # brightness is encoded in RGB
     assert demo.put("/api/ports/9", json={"color": "red"}).status_code == 400
     assert demo.put("/api/ports/1", json={"color": "not a color"}).status_code == 400
     demo.delete("/api/ports/5")
@@ -102,7 +105,11 @@ def test_effects_and_zones(demo):
     ]}).json()
     assert [z["id"] for z in state["zones"]] == ["desk", "rack"]
     r = demo.patch("/api/zones/rack/params", json={"params": {"speed": 12}})
-    assert r.json()["zones"][1]["effect"]["params"]["speed"] == 12
+    assert r.status_code == 200
+    assert r.json()["zones"][1]["effect"]["params"]["speed"] == 12.0
+    r = demo.patch("/api/zones/rack/params", json={"params": {"speed": -1}})
+    assert r.status_code == 200
+    assert r.json()["zones"][1]["effect"]["params"]["speed"] == 0.25
     assert demo.put("/api/zones/attic/effect", json={"id": "static"}).status_code == 404
     assert demo.put("/api/zones/desk/effect", json={"id": "disco"}).status_code == 400
 
@@ -150,11 +157,11 @@ def test_schedules(demo):
 
 
 def test_scene_survives_a_restart(config):
-    with TestClient(create_app(config, autoconnect=False)) as c:
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
         c.post("/api/session/login", json={"host": "demo"})
         c.put("/api/effect", json={"id": "breathing"})
         c.put("/api/ports/2", json={"color": "#123456"})
-    with TestClient(create_app(config, autoconnect=False)) as c:
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
         c.post("/api/session/login", json={"host": "demo"})
         state = c.get("/api/state").json()
         assert state["zones"][0]["effect"]["id"] == "breathing"
@@ -162,7 +169,7 @@ def test_scene_survives_a_restart(config):
 
 
 def test_websocket(demo):
-    with demo.websocket_connect("/api/ws") as ws:
+    with demo.websocket_connect("/api/ws", headers={"Host": "127.0.0.1:8787"}) as ws:
         kinds = {ws.receive_json()["type"] for _ in range(3)}
         assert kinds == {"session", "state", "frame"}
         ws.send_json({"type": "set_port", "port": 3, "color": "#00ff00", "id": 7})
@@ -186,6 +193,6 @@ def test_websocket(demo):
 
 def test_api_token(config):
     config.api.token = "s3cret"
-    with TestClient(create_app(config, autoconnect=False)) as c:
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
         assert c.get("/api/health").status_code == 401
         assert c.get("/api/health", headers={"Authorization": "Bearer s3cret"}).status_code == 200

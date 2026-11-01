@@ -40,6 +40,7 @@ class PortLink:
     stp_state: str | None = None
     anomaly: int = 0
     lag: str | None = None
+    counters_valid: bool = True
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -70,6 +71,7 @@ def parse_port_show(text: str) -> dict[int, PortLink]:
         counters = []
         while rest and rest[0].isdigit() and len(counters) < 4:
             counters.append(int(rest.pop(0)))
+        counters_valid = len(counters) == 4
         counters += [0] * (4 - len(counters))
 
         stp = next((tok for tok in rest if tok in STP_STATES), None)
@@ -91,6 +93,7 @@ def parse_port_show(text: str) -> dict[int, PortLink]:
             stp_state=stp,
             anomaly=anomaly,
             lag=lag,
+            counters_valid=counters_valid,
         )
     return ports
 

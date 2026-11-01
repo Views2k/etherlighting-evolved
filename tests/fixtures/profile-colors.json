@@ -1,0 +1,1258 @@
+[
+  {
+    "name": "SFP rule replaces master 0",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "effect",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 0,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        204.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "SFP rule replaces master 20",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "effect",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        204.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "SFP follows source override before replacing its brightness",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "effect",
+            "rate": 1.0,
+            "brightness": 40
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {
+        "1": {
+          "color": "#00ff00",
+          "brightness": 80
+        }
+      },
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "ethernet",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        204.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        102.0,
+        0.0
+      ],
+      "10": [
+        0.0,
+        204.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "SFP solid rule retains per-light brightness",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "solid",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 50,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        102.0,
+        0.0,
+        0.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "Ungrouped copper starts dark",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        51.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "Ungrouped ports apply rules and inherited or explicit overrides",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "ungrouped",
+          "name": "Ungrouped rule",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            2,
+            3
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "solid",
+            "rate": 1.0,
+            "brightness": 60
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {
+        "3": {
+          "color": "#0000ff",
+          "brightness": null
+        },
+        "4": {
+          "color": "#ffffff",
+          "brightness": 30
+        }
+      },
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        153.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        153.0
+      ],
+      "4": [
+        76.5,
+        76.5,
+        76.5
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        51.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "Together uses shared light settings with independently targeted rules",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            10
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "effect",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 50,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "off",
+          "color": "#ffffff",
+          "brightness": 1,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "together",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        25.5
+      ],
+      "10": [
+        0.0,
+        0.0,
+        102.0
+      ]
+    }
+  },
+  {
+    "name": "Off SFP suppresses targeted rules",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "solid",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "off",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "Effect-only rule does not acquire unmanaged SFP",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": [
+            9
+          ],
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "effect",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "unmanaged",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        0.0,
+        51.0,
+        0.0
+      ],
+      "2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  {
+    "name": "All-copper rule does not acquire SFP",
+    "scene": {
+      "version": 2,
+      "zones": [
+        {
+          "id": "all",
+          "name": "Zone",
+          "ports": [
+            1
+          ],
+          "effect": {
+            "id": "static",
+            "name": "Static",
+            "params": {
+              "color": "#00ff00",
+              "random_color": false,
+              "brightness_color": 100.0,
+              "color_transition": 8.0
+            }
+          }
+        }
+      ],
+      "rules": [
+        {
+          "id": "sfp-level",
+          "name": "SFP level",
+          "enabled": true,
+          "match": "all",
+          "ports": null,
+          "conditions": [],
+          "look": {
+            "color": "#ff0000",
+            "style": "solid",
+            "rate": 1.0,
+            "brightness": 80
+          }
+        }
+      ],
+      "brightness": 20,
+      "overrides": {},
+      "sfp": {
+        "9": {
+          "mode": "color",
+          "color": "#0000ff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        },
+        "10": {
+          "mode": "unmanaged",
+          "color": "#ffffff",
+          "brightness": 100,
+          "effect": "steady",
+          "period": 6.0,
+          "secondary_color": "#006fff",
+          "color_brightness": 100,
+          "secondary_brightness": 100
+        }
+      },
+      "sfp_sync": {
+        "mode": "independent",
+        "source_port": 1
+      }
+    },
+    "state": {
+      "num_ports": 8
+    },
+    "colors": {
+      "1": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "2": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "3": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "4": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "5": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "6": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "7": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "8": [
+        204.0,
+        0.0,
+        0.0
+      ],
+      "9": [
+        0.0,
+        0.0,
+        51.0
+      ],
+      "10": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+]

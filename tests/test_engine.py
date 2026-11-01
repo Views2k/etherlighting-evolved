@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -7,13 +7,16 @@ from etherlighting_evolved.color import Color
 from etherlighting_evolved.engine import Engine, NotFound, to_output
 from etherlighting_evolved.links import PortLink
 from etherlighting_evolved.poe import PoePort
-from etherlighting_evolved.switch import EtherlightSwitch
+from etherlighting_evolved.switch import EtherlightSwitch, PortOutput
 from etherlighting_evolved.transport import SimulatedTransport
 
 NOON = datetime(2026, 6, 3, 12, 0)
 
 
 def make_engine(**kw) -> Engine:
+    # Most tests check which color a port gets, so they turn off the brightness curve and crossfades.
+    kw.setdefault("gamma", 1.0)
+    kw.setdefault("transition", 0)
     engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)), **kw)
     engine.links = {p: PortLink(p, True, True, 10000, True) for p in range(1, 9)}
     return engine
@@ -45,8 +48,8 @@ def test_override_beats_rules_and_brightness():
     engine.set_override(1, "#00ff00", 80)
     colors, outputs = engine.compose(t=0, now=NOON)
     assert colors[0].to_hex() == "#00ff00"
-    assert outputs[0].level == 80
-    assert outputs[1].level == 50
+    assert outputs[0] == PortOutput(Color(0, 204, 0), 100)
+    assert outputs[1] == PortOutput(Color(128, 128, 128), 100)
 
 
 def test_zones_run_their_own_effects():
@@ -81,7 +84,7 @@ def test_poe_and_time_rules():
     colors, _ = engine.compose(t=0, now=NOON)
     assert colors[6].to_hex() == "#ff375f" and colors[0].to_hex() == "#ffffff"
     _, outputs = engine.compose(t=0, now=datetime(2026, 6, 3, 23, 0))
-    assert {o.level for o in outputs} == {10}
+    assert set(outputs) == {PortOutput(Color(26, 26, 26), 100)}
 
 
 def test_rule_editing():
@@ -101,6 +104,55 @@ def test_rule_editing():
         engine.delete_rule(rule.id)
 
 
+@pytest.mark.parametrize("ids", [("duplicate", "duplicate"), ("x" * 32 + "a", "x" * 32 + "b")])
+def test_rule_replacement_rejects_duplicate_normalized_ids_without_changing_scene(ids):
+    specs = [{"id": value, "name": name, "ports": [port]} for value, name, port in
+             zip(ids, ("First", "Second"), (1, 2), strict=True)]
+    with pytest.raises(ValueError, match="unique ID"):
+        make_engine(rules=specs)
+    engine = make_engine()
+    before, revision = engine.snapshot(), engine.revision
+    with pytest.raises(ValueError, match="unique ID"):
+        engine.set_rules(specs)
+    assert engine.snapshot() == before and engine.revision == revision
+    with pytest.raises(ValueError, match="unique ID"):
+        engine.apply_snapshot({**before, "brightness": 11, "rules": specs})
+    assert engine.snapshot() == before and engine.revision == revision
+
+
+def test_reorder_rejects_duplicate_ids_in_an_existing_invalid_list_without_replacing_rules():
+    engine = make_engine()
+    first, second = engine.rules
+    second.id = first.id
+    revision = engine.revision
+    with pytest.raises(ValueError, match="exactly once"):
+        engine.reorder_rules([first.id, first.id])
+    assert engine.rules == [first, second] and engine.rules[0] is first
+    assert engine.revision == revision
+
+
+def test_state_and_frames_report_host_clock_without_persisting_it(monkeypatch):
+    instant = datetime(2026, 10, 31, 23, 59, 58, tzinfo=timezone(timedelta(hours=-5), "Fixture local zone"))
+    class HostDatetime:
+        @staticmethod
+        def now():
+            return instant
+    monkeypatch.setattr("etherlighting_evolved.engine.datetime", HostDatetime)
+    engine = make_engine()
+    clock = {"local_iso": "2026-10-31T23:59:58-05:00", "zone_name": "Fixture local zone"}
+    # Keep the fixture independent of the operating system's own timezone.
+    class LocalDatetime(datetime):
+        def astimezone(self, tz=None):
+            return self if tz is None else super().astimezone(tz)
+    instant = LocalDatetime.fromisoformat(clock["local_iso"]).replace(tzinfo=instant.tzinfo)
+    assert engine.state()["schedule_clock"] == clock
+    assert engine.state_message()["state"]["schedule_clock"] == clock
+    assert engine.frame_message()["schedule_clock"] == clock
+    assert "schedule_clock" not in engine.snapshot()
+    instant += timedelta(seconds=3)
+    assert engine.frame_message()["schedule_clock"]["local_iso"] == "2026-11-01T00:00:01-05:00"
+
+
 def test_snapshot_round_trip():
     engine = make_engine(brightness=40)
     engine.set_zones([{"name": "All", "ports": list(range(1, 9)), "effect": {"id": "rainbow", "params": {"speed": 1}}}])
@@ -115,8 +167,20 @@ def test_snapshot_round_trip():
 def test_old_single_effect_scenes_still_load():
     engine = make_engine()
     engine.apply_snapshot({"effect": "static", "params": {"color": "#112233"}, "brightness": 30})
-    assert engine.zones[0].effect.params_json() == {"color": "#112233"}
+    assert engine.zones[0].effect.params_json() == {
+        "color": "#112233", "random_color": False, "color_transition": 8.0, "brightness_color": 100.0,
+    }
     assert engine.brightness == 30
+    for elapsed in (0, 8, 17):
+        colors, outputs = engine.compose(t=elapsed, now=NOON)
+        assert colors == [Color(17, 34, 51)] * 8
+        assert outputs == [PortOutput(Color(5, 10, 15), 100)] * 8
+
+    migrated = engine.snapshot()
+    restored = make_engine()
+    restored.apply_snapshot(migrated)
+    assert restored.snapshot() == migrated
+    assert restored.compose(t=17, now=NOON) == engine.compose(t=17, now=NOON)
 
 
 def test_a_bad_scene_changes_nothing():
@@ -129,10 +193,64 @@ def test_a_bad_scene_changes_nothing():
 
 
 def test_level_dimming_moves_brightness_into_the_hardware_level():
-    out = to_output(Color(128, 0, 0), 100, "level")
+    out = to_output(Color(128, 0, 0), 100, "level", gamma=1.0)
     assert out.color == Color(255, 0, 0) and out.level == 50
-    assert to_output(Color(128, 0, 0), 100, "rgb").color == Color(128, 0, 0)
-    assert to_output(Color(255, 255, 255), 0).level == 0
+    assert to_output(Color(128, 0, 0), 100, "rgb", gamma=1.0) == PortOutput(Color(128, 0, 0), 100)
+    assert to_output(Color(255, 255, 255), 0) == PortOutput(Color(0, 0, 0), 100)
+    assert to_output(Color(255, 255, 255), 0).preview().is_off
+
+
+def test_gamma_encodes_effect_amplitude_and_global_brightness_in_rgb():
+    white = Color(255, 255, 255)
+    assert to_output(white, 50) == PortOutput(Color(55, 55, 55), 100)  # 0.5 ** 2.2
+    assert to_output(Color(128, 128, 128), 100) == PortOutput(Color(56, 56, 56), 100)
+    assert to_output(white, 100) == PortOutput(white, 100)
+    assert to_output(Color(128, 64, 0), 100) == PortOutput(Color(56, 12, 0), 100)
+    # Explicit legacy conversion stays available, but is no longer Engine's output path.
+    assert to_output(Color(128, 128, 128), 100, "level") == PortOutput(white, 22)
+
+
+def test_a_new_effect_crossfades_from_the_old_one():
+    engine = make_engine(rules=[], transition=1.0)
+    engine.compose(t=0, now=NOON, clock=100.0)
+    engine.set_effect("static", {"color": "#ff0000"})
+    start, _ = engine.compose(t=0, now=NOON, clock=100.0)
+    middle, _ = engine.compose(t=0, now=NOON, clock=100.5)
+    end, _ = engine.compose(t=0, now=NOON, clock=101.01)
+    assert start[0] == Color(255, 255, 255)
+    assert middle[0] == Color(255, 128, 128)
+    assert end[0] == Color(255, 0, 0)
+
+
+def test_a_port_going_offline_fades_to_red():
+    engine = make_engine(transition=0.5)
+    engine.compose(t=0, now=NOON, clock=10.0)
+    engine.links[2] = PortLink(2, True, False, 0, False)
+    assert engine.compose(t=0, now=NOON, clock=10.0)[0][1] == Color(255, 255, 255)
+    assert engine.compose(t=0, now=NOON, clock=10.6)[0][1] == Color(255, 0, 0)
+
+
+def test_manual_colors_apply_at_once():
+    engine = make_engine(transition=2.0)
+    engine.compose(t=0, now=NOON, clock=5.0)
+    engine.set_override(1, "#00ff00")
+    assert engine.compose(t=0, now=NOON, clock=5.0)[0][0] == Color(0, 255, 0)
+
+
+def test_busy_switch_slows_engine_down_and_calm_switch_speeds_it_up(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
+    engine = make_engine()
+    engine._adjust_throttle(0.10)
+    assert engine.command_budget == 15
+    for _ in range(10):
+        clock[0] += 1
+        engine._adjust_throttle(0.05)
+    assert engine.command_budget == 5
+    for _ in range(10):
+        clock[0] += 1
+        engine._adjust_throttle(0.9)
+    assert engine.command_budget == 30  # shell recovery never exceeds its own ceiling
 
 
 async def wait_for(condition, timeout=2.0):
@@ -162,5 +280,37 @@ async def test_engine_drives_the_simulator():
         writes = sim.command_count
         await asyncio.sleep(0.2)
         assert sim.command_count == writes
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
+async def test_the_command_budget_holds_while_an_effect_runs():
+    sim = SimulatedTransport(latency=0)
+    engine = Engine(EtherlightSwitch(sim), fps=30, max_commands=20, effect="rainbow", effect_params={"speed": 2})
+    await engine.start()
+    try:
+        await asyncio.sleep(0.3)
+        before, started = sim.command_count, asyncio.get_running_loop().time()
+        await asyncio.sleep(2.0)
+        rate = (sim.command_count - before) / (asyncio.get_running_loop().time() - started)
+        assert 5 < rate <= 24  # 20 per second, plus one frame of slack
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
+async def test_a_busy_switch_gets_fewer_commands():
+    sim = SimulatedTransport(latency=0)
+    sim.base_cpu = 0.9
+    engine = Engine(EtherlightSwitch(sim), link_poll=0.5, max_commands=30, effect="rainbow")
+    await engine.start()
+    try:
+        for _ in range(40):
+            if engine.throttle < 1.0:
+                break
+            await asyncio.sleep(0.1)
+        assert engine.throttle < 1.0
+        assert engine.state()["stats"]["switch_cpu_idle"] < 0.3
     finally:
         await engine.stop()

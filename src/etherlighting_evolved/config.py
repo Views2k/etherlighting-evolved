@@ -11,33 +11,38 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
+from .guard import LOOPBACK_BINDS
+
 EXAMPLE_CONFIG = """\
 # Etherlighting Evolved (EE) - optional advanced settings. Everything here has a sensible default;
 # day-to-day you just log in from the UI with the switch IP, SSH username and password.
 
 [engine]
-fps = 10                    # animation frames per second (1-30); measure your switch with `eectl benchmark`
+fps = 25                    # highest animation frame rate (1-30); max_commands usually limits it first
+max_commands = 200          # requested direct-output ceiling; starts at 30 and adapts to fresh device feedback
+transition = 0.6            # seconds a port takes to fade to a new effect or rule color (0 = switch at once)
+gamma = 2.2                 # brightness curve of the LEDs (1 = off); higher makes dim colors darker
 keepalive = 1.5             # seconds; every port is re-sent at least this often (the switch re-applies ~2 s)
-link_poll = 1.0             # seconds between port status reads (link, PoE, traffic)
+link_poll = 1.0             # seconds between port status reads (link, PoE, traffic, switch CPU)
 brightness = 100            # 0-100
-dimming = "level"           # "level" (hardware dimming, smoother fades) or "rgb"
+dimming = "rgb"             # RGB carries effect fades and all brightness controls
 effect = "static"           # what a fresh install shows under its rules; list effects with `eectl effects`
 
 [engine.effect_params]      # optional starting parameters for that effect
 color = "#ffffff"
 
 [switch]
-num_ports = 8               # Etherlighting ports (USW-Pro-XG-8-PoE: 8; its SFP+ ports have no LEDs)
+num_ports = 8               # Simulator/fallback count; known real switches use their detected layout
 # Headless auto-connect without the login screen (optional; prefer env vars EE_HOST / EE_USERNAME / EE_PASSWORD):
 # host = "192.168.1.2"
 # username = "admin"
 # key_file = "~/.ssh/id_ed25519"
 
 [api]
-host = "127.0.0.1"          # "0.0.0.0" makes EE reachable from other devices on your network (set a token!)
+host = "127.0.0.1"          # network access requires an API token of at least 32 characters
 port = 8787
-token = ""                  # optional bearer token required by the API; or set EE_API_TOKEN
-cors_origins = ["*"]
+token = ""                  # bearer token; required for network access; or set EE_API_TOKEN
+cors_origins = []           # other sites allowed to use the API, e.g. a UI dev server: ["http://localhost:5173"]
 static_dir = "web"          # the web UI build (index.html) served at /
 """
 
@@ -60,13 +65,20 @@ class SwitchConfig:
 
 @dataclass
 class EngineConfig:
-    fps: float = 10.0
+    fps: float = 25.0
+    max_commands: float = 200.0
+    transition: float = 0.6
+    gamma: float = 2.2
     keepalive: float = 1.5
     link_poll: float = 1.0
     brightness: int = 100
-    dimming: str = "level"
+    dimming: str = "rgb"
     effect: str = "static"
     effect_params: dict = field(default_factory=lambda: {"color": "#ffffff"})
+
+    def __post_init__(self) -> None:
+        if self.dimming == "level":
+            self.dimming = "rgb"
 
 
 @dataclass
@@ -74,8 +86,17 @@ class ApiConfig:
     host: str = "127.0.0.1"
     port: int = 8787
     token: str = ""
-    cors_origins: list = field(default_factory=lambda: ["*"])
+    cors_origins: list = field(default_factory=list)
     static_dir: str = "web"
+
+    def validate(self) -> None:
+        if not isinstance(self.host, str) or not self.host or self.host != self.host.strip():
+            raise ValueError("API host must be a nonempty address without surrounding whitespace")
+        if not isinstance(self.token, str) or any(not 33 <= ord(c) <= 126 for c in self.token):
+            raise ValueError("API token must contain only printable ASCII characters without spaces")
+        if self.host not in LOOPBACK_BINDS and len(self.token) < 32:
+            raise ValueError("Network access requires an API token of at least 32 characters; "
+                             "set EE_API_TOKEN or api.token")
 
 
 @dataclass

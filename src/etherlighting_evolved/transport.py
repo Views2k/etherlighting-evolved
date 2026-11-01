@@ -12,12 +12,19 @@ import contextlib
 import json
 import random
 import re
+import secrets
 import time
 from abc import ABC, abstractmethod
+
+SSH_CLOSE_TIMEOUT = 3.0
 
 
 class TransportError(RuntimeError):
     """The switch could not be reached or stopped answering."""
+
+
+class NativeOutputUncertain(TransportError):
+    """A native output transition needs a fresh connection before output can resume."""
 
 
 class AuthenticationError(TransportError):
@@ -46,13 +53,20 @@ class HostKeyStore:
     def _load(self) -> dict[str, str]:
         try:
             data = json.loads(self.path.read_text("utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TransportError("Could not read the saved SSH host keys") from exc
+        if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                             for k, v in data.items()):
+            raise TransportError("The saved SSH host keys have an invalid format")
+        return data
 
     def _save(self, data: dict[str, str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
+        temporary.replace(self.path)
 
     @staticmethod
     def _key(host: str, port: int) -> str:
@@ -86,6 +100,51 @@ class HostKeyStore:
 
 
 class Transport(ABC):
+    def revoke_lighting_profile(self) -> None:
+        return None
+
+    def configure_lighting_profile(self, profile) -> None:
+        profile.require_output()
+
+    @property
+    def direct_rgb(self) -> bool:
+        return False
+
+    async def prepare_rgb(self) -> bool:
+        """Negotiate an optional color channel after the switch schema is verified."""
+        return False
+
+    async def write_port_rgb(self, port: int, rgb: str, level: int) -> None:
+        raise TransportError("direct lighting is unavailable")
+
+    @property
+    def precise_rgb_supported(self) -> bool:
+        return False
+
+    @property
+    def lighting_generation(self) -> object | None:
+        return None
+
+    async def write_precise_rgb(self, port: int, channels: tuple[int, int, int]) -> None:
+        raise TransportError("precise lighting is unavailable")
+
+    async def write_sfp_precise(self, port: int, channels: tuple[int, int, int]) -> None:
+        raise TransportError("precise SFP lighting is unavailable")
+
+    @property
+    def behavior_supported(self) -> bool:
+        return False
+
+    @property
+    def sfp_mode_supported(self) -> bool:
+        return False
+
+    async def write_behavior(self, behavior: str) -> None:
+        raise TransportError("native behavior is unavailable")
+
+    async def write_sfp_mode(self, port: int, direct: bool) -> None:
+        raise TransportError("scoped SFP mode is unavailable")
+
     @property
     @abstractmethod
     def connected(self) -> bool: ...
@@ -99,6 +158,10 @@ class Transport(ABC):
     @abstractmethod
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
         """Run shell command(s) on the switch and return their combined output."""
+
+    async def read_health(self) -> str:
+        from .health import HEALTH_COMMAND, HEALTH_TIMEOUT
+        return await self.run(HEALTH_COMMAND, channel="health", timeout=HEALTH_TIMEOUT)
 
 
 # SSH
@@ -138,20 +201,187 @@ class SSHTransport(Transport):
         self.host_key_pinned_now = False
         self._conn = None
         self._channels: dict[str, _Channel] = {}
+        self._channel_lock = asyncio.Lock()
+        self._rgb_lock = asyncio.Lock()
+        self._health_lock = asyncio.Lock()
+        self._rgb_client = None
+        self._rgb_checked = False
+        self._rgb_failed = False
         self._seq = 0
+        self._close_task: asyncio.Task | None = None
+        self._cleanup = None
+        self._retired_processes: list[tuple[object, object]] = []
+        self._opening: dict[int, int] = {}
+        self._opening_done: dict[int, asyncio.Event] = {}
+        self._connecting = False
+        self._connect_done = asyncio.Event()
+        self._connect_done.set()
+        self._late_connections: list[object] = []
+        self._process_tags: dict[int, str] = {}
+
+    def _opening_started(self, connection) -> None:
+        key = id(connection)
+        self._opening[key] = self._opening.get(key, 0) + 1
+        self._opening_done.setdefault(key, asyncio.Event()).clear()
+
+    def _opening_finished(self, connection) -> None:
+        key = id(connection)
+        self._opening[key] -= 1
+        if not self._opening[key]:
+            self._opening_done[key].set()
+
+    def _retire_process(self, connection, process) -> None:
+        self._retired_processes.append((connection, process))
+        with contextlib.suppress(Exception):
+            process.stdin.write_eof()
 
     @property
     def connected(self) -> bool:
         return self._conn is not None
 
+    @property
+    def direct_rgb(self) -> bool:
+        # A failed direct write cannot silently fall back and replay through the shell.
+        return self._rgb_client is not None or self._rgb_failed
+
+    async def prepare_rgb(self) -> bool:
+        from .ubus import EtherlightUbus
+
+        async with self._rgb_lock:
+            if self._rgb_client is not None:
+                return True
+            if self._rgb_checked and not self._rgb_failed:
+                return False
+            conn = self._conn
+            if conn is None:
+                raise TransportError("not connected")
+            try:
+                client = await EtherlightUbus.open(conn)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._conn is not conn:
+                    raise TransportError("the SSH session closed while opening lighting") from exc
+                self._rgb_checked = True
+                if self._rgb_failed:
+                    raise TransportError("the lighting socket could not be restored") from exc
+                return False
+            if self._conn is not conn:
+                await client.close()
+                raise TransportError("the SSH session closed while opening lighting")
+            self._rgb_client = client
+            self._rgb_checked, self._rgb_failed = True, False
+            return True
+
+    @property
+    def precise_rgb_supported(self) -> bool:
+        return bool(self._rgb_client is not None and self._rgb_client.precise_rgb_supported)
+
+    def configure_lighting_profile(self, profile) -> None:
+        profile.require_output()
+        if self._rgb_client is None:
+            raise TransportError("The lighting connection changed before profile binding")
+        self._rgb_client.bind_profile(profile)
+
+    def revoke_lighting_profile(self) -> None:
+        if self._rgb_client is not None:
+            self._rgb_client.revoke_profile()
+
+    @property
+    def lighting_generation(self) -> object | None:
+        return self._rgb_client
+
+    @property
+    def behavior_supported(self) -> bool:
+        return bool(self._rgb_client is not None and self._rgb_client.behavior_supported)
+
+    @property
+    def sfp_mode_supported(self) -> bool:
+        return bool(self._rgb_client is not None and self._rgb_client.sfp_mode_supported)
+
+    async def write_port_rgb(self, port: int, rgb: str, level: int) -> None:
+        await self._write_color(port, rgb=rgb, level=level)
+
+    async def write_precise_rgb(self, port: int, channels: tuple[int, int, int]) -> None:
+        await self._write_color(port, channels=channels)
+
+    async def write_sfp_precise(self, port: int, channels: tuple[int, int, int]) -> None:
+        await self._write_color(port, sfp_channels=channels)
+
+    async def write_behavior(self, behavior: str) -> None:
+        await self._write_color(0, behavior=behavior)
+
+    async def write_sfp_mode(self, port: int, direct: bool) -> None:
+        await self._write_color(port, sfp_direct=direct)
+
+    async def _write_color(self, port: int, *, rgb: str | None = None, level: int = 100,
+                           channels: tuple[int, int, int] | None = None, behavior: str | None = None,
+                           sfp_direct: bool | None = None,
+                           sfp_channels: tuple[int, int, int] | None = None) -> None:
+        client = self._rgb_client
+        if client is None:
+            raise TransportError("the lighting socket needs to reconnect")
+        try:
+            if behavior is not None:
+                await client.set_behavior(behavior)
+            elif sfp_direct is not None:
+                await client.set_sfp_mode(port, sfp_direct)
+            elif sfp_channels is not None:
+                await client.set_sfp_precise_port(port, sfp_channels)
+            elif channels is None:
+                await client.set_port(port, rgb, level)
+            else:
+                await client.set_precise_port(port, channels)
+        except BaseException as exc:
+            if self._rgb_client is client:
+                self._rgb_client = None
+                self._rgb_failed = True
+            with contextlib.suppress(Exception):
+                await client.close()
+            if isinstance(exc, (asyncio.CancelledError, TransportError, ValueError)):
+                raise
+            if not isinstance(exc, Exception):
+                raise
+            raise TransportError("the lighting socket stopped answering") from exc
+
     async def connect(self) -> None:
+        if (self._cleanup is not None or self._late_connections
+                or self._close_task is not None and not self._close_task.done()):
+            raise TransportError("the previous SSH connection has not confirmed cleanup")
+        if self._connecting:
+            raise TransportError("an SSH connection is already opening")
+        self._connecting = True
+        self._connect_done.clear()
+        try:
+            await self._connect()
+        finally:
+            self._connecting = False
+            self._connect_done.set()
+
+    async def _connect(self) -> None:
         try:
             import asyncssh
         except ImportError as exc:  # pragma: no cover
             raise TransportError("asyncssh is not installed: pip install asyncssh") from exc
-        # Host keys are checked below against our own trust-on-first-use store instead of ~/.ssh/known_hosts,
-        # so a first login from the UI never stalls on an interactive "trust this host?" prompt.
-        kwargs: dict = {"host": self.host, "port": self.port, "known_hosts": None}
+        transport = self
+        mismatch = None
+
+        class PinnedHostClient(asyncssh.SSHClient):
+            def validate_host_public_key(self, host, addr, port, key):
+                nonlocal mismatch
+                fingerprint = key.get_fingerprint("sha256")
+                pinned = transport.host_keys.get(transport.host, transport.port) if transport.host_keys else None
+                if pinned is not None and pinned != fingerprint:
+                    mismatch = HostKeyMismatchError(
+                        "The switch's SSH host key changed. Verify the device before forgetting its saved key."
+                    )
+                    return False
+                return True
+
+        # An empty trusted-key set enables the validation callback during the handshake, before credentials.
+        # A new key is saved only after successful authentication.
+        kwargs: dict = {"host": self.host, "port": self.port, "known_hosts": ([], [], []),
+                        "client_factory": PinnedHostClient, "config": None}
         if self.username:
             kwargs["username"] = self.username
         if self.password:
@@ -164,6 +394,8 @@ class SSHTransport(Transport):
             kwargs["agent_path"] = None
         try:
             conn = await asyncio.wait_for(asyncssh.connect(**kwargs), self.connect_timeout)
+        except asyncssh.HostKeyNotVerifiable as exc:
+            raise mismatch or HostKeyMismatchError("The switch's SSH host key could not be verified") from exc
         except asyncssh.PermissionDenied as exc:
             raise AuthenticationError("SSH login failed: wrong username or password") from exc
         except (TimeoutError, OSError) as exc:
@@ -171,6 +403,9 @@ class SSHTransport(Transport):
             raise UnreachableError(f"Can't reach {self.host}:{self.port} over SSH ({reason})") from exc
         except Exception as exc:
             raise TransportError(f"SSH connection to {self.host} failed: {exc}") from exc
+        if self._cleanup is not None:
+            self._late_connections.append(conn)
+            raise TransportError("the SSH session closed while connecting")
         try:
             key = conn.get_server_host_key()
             self.host_key_fingerprint = key.get_fingerprint("sha256") if key else None
@@ -178,61 +413,248 @@ class SSHTransport(Transport):
                 self.host_key_pinned_now = self.host_keys.verify_or_pin(self.host, self.port, self.host_key_fingerprint)
         except Exception:
             conn.close()
+            try:
+                await asyncio.wait_for(conn.wait_closed(), SSH_CLOSE_TIMEOUT)
+            except asyncio.CancelledError:
+                self._late_connections.append(conn)
+                raise
+            except Exception:
+                self._late_connections.append(conn)
             raise
         self._conn = conn
+        self._rgb_checked = self._rgb_failed = False
 
-    async def _channel(self, name: str) -> _Channel:
-        channel = self._channels.get(name)
-        if channel is None:
-            import asyncssh
+    async def _channel(self, name: str, *, connection=None) -> _Channel:
+        async with self._channel_lock:
+            conn = self._conn if connection is None else connection
+            if conn is None or self._conn is not conn:
+                raise TransportError("the SSH session closed before opening a channel")
+            channel = self._channels.get(name)
+            if channel is None:
+                import asyncssh
 
-            process = await self._conn.create_process("sh", stderr=asyncssh.STDOUT)
-            channel = _Channel(process)
-            self._channels[name] = channel
-        return channel
+                self._opening_started(conn)
+                try:
+                    tag = 'ee_' + secrets.token_hex(16)
+                    process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
+                    self._process_tags[id(process)] = tag
+                    if self._conn is not conn:
+                        self._retire_process(conn, process)
+                        raise TransportError("the SSH session closed while opening a channel")
+                    channel = _Channel(process)
+                    self._channels[name] = channel
+                finally:
+                    self._opening_finished(conn)
+            return channel
 
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
-        if self._conn is None:
+        conn = self._conn
+        if conn is None:
             raise TransportError("not connected")
         try:
-            ch = await self._channel(channel)
+            ch = await asyncio.wait_for(self._channel(channel, connection=conn), timeout)
         except Exception as exc:
-            await self.close()
+            await self._close_failed_connection(conn)
             raise TransportError(f"could not open a shell on the switch: {exc}") from exc
         async with ch.lock:
             self._seq += 1
             marker = f"__EE_DONE_{self._seq}__"
             try:
-                ch.process.stdin.write(f"{command}\necho {marker}\n")
-                lines: list[str] = []
-                while True:
-                    line = await asyncio.wait_for(ch.process.stdout.readline(), timeout)
-                    if line == "":
-                        raise TransportError("the switch closed the shell")
-                    if line.strip() == marker:
-                        return "".join(lines)
-                    lines.append(line)
+                async with asyncio.timeout(timeout):
+                    if self._conn is not conn:
+                        raise TransportError("the SSH session closed before sending a command")
+                    ch.process.stdin.write(f"{command}\necho {marker}\n")
+                    lines: list[str] = []
+                    size = 0
+                    while True:
+                        line = await ch.process.stdout.readline()
+                        if line == "":
+                            raise TransportError("the switch closed the shell")
+                        if line.strip() == marker:
+                            return "".join(lines)
+                        size += len(line)
+                        if size > 262144:
+                            raise TransportError("the switch returned an oversized response")
+                        lines.append(line)
+            except asyncio.CancelledError:
+                await self._close_failed_connection(conn)
+                raise
             except TransportError:
-                await self.close()
+                await self._close_failed_connection(conn)
                 raise
             except TimeoutError as exc:
-                await self.close()
+                await self._close_failed_connection(conn)
                 raise TransportError(f"the switch did not answer within {timeout:g}s") from exc
             except Exception as exc:
-                await self.close()
+                await self._close_failed_connection(conn)
                 raise TransportError(f"SSH error: {exc}") from exc
 
+    async def _close_failed_connection(self, connection) -> None:
+        if self._conn is connection or self._cleanup is not None and self._cleanup["connection"] is connection:
+            await self.close()
+        else:
+            connection.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(connection.wait_closed(), 3)
+
+    async def read_health(self) -> str:
+        """Run only the fixed health probe; a failed probe closes its shell, not LED output."""
+        from .health import HEALTH_COMMAND, HEALTH_TIMEOUT, MAX_HEALTH_RESPONSE
+        conn = self._conn
+        if conn is None:
+            raise TransportError("health is unavailable while disconnected")
+        channel = None
+        try:
+            async with asyncio.timeout(HEALTH_TIMEOUT):
+                async with self._health_lock:
+                    if self._conn is not conn:
+                        raise TransportError("the connection changed before the health probe")
+                    channel = self._channels.get("health")
+                    if channel is None:
+                        import asyncssh
+                        self._opening_started(conn)
+                        try:
+                            tag = 'ee_' + secrets.token_hex(16)
+                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
+                            self._process_tags[id(process)] = tag
+                            if self._conn is not conn:
+                                self._retire_process(conn, process)
+                                raise TransportError("the connection changed while opening the health probe")
+                            channel = _Channel(process)
+                            self._channels["health"] = channel
+                        finally:
+                            self._opening_finished(conn)
+                    self._seq += 1
+                    marker = f"__EE_HEALTH_DONE_{self._seq}__"
+                    channel.process.stdin.write(f"{HEALTH_COMMAND}\necho {marker}\n")
+                    lines, size = [], 0
+                    while True:
+                        line = await channel.process.stdout.readline()
+                        if line == "":
+                            raise TransportError("the health shell closed")
+                        if line.strip() == marker:
+                            return "".join(lines)
+                        size += len(line)
+                        if size > MAX_HEALTH_RESPONSE:
+                            raise TransportError("the health response exceeded its limit")
+                        lines.append(line)
+        except (Exception, asyncio.CancelledError) as exc:
+            if channel is not None:
+                if self._channels.get("health") is channel:
+                    self._channels.pop("health")
+                self._retire_process(conn, channel.process)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise TransportError("switch health could not be read") from exc
+
     async def close(self) -> None:
-        for channel in list(self._channels.values()):
+        task = self._close_task
+        if task is None or task.done():
+            if self._cleanup is None:
+                conn, self._conn = self._conn, None
+                client, self._rgb_client = self._rgb_client, None
+                channels, self._channels = self._channels, {}
+                self._rgb_checked = self._rgb_failed = False
+                self._cleanup = {"connection": conn, "client": client,
+                                 "processes": [channel.process for channel in channels.values()],
+                                 "eof": set(), "exited": set(), "late_connections": []}
+            task = self._close_task = asyncio.create_task(self._finish_close(), name="ee-ssh-close")
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The caller cannot abandon cleanup after detaching its handles.
             with contextlib.suppress(Exception):
-                channel.process.stdin.write_eof()
-                channel.process.close()
-        self._channels.clear()
-        conn, self._conn = self._conn, None
-        if conn is not None:
-            conn.close()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(conn.wait_closed(), 3)
+                await task
+            raise
+        finally:
+            if task.done() and self._close_task is task:
+                self._close_task = None
+
+    async def _finish_close(self) -> None:
+        cleanup = self._cleanup
+        conn = cleanup["connection"]
+        try:
+            if self._connecting:
+                await asyncio.wait_for(self._connect_done.wait(), SSH_CLOSE_TIMEOUT)
+            cleanup["late_connections"].extend(self._late_connections)
+            self._late_connections = []
+            if cleanup["client"] is not None:
+                # The owning SSH connection's confirmed close also closes its direct streams.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(cleanup["client"].close(), SSH_CLOSE_TIMEOUT)
+                cleanup["client"] = None
+            if self._opening.get(id(conn), 0):
+                await asyncio.wait_for(self._opening_done[id(conn)].wait(), SSH_CLOSE_TIMEOUT)
+            retired = [(owner, process) for owner, process in self._retired_processes if owner is conn]
+            self._retired_processes = [
+                (owner, process) for owner, process in self._retired_processes if owner is not conn]
+            cleanup["processes"].extend(process for _, process in retired if process not in cleanup["processes"])
+
+            async def finish_process(process):
+                key = id(process)
+                if key in cleanup["exited"]:
+                    return
+                status = getattr(process, "exit_status", None)
+                exited = isinstance(status, int) and status >= 0 or getattr(process, "exit_signal", None) is not None
+                if key not in cleanup["eof"] and not exited:
+                    process.stdin.write_eof()
+                    cleanup["eof"].add(key)
+                await asyncio.wait_for(process.wait_closed(), SSH_CLOSE_TIMEOUT)
+                status = getattr(process, "exit_status", None)
+                signal = getattr(process, "exit_signal", None)
+                if not (isinstance(status, int) and status >= 0 or signal is not None):
+                    raise TransportError("a switch helper did not acknowledge exit")
+                cleanup["exited"].add(key)
+
+            results = await asyncio.gather(*(finish_process(process) for process in cleanup["processes"]),
+                                           return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in results):
+                raise TransportError("EE switch helper cleanup has not been confirmed; retry handoff")
+            if conn is not None:
+                conn.close()
+                await asyncio.wait_for(conn.wait_closed(), SSH_CLOSE_TIMEOUT)
+            for late in cleanup["late_connections"]:
+                late.close()
+                await asyncio.wait_for(late.wait_closed(), SSH_CLOSE_TIMEOUT)
+        except Exception as exc:
+            raise TransportError("EE SSH cleanup has not been confirmed; retry handoff") from exc
+        for process in cleanup['processes']:
+            self._process_tags.pop(id(process), None)
+        self._cleanup = None
+
+    async def recover_disconnected_helpers(self) -> None:
+        """Verify and stop only our tagged helpers after an acknowledged local disconnect."""
+        from .helper_recovery import CONFIRMED, cleanup_command
+
+        cleanup = self._cleanup
+        if cleanup is None:
+            return
+        connection = cleanup['connection']
+        if (connection is None or not connection.is_closed() or self._connecting
+                or self._opening.get(id(connection), 0) or self._late_connections
+                or cleanup['late_connections'] or self._retired_processes):
+            raise TransportError('The previous SSH connection is not ready for recovery')
+        if (self.host_keys is None or not self.host_key_fingerprint
+                or self.host_keys.get(self.host, self.port) != self.host_key_fingerprint):
+            raise TransportError('A verified switch identity is required for recovery')
+        tags = [self._process_tags.get(id(process)) for process in cleanup['processes']]
+        command = cleanup_command(tags)
+        await asyncio.wait_for(connection.wait_closed(), SSH_CLOSE_TIMEOUT)
+        probe = SSHTransport(self.host, port=self.port, username=self.username,
+                             password=self.password, key_file=self.key_file, host_keys=self.host_keys,
+                             connect_timeout=self.connect_timeout)
+        try:
+            await probe.connect()
+            if probe.host_key_fingerprint != self.host_key_fingerprint:
+                raise HostKeyMismatchError('The switch identity changed during recovery')
+            reply = await probe._conn.run(command, check=True, timeout=10)
+            if reply.stdout.strip() != CONFIRMED:
+                raise TransportError('The previous switch helpers did not confirm shutdown')
+        finally:
+            await probe.close()
+        for process in cleanup['processes']:
+            self._process_tags.pop(id(process), None)
+        self._cleanup = None
 
 
 # Simulator
@@ -253,9 +675,9 @@ _DEFAULT_SPEEDS = [10000, 2500, 5000, 2500, 10000, 5000, 10000, 5000, 0, 0]
 
 
 class SimulatedTransport(Transport):
-    """In-memory USW-Pro-XG-8-PoE: 8 Etherlighting RJ45 ports plus 2 SFP+ ports (no LEDs).
+    """In-memory USW-Pro-XG-8-PoE, controlling its eight RJ45 ports by default.
 
-    `leds` holds the last color written to each port as (hex without '#', level 0-100).
+    `leds` holds the last color written to each port as (hex without '#', level 1-100).
     """
 
     def __init__(self, *, lit_ports: int = 8, total_ports: int = 10, latency: float = 0.003, seed: int = 7) -> None:
@@ -264,6 +686,9 @@ class SimulatedTransport(Transport):
         self.latency = latency
         self._rng = random.Random(seed)
         self._connected = False
+        self._lighting_generation = object()
+        self.behavior = "steady"
+        self.sfp_modes: dict[int, bool] = {}
         self.leds: dict[int, tuple[str, int]] = {}
         self.speed: dict[int, int] = {}
         self.link_up: dict[int, bool] = {}
@@ -275,15 +700,58 @@ class SimulatedTransport(Transport):
         self._last_tick = time.monotonic()
         self.command_count = 0
         self.anomaly: dict[int, int] = {}
-        # PD class per powered port: an AP on 2, a camera on 4, a PoE++ AP on 6 and a 90 W display on 7.
+        # Powered devices stay within the simulated Pro XG 8 PoE's 60 W per-port limit.
         self.poe_class: dict[int, int | None] = {p: None for p in range(1, self.lit_ports + 1)}
-        self.poe_class.update({2: 4, 4: 3, 6: 6, 7: 8})
+        self.poe_class.update({2: 4, 4: 3, 6: 6, 7: 6})
+        self.base_cpu = 0.08  # share of CPU busy with everything else
+        self.load = 0.4
+        self._cpu_clock = time.monotonic()
+        self._cpu_commands = 0
+        self._idle_ticks = self._busy_ticks = 0
+
+    async def read_health(self) -> str:
+        if not self.connected:
+            raise TransportError("simulator is disconnected")
+        return ("__EE_HEALTH_V1__\nM\tMemTotal:\t1048576\tkB\nM\tMemAvailable:\t655360\tkB\n"
+                "M\tMemFree:\t524288\tkB\nT\tthermal_zone0\tSimulated sensor\t46200\n"
+                "S\t/simulated\text4\nFilesystem 1024-blocks Used Available Capacity Mounted on\n"
+                "/dev/simulated 262144 65536 196608 25% /simulated\nE\n__EE_HEALTH_DONE__\n")
 
     @property
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def lighting_generation(self) -> object | None:
+        return self._lighting_generation if self.connected else None
+
+    @property
+    def sfp_mode_supported(self) -> bool:
+        return self.connected
+
+    @property
+    def behavior_supported(self) -> bool:
+        return self.connected
+
+    async def write_behavior(self, behavior: str) -> None:
+        from .ubus import _behavior_data
+        _behavior_data(behavior)
+        if not self.connected:
+            raise TransportError("not connected")
+        self.behavior = behavior
+        self.command_count += 1
+
+    async def write_sfp_mode(self, port: int, direct: bool) -> None:
+        from .ubus import _sfp_mode_data
+        _sfp_mode_data(port, direct)
+        if not self.connected:
+            raise TransportError("not connected")
+        self.sfp_modes[port] = direct
+        self.command_count += 1
+
     async def connect(self) -> None:
+        if not self._connected:
+            self._lighting_generation = object()
         self._connected = True
 
     async def close(self) -> None:
@@ -302,6 +770,20 @@ class SimulatedTransport(Transport):
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
         if not self._connected:
             raise TransportError("not connected")
+        from .switch import (
+            MCU_SCHEMA_COMMAND,
+            MCU_SCHEMA_EXIT,
+            PORT_FIRMWARE_HASH,
+            PORT_FIRMWARE_HASH_COMMAND,
+            PRECISE_DAEMON_HASH,
+            RUNNING_DAEMON_HASH,
+        )
+        if command == MCU_SCHEMA_COMMAND:
+            return ETHERLIGHT_MCU_SIGNATURE + f"\n{MCU_SCHEMA_EXIT}0\n"
+        if command == RUNNING_DAEMON_HASH:
+            return PRECISE_DAEMON_HASH + "  /proc/123/exe\n"
+        if command == PORT_FIRMWARE_HASH_COMMAND:
+            return PORT_FIRMWARE_HASH + "  /usr/share/firmware/port_led_fw.bin\n"
         if self.latency:
             await asyncio.sleep(self.latency)
         out: list[str] = []
@@ -315,9 +797,12 @@ class SimulatedTransport(Transport):
                     spec = json.loads(m.group(1)).get("port_rgb")
                     if spec:
                         port, hexcolor, level = spec.split()
-                        if 1 <= int(port) <= self.lit_ports:
+                        if not 1 <= int(level) <= 100:
+                            raise TransportError("port_rgb level must be between 1 and 100")
+                        if 1 <= int(port) <= self.total_ports:
                             self.leds[int(port)] = (hexcolor.lower(), int(level))
                         self.command_count += 1
+                        out.append('{"set":"ok"}\n')
                 elif part.startswith("swctrl port show"):
                     out.append(self._port_table())
                 elif part.startswith("swctrl poe show"):
@@ -328,7 +813,24 @@ class SimulatedTransport(Transport):
                     out.append("etherlight\netherlight.mcu\n")
                 elif part.startswith("hostname"):
                     out.append("USWProXG8PoE-SIM\n")
+                elif part.startswith("grep -E") and "/etc/board.info" in part:
+                    out.append("board.name=USW-Pro-XG-8-PoE\nboard.shortname=USPXG8P\nboard.sysid=0xed76\n")
+                elif part.startswith("read -r a < /proc/stat"):
+                    out.append(self._cpu_line())
+                elif part.startswith("read -r b < /proc/loadavg"):
+                    out.append(f"{self.load:.2f} {self.load:.2f} {self.load:.2f} 1/120 4242\n")
         return "".join(out)
+
+    def _cpu_line(self) -> str:
+        """Each port command costs about 10 ms of CPU, roughly what a real switch shows."""
+        now = time.monotonic()
+        elapsed = max(1e-3, now - self._cpu_clock)
+        busy = min(0.97, self.base_cpu + (self.command_count - self._cpu_commands) * 0.010 / elapsed)
+        self._cpu_clock, self._cpu_commands = now, self.command_count
+        total = round(elapsed * 100)
+        self._idle_ticks += round(total * (1 - busy))
+        self._busy_ticks += total - round(total * (1 - busy))
+        return f"cpu  {self._busy_ticks} 0 0 {self._idle_ticks} 0 0 0 0 0 0\n"
 
     def _port_table(self) -> str:
         now = time.monotonic()
@@ -374,12 +876,12 @@ class SimulatedTransport(Transport):
         draw = {3: 6.5, 4: 12.0, 6: 38.0, 8: 71.0}
         for port, pd_class in self.poe_class.items():
             on = pd_class is not None and self.link_up.get(port, False)
-            watts = draw.get(pd_class, 3.0) * self._rng.uniform(0.9, 1.1) if on else 0.0
+            watts = min(60.0, draw.get(pd_class, 3.0) * self._rng.uniform(0.9, 1.1)) if on else 0.0
             volts = 53.6 if on else 0.0
             amps = watts / volts * 1000 if on else 0.0
             label = f"Class {pd_class}" if on else "Unknown"
             rows.append(
-                f"{port:>4}    Auto  Dot3bt-Type4     99900  {label:>7}  {'On' if on else 'Off':>6}  "
+                f"{port:>4}    Auto  Dot3bt-Type3     60000  {label:>7}  {'On' if on else 'Off':>6}  "
                 f"{'Good' if on else 'Bad':>7}  {watts:>8.2f}  {volts:>10.2f}  {amps:>11.2f}"
             )
         return "\n".join(rows) + "\n"

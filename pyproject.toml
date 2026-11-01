@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "etherlighting-evolved"
-version = "0.1.0"
-description = "Etherlighting Evolved (EE): an unofficial, open-source, advanced UniFi Etherlighting controller. Not affiliated with Ubiquiti."
+version = "0.4.12"
+description = "Open-source controller for UniFi Etherlighting switches. Unofficial; not affiliated with Ubiquiti."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Views2k" }]
@@ -25,13 +25,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5"]
+desktop = ["pywebview>=5", "pystray>=0.19", "Pillow>=10"]
+build = ["pyinstaller>=6"]
 
 [project.scripts]
 etherlighting-evolved = "etherlighting_evolved.cli:main"
 eectl = "etherlighting_evolved.cli:main"
 
+[project.gui-scripts]
+etherlighting-evolved-app = "etherlighting_evolved.desktop:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+etherlighting_evolved = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

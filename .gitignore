@@ -1,21 +1,45 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
-dist/
 .venv/
 venv/
+node_modules/
 .pytest_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+build/
+dist/
+outputs/
+native/bin/
+native/obj/
+*.log
 
-# Local settings and anything with a login in it
-ee.toml
+# Local working notes and application state
+AGENTS.md
+CLAUDE.md
+handoff.md
 .env
+.env.*
+ee.toml
+login.json
+controller-login.json
+private-access.json
+known_hosts
+known_switches.json
+desktop.json
+scene.json
+scene-demo.json
+presets.json
+schedules.json
+switch-connection-intent.json
+device-scenes/
+output-ownership/
 
-# The UI's own build tooling, if it lives in web/
-web/node_modules/
+# Generated legacy web bundle and installer artwork
+web/*
+!web/README.md
+packaging/wizard*.bmp
 
 .DS_Store
 Thumbs.db
