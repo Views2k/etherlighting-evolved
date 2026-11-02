@@ -1,3 +1,5 @@
+import {effectDrafts} from './effect-draft.mjs';
+
 export function sfpSync(state = {}, draft = {}) {
   return {mode:'independent',source_port:1,...state.sfp_sync,...draft.sfp_sync};
 }
@@ -81,7 +83,7 @@ export function sfpDraftPorts(state, draft = {}) {
   if(sync.mode==='together') return changed.includes(ids[0])?ids:[];
   if(sync.mode==='ethernet') {
     const source=sync.source_port;
-    return draft.colors?.[source]||draft.effect?.ports?.includes(source)||draft.returnToEffect?.includes(source)?ids:[];
+    return draft.colors?.[source]||effectDrafts(draft).some(effect=>effect.ports?.includes(source))||draft.returnToEffect?.includes(source)?ids:[];
   }
   return changed;
 }

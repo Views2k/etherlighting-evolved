@@ -827,6 +827,13 @@ A preset stores zones, rules, brightness and manual colors.
 | `POST /api/presets/{name}/duplicate` | `{"name":"New name"}` copies the saved snapshot without applying it |
 | `POST /api/presets/{name}/rename` | `{"name":"New name"}` renames the saved snapshot without applying it |
 
+To save a preview without applying it, `POST /api/presets` accepts `scene` and
+`expected_revision` alongside `name`. The revision must match the current scene;
+the supplied scene uses the same topology, capability, and setting validation as
+Apply. Saving leaves engine output and the current scene unchanged. Set
+`overwrite: false` to reject an existing profile name with HTTP 409. Omitting
+`scene` saves the applied setup as before.
+
 Rename and duplicate return the updated preset mapping. An existing target name returns
 409; a missing source returns 404; an invalid name returns 400. Names contain 1–64 letters,
 numbers, spaces, periods, underscores, or hyphens. A failed save preserves the original file.

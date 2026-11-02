@@ -70,10 +70,12 @@ class PresetStore:
                 raise KeyError(name)
             return data[name]
 
-    def save(self, name: str, snapshot: dict) -> None:
+    def save(self, name: str, snapshot: dict, *, overwrite: bool = True) -> None:
         name = self._name(name)
         with self._lock:
             data = self._load()
+            if not overwrite and name in data:
+                raise FileExistsError("A profile with this name already exists.")
             data[name] = snapshot
             self._save(data)
 

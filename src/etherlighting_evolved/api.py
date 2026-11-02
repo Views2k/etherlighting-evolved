@@ -115,6 +115,9 @@ class OutputSettings(BaseModel):
 
 class PresetSave(BaseModel):
     name: str
+    scene: dict[str, Any] | None = None
+    expected_revision: str | None = Field(default=None, min_length=1)
+    overwrite: bool = True
 
 
 class PresetAction(BaseModel):
@@ -617,7 +620,23 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.post("/presets", status_code=201)
     async def save_preset(body: PresetSave):
-        apply(presets.save, body.name, engine().snapshot())
+        e = engine()
+        current = scene_envelope(e.snapshot())
+        if body.scene is not None and body.expected_revision is None:
+            raise HTTPException(400, detail={"code": "scene_revision_required", "message":
+                                            "Refresh the lighting preview before saving a profile."})
+        if body.expected_revision is not None and body.expected_revision != current["revision"]:
+            raise HTTPException(409, detail={"code": "scene_changed", "message":
+                                            "The lighting setup changed. Review the preview before saving."})
+        try:
+            snapshot = current["scene"] if body.scene is None else apply(e.validate_snapshot, body.scene)
+        except AttributeError as exc:
+            raise HTTPException(400, detail={"code": "invalid", "message":
+                                            "The lighting setup has invalid settings."}) from exc
+        try:
+            apply(presets.save, body.name, snapshot, overwrite=body.overwrite)
+        except FileExistsError as exc:
+            raise HTTPException(409, detail={"code": "already_exists", "message": str(exc)}) from exc
         return presets.list()
 
     @api.post("/presets/{name}/apply")

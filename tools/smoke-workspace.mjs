@@ -131,12 +131,39 @@ try {
     await until(() => evaluate(`document.querySelector('[data-page="${page}"]').getAttribute('aria-current') === 'page'`), page);
     report.pages.push(page);
   }
-  for (const [width, height] of [[1280, 800], [1024, 600], [390, 844], [1280, 400], [1024, 400]]) {
+  await evaluate('document.querySelector("#browse-effects").click()');
+  await until(() => evaluate('!!document.querySelector("[data-effect=traffic] .effect-card-open")'), 'Live Traffic preview');
+  await evaluate('document.querySelector("[data-effect=traffic] .effect-card-open").click()');
+  await until(() => evaluate('!!document.querySelector("#inspector")'), 'long port controls');
+  report.inspector_scroll = [];
+  for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 700], [1099, 700], [1024, 600], [390, 844], [1280, 400], [1024, 320], [1024, 400]]) {
     await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
     await frame();
     const layout = await evaluate(`({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth})`);
     assert.ok(layout.scrollWidth <= width + 1, 'Page overflows viewport');
     report.sizes.push(layout);
+    if (width >= 1100 || width >= 900 && height <= 500) {
+      const scrollLayout = await evaluate(`(() => {
+        const outer=document.querySelector('.studio-content'), inspector=document.querySelector('#inspector');
+        return {outerHeight:outer.clientHeight,outerScroll:outer.scrollHeight,inspectorHeight:inspector.clientHeight,
+          inspectorScroll:inspector.scrollHeight,scrollbar:getComputedStyle(inspector).scrollbarWidth};
+      })()`);
+      assert.equal(scrollLayout.outerHeight,scrollLayout.outerScroll,'The split workspace must not add an outer scrollbar');
+      assert.equal(scrollLayout.inspectorHeight,scrollLayout.outerHeight,'Port controls fit their own pane');
+      assert.equal(scrollLayout.scrollbar,'none','Port controls scroll without a visible scrollbar');
+      if (scrollLayout.inspectorScroll > scrollLayout.inspectorHeight) {
+        await evaluate('document.querySelector("#inspector").scrollTop=0;document.querySelector("#master").focus({preventScroll:true})');
+        const before=await evaluate('({map:document.querySelector(".canvas-area").scrollTop,outer:document.querySelector(".studio-content").scrollTop,focus:document.activeElement.id})');
+        const box=await bounds('#inspector');
+        await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:box.x+8,y:box.y+30});
+        await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:box.x+8,y:box.y+30,deltaY:180,deltaX:0});
+        await until(()=>evaluate('document.querySelector("#inspector").scrollTop>0'),'wheel scroll without focus');
+        const after=await evaluate('({map:document.querySelector(".canvas-area").scrollTop,outer:document.querySelector(".studio-content").scrollTop,focus:document.activeElement.id})');
+        assert.deepEqual(after,before,'Hover wheel must not move the map or require editor focus');
+        await evaluate('document.querySelector("#inspector").scrollTop=0');
+        report.inspector_scroll.push({width,height,hover_wheel:true,...scrollLayout});
+      }
+    }
     await screenshot(`lighting-${width}-${height}`);
   }
   await send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});

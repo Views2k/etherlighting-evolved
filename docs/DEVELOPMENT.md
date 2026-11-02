@@ -2,6 +2,8 @@
 
 Run commands from the repository root. The current application uses the browser workspace in `preview/`, the Python engine in `src/etherlighting_evolved/`, and the desktop host in `workspace_desktop.py`. Build and test paths resolve within this checkout.
 
+Follow [WORKFLOW.md](WORKFLOW.md) for branches, review, CI, and delivery. The pinned Windows verification environment is recorded in `requirements-ci.txt`.
+
 ## Existing tools
 
 - Node.js 20 or newer. The JavaScript project has no package dependencies.

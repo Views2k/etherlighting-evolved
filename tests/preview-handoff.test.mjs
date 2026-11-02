@@ -20,6 +20,10 @@ function uiDom(context){
     return (!tag||element.tagName===tag)&&(!key||value===undefined?(!key||actual!=null):String(actual)===value);
   });
   const adapt=element=>{
+    element.removeEventListener=(type,listener)=>{if(element.listeners.get(type)===listener)element.listeners.delete(type);};
+    element.getBoundingClientRect=()=>element.bounds??{top:0,bottom:300,height:300,left:0,right:600,width:600};
+    element.clientHeight=300;element.scrollHeight=300;
+    element.scrollTo=({top})=>{element.scrollTop=top;element.listeners.get('scroll')?.();};
     element.removeAttribute=key=>element.attributes.delete(key);
     element.toggleAttribute=(name,present)=>present?element.setAttribute(name,''):element.removeAttribute(name);
     element.querySelectorAll=selector=>dom.findAll(element,node=>node!==element&&matches(node,selector));
@@ -211,4 +215,17 @@ test('the app binds intentional saved-login resumption without invoking it on ha
     renderSwitchConnection:(_host,options)=>{context.options=options;return ()=>{};},request:async(...args)=>sent.push(args),acceptSession(){},showLoginHelp(){},updateConnection(){},status(){},handoffStatus};
   vm.createContext(context);vm.runInContext(code,context);context.showConnection();assert.deepEqual(sent,[]);
   await context.options.restoreSaved();assert.deepEqual(sent,[['/api/session/restore?resume=true','POST']]);
+});
+
+test('Settings section navigation scrolls its pane without replacing form values or issuing requests',async context=>{
+  const ui=await settings(context),pane=ui.byClass(ui.host,'settings-pane')[0],nav=ui.byClass(ui.host,'settings-nav')[0];
+  pane.bounds={top:50,bottom:350,height:300};pane.scrollHeight=2500;
+  pane.children.forEach((section,index)=>Object.defineProperty(section,'bounds',{get:()=>({top:50+index*500-pane.scrollTop,bottom:550+index*500-pane.scrollTop,height:500})}));
+  const field=ui.findAll(ui.host,node=>node.tagName==='input')[0];field.value='Unapplied fixture value';
+  const before=ui.calls.length;
+  ui.button('Remote',nav).click();
+  assert.equal(pane.scrollTop,1500);assert.equal(ui.host.scrollTop,0);
+  assert.equal(ui.button('Remote',nav).getAttribute('aria-pressed'),'true');
+  assert.equal(field.isConnected,true);assert.equal(field.value,'Unapplied fixture value');assert.equal(ui.calls.length,before);
+  ui.cleanup();assert.equal(pane.listeners.has('scroll'),false);
 });

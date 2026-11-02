@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {renderAutomation,renderProfiles} from '../preview/secondary.mjs';
+import {renderAutomation,renderProfiles,renderHelp} from '../preview/secondary.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 
 function uiDom(context){
@@ -13,6 +13,8 @@ function uiDom(context){
   });
   dom.doc.createElement=tag=>{
     const element=create(tag);element.style.setProperty=(key,value)=>{element.style[key]=value;};
+    element.classList.add=(...names)=>names.forEach(name=>element.classList.toggle(name,true));
+    element.getBoundingClientRect=()=>({top:0,bottom:200,height:200,left:0,right:400,width:400});
     element.removeAttribute=key=>element.attributes.delete(key);element.matches=selector=>matches(element,selector);
     element.querySelectorAll=selector=>dom.findAll(element,node=>node!==element&&matches(node,selector));element.querySelector=selector=>element.querySelectorAll(selector)[0]||null;
     element.closest=selector=>{let node=element;while(node){if(matches(node,selector))return node;node=node.parentNode;}return null;};
@@ -32,7 +34,7 @@ const rule=(id='alert',changes={})=>({id,name:'Alert',enabled:true,match:'all',p
 const scene=rules=>({version:2,zones:[{id:'all',name:'All ports',ports:[1,2],effect:{id:'static',params:{color:'#FFFFFF'}}}],rules,brightness:80,overrides:{2:{color:'#654321',brightness:50}},sfp:{},sfp_sync:{mode:'independent',source_port:1}});
 const live=scene=>({...scene,num_ports:2,ports:[{port:1},{port:2}],sfp:[],revision:0});
 
-async function automation(context,rules=[rule()],reject=false,{readScene,writeScene}={}){
+async function automation(context,rules=[rule()],reject=false,{readScene,writeScene,...options}={}){
   const dom=uiDom(context),sent=[],loaded={scene:scene(rules),revision:'loaded-revision'},state=live(loaded.scene);
   const request=async(path,method,body)=>{
     sent.push({path,method,body:structuredClone(body)});
@@ -41,7 +43,7 @@ async function automation(context,rules=[rule()],reject=false,{readScene,writeSc
     if(writeScene)return writeScene(loaded,body);
     return {scene:structuredClone(body.scene),revision:'saved-revision'};
   };
-  const cleanup=await renderAutomation(dom.host,{request,state,getState:()=>state,onChange:async()=>{}});dom.after(cleanup);await flush();return {...dom,sent,loaded,state,cleanup};
+  const cleanup=await renderAutomation(dom.host,{request,state,getState:()=>state,onChange:async()=>{},...options});dom.after(cleanup);await flush();return {...dom,sent,loaded,state,cleanup};
 }
 
 function externalScene(ui,next,revision='external-revision'){
@@ -272,7 +274,7 @@ test('profile Apply delegates to the workspace history owner and legacy rename u
   const ui=uiDom(context),profiles={'.':scene([])},state=live(profiles['.']),sent=[],applied=[];
   const request=async(path,method,body)=>{sent.push({path,method,body});if(path==='/api/presets'&&!method)return profiles;if(path==='/api/state')return state;if(path==='/api/presets/action')return {Renamed:profiles['.']};throw new Error('Unexpected profile request');};
   const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state,onChange:async()=>{},onApplyProfile:async name=>applied.push(name)});ui.after(cleanup);await flush();
-  assert.equal(ui.button('Update from current').disabled,true);ui.button('Apply profile').click();await flush();assert.deepEqual(applied,['.']);assert.equal(sent.some(item=>item.method),false);
+  assert.equal(ui.button('Replace with applied setup').disabled,true);ui.button('Apply profile').click();await flush();assert.deepEqual(applied,['.']);assert.equal(sent.some(item=>item.method),false);
   ui.button('Rename').click();await flush();const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0],form=dialog.querySelector('form');form.querySelector('input').value='Renamed';form.listeners.get('submit')({preventDefault(){}});await flush();
   assert.deepEqual(sent.find(item=>item.method),{path:'/api/presets/action',method:'POST',body:{action:'rename',name:'.',target:'Renamed'}});
 });
@@ -283,4 +285,99 @@ test('unchanged profile Rename closes without an error or request',async context
   const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state});ui.after(cleanup);await flush();ui.button('Rename').click();await flush();
   const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0];dialog.querySelector('form').listeners.get('submit')({preventDefault(){}});await flush();
   assert.deepEqual(sent,[]);assert.equal(ui.findAll(ui.doc.body,node=>node.tagName==='dialog').length,0);assert.equal(ui.byClass(ui.host,'notice')[0].textContent,'Profile name unchanged.');
+});
+
+
+test('priority apply refreshes the action label without replacing an unsaved rule draft',async context=>{
+  const ui=await automation(context,[rule('first'),rule('second')]);
+  ui.form().elements.ruleName.value='Unapplied draft';ui.form().listeners.get('input')();
+  ui.button('Move down').click();await flush();const form=ui.form();
+  assert.ok(ui.button('Apply rule and priority'));
+  ui.button('Apply priority').click();await flush();
+  assert.equal(ui.form(),form);assert.equal(form.elements.ruleName.value,'Unapplied draft');
+  assert.ok(ui.button('Apply rule'));assert.equal(ui.button('Apply rule and priority'),undefined);
+  assert.equal(ui.cleanup.hasChanges(),true);
+});
+
+test('Automation opens a requested rule and switches editing sections without losing values',async context=>{
+  const ui=await automation(context,[rule('first'),rule('second',{name:'Requested alert'})],false,{initialRuleId:'second'});
+  assert.equal(ui.form().elements.ruleName.value,'Requested alert');
+  ui.form().elements.ruleName.value='Pending name';ui.form().listeners.get('input')();
+  ui.button('Appearance').click();assert.equal(ui.form().dataset.ruleSection,'appearance');
+  ui.button('Ports').click();assert.equal(ui.form().dataset.ruleSection,'ports');
+  assert.equal(ui.form().elements.ruleName.value,'Pending name');assert.equal(ui.sent.some(item=>item.method),false);
+  ui.button('Add condition').click();assert.equal(ui.form().dataset.ruleSection,'when');
+});
+
+test('Automation aborts a scene write when the shared mutation gate is canceled',async context=>{
+  let guarded=0;const ui=await automation(context,[rule()],false,{onBeforeMutation:async()=>{guarded++;return false;}});
+  ui.form().elements.ruleName.value='Keep this';ui.form().listeners.get('input')();
+  ui.form().listeners.get('submit')({preventDefault(){}});await flush();
+  assert.equal(guarded,1);assert.equal(ui.sent.some(item=>item.method),false);assert.equal(ui.cleanup.hasChanges(),true);
+});
+
+async function profiles(context,options={}){
+  const ui=uiDom(context),presets={Evening:scene([])},state=live(presets.Evening),sent=[];
+  const request=async(path,method,body)=>{if(method)sent.push({path,method,body});return path==='/api/presets'?presets:state;};
+  const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state,...options});ui.after(cleanup);await flush();
+  return {...ui,presets,state,sent,cleanup};
+}
+
+test('profile name validation clears stale feedback as the corrected name becomes valid',async context=>{
+  const ui=await profiles(context);ui.button('Save current as profile').click();await flush();
+  const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0],form=dialog.querySelector('form');
+  const name=dialog.querySelector('input');name.value='Evening';form.listeners.get('submit')({preventDefault(){}});
+  const error=ui.byClass(dialog,'inline-error')[0];
+  assert.equal(name.getAttribute('aria-invalid'),'true');assert.equal(name.getAttribute('aria-describedby'),error.id);
+  assert.match(error.textContent,/already exists/);assert.equal(error.getAttribute('aria-live'),'polite');
+  name.value='Morning';name.listeners.get('input')();assert.equal(name.getAttribute('aria-invalid'),null);assert.equal(error.textContent,'');
+  assert.equal(ui.sent.length,0);
+});
+
+test('saving a preview uses the staged-save hook and never applies the scene',async context=>{
+  const staged=scene([]);staged.brightness=35;const calls=[];
+  const ui=await profiles(context,{getDraftScene:()=>staged,onSavePreview:async name=>calls.push(name)});
+  ui.button('Save preview as profile').click();await flush();
+  const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0];dialog.querySelector('input').value='Draft';
+  dialog.querySelector('form').listeners.get('submit')({preventDefault(){}});await flush();
+  assert.deepEqual(calls,['Draft']);assert.deepEqual(ui.sent,[]);assert.equal(staged.brightness,35);
+  assert.match(ui.byClass(ui.host,'notice')[0].textContent,/Preview saved/);
+});
+
+test('Profiles exposes guarded Undo and canceled Apply never reports success',async context=>{
+  let allowed=true,undone=0;const ui=await profiles(context,{onApplyProfile:async()=>false,canUndoApply:()=>allowed,onUndoApply:async()=>{undone++;allowed=false;}});
+  ui.button('Apply profile').click();await flush();assert.notEqual(ui.byClass(ui.host,'notice')[0].textContent,'Profile applied.');
+  const undo=ui.button('Undo last apply');assert.equal(undo.disabled,false);undo.click();await flush();
+  assert.equal(undone,1);assert.equal(ui.button('Undo last apply').disabled,true);assert.deepEqual(ui.sent,[]);
+});
+
+test('SFP help names the detected scope without assuming two indicators or Ethernet sources',context=>{
+  const ui=uiDom(context);renderHelp(ui.host,{state:{num_ports:0,ports:[],sfp_ports:[25,26,27,28],sfp:[25,26,27,28].map(port=>({port}))}});
+  const text=ui.findAll(ui.host,node=>node.tagName==='p').map(node=>node.textContent).join(' ');
+  assert.match(text,/SFP 25, 26, 27, 28/);assert.doesNotMatch(text,/both indicators|both SFP lights/);
+  assert.doesNotMatch(text,/Follow Ethernet port tracks/);assert.match(text,/Save reconnect preference/);
+});
+
+
+test('resolving a Lighting preview preserves its changes when a separate rule draft is applied',async context=>{
+  let ui;ui=await automation(context,[rule()],false,{
+    getDraftScene:()=>({brightness:23}),
+    onBeforeMutation:async()=>{ui.loaded.scene.brightness=23;ui.loaded.revision='lighting-applied';return true;}
+  });
+  ui.form().elements.ruleName.value='My rule';ui.form().listeners.get('input')();
+  ui.form().listeners.get('submit')({preventDefault(){}});await flush();
+  const write=ui.sent.find(item=>item.method);assert.equal(write.body.expected_revision,'lighting-applied');
+  assert.equal(write.body.scene.brightness,23);assert.equal(write.body.scene.rules[0].name,'My rule');
+});
+
+test('resolving a Lighting preview cannot silently overwrite changed automation rules',async context=>{
+  let ui;ui=await automation(context,[rule()],false,{
+    getDraftScene:()=>({brightness:23}),
+    onBeforeMutation:async()=>{ui.loaded.scene.rules[0].name='Changed elsewhere';ui.loaded.revision='other-rules';return true;}
+  });
+  ui.form().elements.ruleName.value='Retained draft';ui.form().listeners.get('input')();
+  ui.form().listeners.get('submit')({preventDefault(){}});await flush();
+  assert.equal(ui.sent.some(item=>item.method),false);assert.equal(ui.cleanup.hasChanges(),true);
+  assert.equal(ui.form().elements.ruleName.value,'Retained draft');
+  assert.match(ui.byClass(ui.host,'notice')[0].textContent,/automations changed.*edits are kept/);
 });

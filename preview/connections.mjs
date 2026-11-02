@@ -116,8 +116,8 @@ const controllerMessages = {
   two_factor_required: 'Enter the verification code for your UniFi account.',
   verification_failed: 'The verification code was not accepted. Enter a new code and try again.',
   controller_login_required: 'Connect your controller before saving its login.',
-  controller_login_save_failed: 'The controller login could not be saved securely. Try Apply setting again.',
-  controller_login_remove_failed: 'The saved controller login could not be removed. Try Apply setting again.',
+  controller_login_save_failed: 'The controller login could not be saved securely. Try Save reconnect preference again.',
+  controller_login_remove_failed: 'The saved controller login could not be removed. Try Save reconnect preference again.',
   saved_controller_login_unavailable: 'The saved controller login could not be opened. Connect your controller again.',
 };
 
@@ -657,15 +657,17 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
 
 export function renderControllerConnection(host, {request, onChanged = () => {}}) {
   let active = true, pending = null, dirty = false, current = {}, certificate = null, challenge = null;
+  let editingConnection = false;
   let reconnectDraft = null, savingPreference = false, discovering = false, liveStatusKey, siteContextKey = '', localAddress = '', lastKind = 'self_hosted';
   let consoles = [];
   const methodDrafts = new Map();
   host.replaceChildren();
   const panel = node('section', 'controller-connection connection-card panel');
   const header = node('div', 'connection-heading');
-  const title = node('div'); title.append(node('h2', '', 'UniFi Network'), node('p', 'help-text', 'Connect UniFi Network to show controller details for your switch.'));
+  const title = node('div'), introduction = node('p', 'help-text', 'Connect UniFi Network to show controller details for your switch.'); title.append(node('h2', '', 'UniFi Network'), introduction);
   const reload = button('Refresh controller', 'quiet'); header.append(title, reload);
   const state = node('p', 'connection-state is-disconnected', 'Checking controller connection…');
+  state.setAttribute('role', 'status'); state.setAttribute('aria-live', 'polite');
   const details = node('dl', 'settings-details connection-details');
   const capabilityHint = node('p', 'help-text'); capabilityHint.hidden = true;
   const [message, status] = notice();
@@ -675,11 +677,15 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const reconnectHelp = node('p', 'help-text', 'Save this controller login securely on this PC.');
   reconnectHelp.id = `controller-reconnect-help-${crypto.randomUUID()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
   const reconnectHint = node('p', 'help-text');
-  const applyPreference = button('Apply setting', 'primary');
+  const applyPreference = button('Save reconnect preference', 'primary');
   const preferenceActions = node('div', 'connection-actions'); preferenceActions.append(applyPreference);
   const [preferenceNotice, preferenceStatus] = notice();
   reconnectSection.append(reconnectLabel, reconnectHelp, reconnectHint, preferenceActions, preferenceNotice);
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
+  form.id = `controller-form-${crypto.randomUUID()}`;
+  const editConnection = button('Edit connection'); editConnection.hidden = true;
+  editConnection.setAttribute('aria-controls', form.id); editConnection.setAttribute('aria-expanded', 'false');
+  const editorHint = node('p', 'help-text', 'Connection edits are not applied.'); editorHint.hidden = true;
   const kind = node('select'); kind.name = 'controller_kind';
   const kindHelp = node('small');
   const kindField = field('Controller type', kind); kindField.append(kindHelp);
@@ -706,7 +712,8 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const submit = button('Connect controller', 'primary'); submit.type = 'submit';
   const disconnect = button('Disconnect controller', 'quiet'); disconnect.hidden = true;
   const cancelChange = button('Cancel connection change', 'quiet'); cancelChange.hidden = true;
-  const actions = node('div', 'connection-actions'); actions.append(submit, cancelChange, disconnect);
+  const actions = node('div', 'connection-actions'); actions.append(submit, cancelChange);
+  const connectionActions = node('div', 'connection-actions'); connectionActions.append(editConnection, disconnect);
   const trustPanel = node('div', 'connection-trust notice'); trustPanel.hidden = true;
   const fingerprint = node('code', 'certificate-fingerprint');
   const trust = button('Trust this certificate and connect');
@@ -715,7 +722,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const addressHelp = node('p', 'help-text'), credentialHelp = node('p', 'help-text');
   setupHelp.append(node('summary', '', 'Where do I find these details?'), addressHelp, credentialHelp);
   form.append(kindField, authField, addressField, usernameField, passwordRow, apiKeyField, consoleField, setupHelp, twoFactor, siteField, trustPanel, actions);
-  panel.append(header, state, details, capabilityHint, message, reconnectSection, form); host.append(panel);
+  panel.append(header, state, details, capabilityHint, message, reconnectSection, connectionActions, editorHint, form); host.append(panel);
   const renderChoices = (selectedKind, selectedMethod, useDefault = false) => {
     const supported = controllerSupportedMethods(current);
     kind.replaceChildren();
@@ -794,18 +801,32 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
     findConsoles.disabled = Boolean(pending) || kind.value !== 'cloud_connector' || auth.value !== 'api_key' || current.console_discovery_supported !== true || !/^[\x21-\x7e]{1,4096}$/.test(apiKey.value);
     findConsoles.textContent = discovering ? 'Finding consoles…' : consoles.length ? 'Refresh consoles' : 'Find consoles';
     reload.disabled = Boolean(pending);
+    disconnect.disabled = Boolean(pending);
+    const editorRequired = !current.connected || Boolean(current.pending_site_choice) || Boolean(challenge);
+    const editorOpen = editorRequired || editingConnection;
+    form.hidden = !editorOpen;
+    editConnection.hidden = !current.connected || editorRequired;
+    editConnection.disabled = Boolean(pending);
+    editConnection.textContent = editorOpen ? 'Hide connection details' : 'Edit connection';
+    editConnection.setAttribute('aria-expanded', String(editorOpen));
+    editorHint.hidden = editorOpen || !formChanged();
     submit.textContent = pending && !savingPreference && !discovering ? 'Connecting…' : current.pending_site_choice && matchesForm(current.pending_site_choice) ? 'Connect selected site' : current.connected ? 'Update connection' : 'Connect controller';
     const preference = controllerReconnectControls(current, reconnectDraft);
     reconnectSection.hidden = !preference.supported;
     reconnect.checked = preference.checked;
     reconnect.disabled = Boolean(pending);
     applyPreference.disabled = Boolean(pending) || !preference.canApply;
-    applyPreference.textContent = savingPreference ? 'Saving…' : 'Apply setting';
-    reconnectHint.textContent = preference.changed && preference.checked && !current.can_save_login ? 'Connect your controller to save this login.' : preference.checked && current.auto_reconnect && current.can_save_login && current.saved_login_matches_connection === false ? 'Apply setting to save the current controller login.' : preference.checked && current.auto_reconnect && current.reconnect_state === 'paused' ? 'Reconnect will resume when EE opens again.' : '';
+    applyPreference.textContent = savingPreference ? 'Saving…' : 'Save reconnect preference';
+    reconnectHelp.textContent = preference.changed && !preference.checked
+      ? `Saving this preference removes the saved controller login.${current.connected ? ' The current connection stays active.' : ''}`
+      : preference.checked ? 'Save this controller login securely on this PC and reconnect when EE opens.'
+      : 'Enable this to save the controller login and reconnect when EE opens.';
+    reconnectHint.textContent = preference.changed && preference.checked && !current.can_save_login ? 'Connect your controller to save this login.' : preference.checked && current.auto_reconnect && current.can_save_login && current.saved_login_matches_connection === false ? 'Save reconnect preference to save the current controller login.' : preference.checked && current.auto_reconnect && current.reconnect_state === 'paused' ? 'Reconnect will resume when EE opens again.' : '';
     reconnectHint.hidden = !reconnectHint.textContent;
   };
   const showDetails = value => {
     details.replaceChildren();
+    introduction.textContent = value.connected ? 'Controller details for this switch.' : 'Connect UniFi Network to show controller details for your switch.';
     const siteName = value.sites?.find(item => item.id === value.site)?.name || value.site;
     const facts = [];
     if (siteName) facts.push(['Site', siteName]);
@@ -827,12 +848,12 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
     else if (current.pending_site_choice) pendingSiteMessage();
     if (current.saved_login_error) preferenceStatus(controllerError(current.saved_login_error, 'The saved controller login needs attention. Connect your controller again.'), true);
     else preferenceStatus();
-    if (supportsVerification() && ['two_factor_required','verification_failed'].includes(current.error?.code)) { twoFactor.open = true; verification.required = true; }
+    if (supportsVerification() && ['two_factor_required','verification_failed'].includes(current.error?.code)) { editingConnection = true; twoFactor.open = true; verification.required = true; }
     setBusy();
   };
   const perform = (action, label, actionKind = 'status') => {
     if (!active || pending) return;
-    let focusVerification = false, focusSite = false;
+    let focusVerification = false, focusSite = false, focusSummary = false;
     const canceledTarget = actionKind === 'cancel' ? current.pending_site_choice : null;
     const resetCanceledForm = Boolean(canceledTarget && matchesForm(canceledTarget));
     status(label);
@@ -848,12 +869,13 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
         const connected = actionKind === 'connect' && result.connected && !result.error && !result.pending_site_choice && matchesForm(result);
         const disconnected = actionKind === 'disconnect' && !result.configured && !result.error;
         if (connected || disconnected) { dirty = false; password.value = ''; apiKey.value = ''; verification.value = ''; verification.required = false; twoFactor.open = false; challenge = null; trustPanel.hidden = true; }
-        if (connected) username.value = '';
+        if (connected) { username.value = ''; editingConnection = false; focusSummary = true; }
         if (canceled && resetCanceledForm) {
           dirty = false; username.value = ''; password.value = ''; apiKey.value = ''; verification.value = ''; verification.required = false; twoFactor.open = false;
           certificate = null; challenge = null; trustPanel.hidden = true; address.value = result.url || ''; syncTarget(); showSites();
+          editingConnection = false; focusSummary = true;
         }
-        if (disconnected) certificate = null;
+        if (disconnected) { certificate = null; editingConnection = false; }
         if (!dirty) cleanForm = formValues();
         await onChanged(result);
       } catch (error) {
@@ -862,7 +884,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
         const value = detail.certificate_sha256;
         if (['two_factor_required','verification_failed'].includes(error.code)) {
           if(supportsVerification()){
-            twoFactor.open = true; verification.required = true; focusVerification = true;
+            editingConnection = true; twoFactor.open = true; verification.required = true; focusVerification = true;
             status(controllerError(error), true);
           }else status(controllerError({code:'controller_local_account_required'}), true);
         } else if (['certificate_untrusted', 'certificate_changed'].includes(error.code) && kind.value === 'cloud_connector') {
@@ -874,7 +896,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
           trustPanel.hidden = false;
           status(error.code === 'certificate_changed' ? 'The controller certificate changed. Verify the new fingerprint before connecting.' : 'The controller uses a certificate that needs your approval.', true);
         } else status(controllerError(error), true);
-      } finally { pending = null; setBusy(); if (active && focusVerification) verification.focus(); else if (active && focusSite) site.focus(); else if (active && actionKind === 'cancel') submit.focus(); }
+      } finally { pending = null; setBusy(); if (active && focusVerification) verification.focus(); else if (active && focusSite) site.focus(); else if (active && focusSummary && !editConnection.hidden) editConnection.focus(); else if (active && actionKind === 'cancel') submit.focus(); }
     })();
     setBusy();
   };
@@ -936,6 +958,11 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
     certificate = challenge.fingerprint; challenge = null; trustPanel.hidden = true; connect();
   });
   reload.addEventListener('click', () => perform(() => request('/api/controller'), 'Checking controller status…'));
+  editConnection.addEventListener('click', () => {
+    if (!active || pending) return;
+    editingConnection = !editingConnection; setBusy();
+    if (editingConnection) kind.focus(); else editConnection.focus();
+  });
   cancelChange.addEventListener('click', () => { if(current.pending_site_choice)perform(() => request('/api/controller/cancel', 'POST'), 'Canceling connection change…', 'cancel'); });
   disconnect.addEventListener('click', () => perform(() => request('/api/controller/disconnect', 'POST'), 'Disconnecting controller…', 'disconnect'));
   reconnect.addEventListener('change', () => {
@@ -961,7 +988,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
         try { await onChanged(result); }
         catch { if (active) status('The setting was saved. Select Refresh controller to update its details.', true); }
       } catch (error) {
-        if (active) preferenceStatus(controllerError(error, 'The controller setting could not be saved. Try Apply setting again.'), true);
+        if (active) preferenceStatus(controllerError(error, 'The controller setting could not be saved. Try Save reconnect preference again.'), true);
       } finally { pending = null; savingPreference = false; setBusy(); }
     })();
     setBusy();

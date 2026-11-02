@@ -6,6 +6,7 @@ import {sfpSync, effectiveSfpLight, sfpNativePeriod, sfpNativeAvailable, sfpCand
 import {hostScheduleDate,receiveScheduleClock} from './schedule-clock.mjs';
 import {portDisplayRgb} from './port-display.mjs';
 import {lightingPorts, previewGrid, portRanges} from './port-topology.mjs';
+import {effectDrafts as pendingEffects, effectDraftForPort} from './effect-draft.mjs';
 
 const node = (tag, className = '', text) => {
   const element = document.createElement(tag);
@@ -53,7 +54,7 @@ export const SFP_EFFECTS = [
 export function galleryConfig(effect, state = {}, selectedPorts = [], remembered = {}, draft = {}) {
   const defaults = Object.fromEntries(effect.params.map(param => [param.key, param.default]));
   const selected = new Set(selectedPorts), zones = state.zones || [];
-  const activeDraft = draft.effect?.id === effect.id && draft.effect.ports?.some(port => selected.has(port)) ? draft.effect : null;
+  const activeDraft = pendingEffects(draft).findLast(item => item.id === effect.id && item.ports?.some(port => selected.has(port)));
   const current = zones.find(zone => zone.effect?.id === effect.id && zone.ports.some(port => selected.has(port)));
   const chosen = activeDraft || current?.effect || lookup(remembered, effect.id) || zones.find(zone => zone.effect?.id === effect.id)?.effect;
   return {id:effect.id, params:{...defaults, ...copy(chosen?.params || {})}};
@@ -61,7 +62,7 @@ export function galleryConfig(effect, state = {}, selectedPorts = [], remembered
 
 function copperOwnership(state, id, draft) {
   const port = state.ports?.find(item => item.port === id), zone = state.zones?.find(item => item.ports.includes(id));
-  const pending=draft.effect?.ports?.includes(id)?draft.effect:null, effect=pending||zone?.effect;
+  const pending=effectDraftForPort(draft,id), effect=pending||zone?.effect;
   if (draft.colors?.[id]) return {kind:'manual-preview', effect};
   if ((port?.override || state.overrides?.[id] || port?.source?.kind === 'override') && !draft.returnToEffect?.includes(id) && !pending?.clearOverrides) return {kind:'manual', effect};
   if (pending) return {kind:'preview', effect};
@@ -138,7 +139,7 @@ export function renderEffectGallery(host, context) {
   setEffectCatalog(effects);
   host.replaceChildren();
   const page = node('section','effects-gallery'), header = node('header','view-header'), heading = node('div');
-  heading.append(node('h1','','Effects'),node('p','muted','Choose an effect, adjust its colors, then apply it in Port controls.'));
+  heading.append(node('h1','','Effects'),node('p','muted','Preview an effect, then apply it in Port controls.'));
   header.append(heading);
   const target = node('div','gallery-target'), targetCopy = node('div','gallery-target-copy');
   const targetName = node('strong'), targetNote = node('span','gallery-preview-note');
@@ -161,7 +162,8 @@ export function renderEffectGallery(host, context) {
   const emptyText=node('p','muted'),emptyAction=node('button','button quiet gallery-empty-action','Show all effects');emptyAction.type='button';
   emptyAction.addEventListener('click',()=>{category='All';search.value='';galleryState.category='All';galleryState.search='';filter();});empty.append(emptyText,emptyAction);
   const notice=node('p','inline-error');notice.setAttribute('role','status');notice.hidden=true;
-  page.append(header,target,toolbar,notice,grid,empty);host.append(page);
+  const galleryHeading=node('div','gallery-heading');galleryHeading.append(header,target);
+  page.append(galleryHeading,toolbar,notice,grid,empty);host.append(page);
   let cards=[],favorites=getFavoriteEffects(),recent=getRecentEffects(),type=galleryState.type || (selectedSfp(state,selectedPorts).length&&!selectedCopper(state,selectedPorts).length?'sfp':'ethernet');
   let frame=0,disposed=false,previousTime=0;
   let targetTypes='',configurationKey='';
