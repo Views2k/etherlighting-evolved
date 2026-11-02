@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.16
+
+- The Lighting faceplate shows uplink bandwidth next to the switch name. The eight Ethernet ports and two SFP ports share a row on desktop and rack displays.
+- Default brightness stays within reach while editing. The map key includes the full link-speed legend and brightness help.
+- The window header and workspace toolbar use less vertical space.
+
 ## 0.4.15
 
 Changes since 0.4.12:

@@ -55,6 +55,58 @@ async function screenshot(name) {
 async function bounds(selector) {
   return evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};})()`);
 }
+async function checkFaceplate(width, height) {
+  const rack = height <= 500;
+  const geometry = await evaluate(`(() => {
+    const canvas = document.querySelector('.canvas-area');
+    const tiles = [...canvas.querySelectorAll('.port-tile')];
+    const bounds = node => {
+      const {top, right, bottom, left, height, width} = node.getBoundingClientRect();
+      return {top, right, bottom, left, height, width};
+    };
+    // Exercise the height of a host and a guest sharing one port.
+    const names = tiles[2].querySelector('.port-label');
+    const original = [...names.childNodes];
+    const title = canvas.querySelector('#switch-title');
+    const originalTitle = title.textContent;
+    try {
+      title.textContent = 'USW Pro XG 8 PoE';
+      names.replaceChildren(...['Home server', 'Home Assistant'].map(text => {
+        const label = document.createElement('span'); label.textContent = text; return label;
+      }));
+      return {
+        header: bounds(document.querySelector('.titlebar')), canvas: bounds(canvas),
+        overflowY: canvas.scrollHeight - canvas.clientHeight, overflowX: canvas.scrollWidth - canvas.clientWidth,
+        ports: tiles.map(bounds), sockets: tiles.map(tile => bounds(tile.querySelector('.port-led'))),
+        bandwidth: bounds(canvas.querySelector('.port-map .uplink-bandwidth')),
+        controls: bounds(canvas.querySelector('.selection-toolbar')), namesHeight: names.clientHeight, namesScroll: names.scrollHeight,
+        brightness: bounds(document.querySelector('#master')), apply: bounds(document.querySelector('#apply-draft'))
+      };
+    } finally { names.replaceChildren(...original); title.textContent = originalTitle; }
+  })()`);
+  const {header, canvas, ports, sockets, bandwidth, brightness, apply} = geometry;
+  assert.equal(ports.length, 10);
+  assert.ok(header.height <= 46, `Title bar is ${header.height}px`);
+  assert.ok(geometry.overflowX <= 1 && geometry.overflowY <= 1,
+    `Faceplate overflows by ${geometry.overflowX} × ${geometry.overflowY} at ${width} × ${height}: ${JSON.stringify(geometry)}`);
+  for (const [index, port] of ports.entries()) {
+    assert.ok(port.top >= canvas.top && port.bottom <= canvas.bottom + 1);
+    assert.ok(port.left >= canvas.left && port.right <= canvas.right + 1);
+    assert.ok(port.width >= 44 && port.height >= 44);
+    if (index) assert.ok(port.left >= ports[index - 1].right - 1, 'Ports must share one row in physical order');
+    assert.ok(Math.abs(sockets[index].top - sockets[0].top) <= 4, 'Socket rows must align');
+  }
+  assert.ok(bandwidth.width > 0 && bandwidth.top >= canvas.top && bandwidth.bottom <= ports[0].top);
+  assert.ok(brightness.width >= 70 && brightness.bottom <= height && brightness.top >= header.bottom);
+  assert.ok(apply.width > 0 && apply.bottom <= height && apply.left >= brightness.right, 'Draft and brightness stay accessible together');
+  if (rack) {
+    assert.ok(brightness.height >= 44 && apply.height >= 44);
+    assert.ok(bandwidth.right <= geometry.controls.left + 1 || bandwidth.bottom <= geometry.controls.top + 1,
+      'Uplink readings must clear selection controls');
+    assert.ok(geometry.namesScroll <= geometry.namesHeight + 1, 'Both client names must fit');
+  }
+  return {headerHeight: header.height, canvasHeight: canvas.height, overflowY: geometry.overflowY, portsInRow: ports.length};
+}
 async function tap(selector) {
   await evaluate(`new Promise((resolve,reject)=>{const start=performance.now();let last='',since=start;function check(time){const r=document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();if(!r)return reject(new Error('Touch target disappeared'));const value=[r.x,r.y,r.width,r.height,document.querySelector('#inspector')?.scrollTop].join(',');if(value!==last){last=value;since=time;}if(time-since>=180)return resolve();if(time-start>4000)return reject(new Error('Touch target kept moving'));requestAnimationFrame(check);}requestAnimationFrame(check);})`);
   const r = await bounds(selector);
@@ -141,6 +193,7 @@ try {
     await frame();
     const layout = await evaluate(`({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth})`);
     assert.ok(layout.scrollWidth <= width + 1, 'Page overflows viewport');
+    if (width >= 1100 || width >= 1024 && height <= 500) layout.faceplate = await checkFaceplate(width, height);
     report.sizes.push(layout);
     if (width >= 1100 || width >= 900 && height <= 500) {
       const scrollLayout = await evaluate(`(() => {
@@ -174,6 +227,10 @@ try {
     await evaluate('document.querySelector("[data-page=Lighting]").click()');
     await frame();
     const inspector = await bounds('#inspector');
+    await tap('#open-map-key');
+    assert.ok(await evaluate('document.querySelector(".map-key").open && document.querySelector(".map-key").textContent.includes("25 GbE")'));
+    await tap('.map-key .dialog-header button');
+    assert.equal(await evaluate('document.activeElement.id'), 'open-map-key');
     const before = await evaluate(`({canvas:document.querySelector('.canvas-area').scrollTop,inspector:document.querySelector('#inspector').scrollTop,port:document.querySelector('[data-port="1"]').getBoundingClientRect().top})`);
     const scrollX = inspector.x + inspector.width - 24, scrollY = inspector.y + inspector.height * .8;
     await send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{x:scrollX,y:scrollY,id:1}]});

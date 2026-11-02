@@ -4,7 +4,7 @@ Update this record when a tracked issue is fixed, disproved, or deferred. Record
 
 ## Current delivery
 
-Version 0.4.15 contains the rack, phone, draft-editing, and inspector-scroll changes described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
+Version 0.4.16 includes the compact Lighting faceplate and persistent default brightness controls described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
 
 ## Remaining work
 
