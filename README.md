@@ -50,6 +50,8 @@ The Windows app runs the same workspace in its own window. Build the installer f
 
 ## Development
 
+Use the [repository workflow](docs/WORKFLOW.md) for changes, verification, and revision-specific installers. See the [changelog](CHANGELOG.md) for recent updates.
+
 The application, engine, tests, assets, and packaging scripts share this repository:
 
 | Directory | Contents |

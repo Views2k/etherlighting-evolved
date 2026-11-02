@@ -1056,8 +1056,10 @@ class Engine:
             "sfp_sync": self.sfp_sync.to_dict(),
         }
 
-    def apply_snapshot(self, scene: dict, *, preserve_unchanged: bool = False) -> set[int]:
-        """Load a scene. Everything is validated before anything changes."""
+    def _prepare_snapshot(self, scene: dict) -> tuple[
+        list[Zone], list[Rule], dict[int, Override], int, dict[int, SfpLight], SfpSync
+    ]:
+        """Parse a scene without changing the active lighting or output signals."""
         self._validate_scene_topology(scene)
         if "zones" in scene:
             zones = self._build_zones(scene["zones"])
@@ -1099,6 +1101,25 @@ class Engine:
         if self.connected and sfp_sync.mode != "independent" and len(self.switch.sfp_ports) < 2:
             raise ValueError("SFP synchronization is unavailable for this switch")
 
+        return zones, rules, overrides, brightness, sfp, sfp_sync
+
+    def validate_snapshot(self, scene: dict) -> dict:
+        """Return a canonical saved scene without applying it."""
+        zones, rules, overrides, brightness, sfp, sfp_sync = self._prepare_snapshot(scene)
+        return {
+            "version": 3,
+            "topology": self.scene_topology(),
+            "zones": [zone.to_dict() for zone in zones],
+            "rules": [rule.to_dict() for rule in rules],
+            "brightness": brightness,
+            "overrides": {str(port): override.to_dict() for port, override in sorted(overrides.items())},
+            "sfp": {str(port): light.to_dict() for port, light in sfp.items()},
+            "sfp_sync": sfp_sync.to_dict(),
+        }
+
+    def apply_snapshot(self, scene: dict, *, preserve_unchanged: bool = False) -> set[int]:
+        """Load a scene. Everything is validated before anything changes."""
+        zones, rules, overrides, brightness, sfp, sfp_sync = self._prepare_snapshot(scene)
         clock = self._animation_clock()
         previous_sfp_output = {port: self._sfp_requires_output(port) for port in self.sfp}
         previous_revisions = dict(self._sfp_revisions)

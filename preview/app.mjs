@@ -6,10 +6,10 @@ import {hostScheduleDate,receiveScheduleClock} from './schedule-clock.mjs';
 import { renderSwitchConnection, showConnectionStatus, showSceneChoice, handoffStatus } from './connections.mjs';
 import { workspaceStorageKey, switchConnectionStatus, controllerConnectionStatus } from './workspace-session.mjs';
 import { renderAutomation, renderProfiles, renderSettings, renderHelp } from './secondary.mjs';
-import { lightingOperations, lightingSnapshot, controlSource, equalSetting, sfpSettings, fixedColorSettings, fixedColorBrightness } from './lighting-state.mjs';
-import {bindPopoverDismissal} from './popover-interaction.mjs';
+import { lightingOperations, lightingSnapshot, controlSource, sceneAutomationMatches, equalSetting, sfpSettings, fixedColorSettings, fixedColorBrightness } from './lighting-state.mjs';
+import {openColorPicker} from './color-picker.mjs';
+import {effectDrafts,effectDraftForPort,stageEffectDraft} from './effect-draft.mjs';
 import {createRouteHistory} from './route-history.mjs';
-import { mountColorLibrary } from './color-library.mjs';
 import { renderEffectGallery, sfpPreviewColor } from './effect-gallery.mjs';
 import { sfpSync, effectiveSfpLight, editableSfpLight, normalizeSfpBrightness, sfpEditTargets, sfpDurationRange, sfpEffectChange, sfpCandidateSettings, sfpNativeAvailable, sfpDraftPorts } from './sfp-sync.mjs';
 import { createPortAnimator, portInk } from './port-animation.mjs';
@@ -36,7 +36,7 @@ let workspaceOptions = {live:false}, workspaceReady = false, openingWorkspace = 
 let activeColorPopover;
 const edits = new Set();
 let draft = {}, profiles = {}, pendingPlan = null, lastApplied = null, compareApplied = false;
-let draftBaseline=null, draftConfirmation=null, saveUiTimer;
+let draftBaseline=null, draftConfirmation=null, saveUiTimer, requestedRuleId;
 const request=(path,method,body)=>apiRequest(path,method,body,{workspace:session.workspace_id});
 const workspaceRequest=()=>{const workspace=session.workspace_id;return async(path,method='GET',body)=>{
   if(workspace!==session.workspace_id)throw new Error('The connected switch changed. Review its current setup.');
@@ -60,12 +60,14 @@ app.innerHTML = `<section class="app-shell">
     <nav class="navigation" aria-label="Main navigation">${[['Lighting','grid'], ['Effects','wave'], ['Automation','activity'], ['Profiles','layers']].map(([name,symbol]) => `<button class="nav-button ${name === page ? 'selected' : ''}" data-page="${name}" ${name===page?'aria-current="page"':''}>${icon(symbol,'nav-icon')}<span>${name}</span></button>`).join('')}</nav>
     <div class="window-actions"><button class="button quiet" data-page="Help" aria-label="Help">${icon('info','nav-icon')}<span>Help</span></button><button class="button quiet" data-page="Settings" aria-label="Settings">${icon('settings','nav-icon')}<span>Settings</span></button><img class="brand-logo" src="/assets/logo.png" alt="Etherlighting Evolved"></div>
   </header>
+  <aside class="pending-lighting-bar" id="pending-lighting" hidden><span>Lighting preview saved while you browse</span><button class="button" id="review-lighting">Review preview</button></aside>
   <main id="view" class="view"><div class="loading" role="status"><span class="loading-spinner"></span>Opening lighting workspace…</div></main>
   <footer class="statusbar"><span id="status">Opening workspace</span><span class="status-connections"><span id="connection" class="connection-state is-disconnected">Connecting…</span><span id="controller-connection" class="connection-state is-disconnected" hidden>Controller not connected</span></span></footer>
   <div class="toast" id="toast" role="status" hidden><span id="toast-message"></span><button class="button quiet" id="toast-dismiss" hidden>Dismiss</button></div>
 </section>`;
 const view = document.querySelector('#view');
 const routeHistory=createRouteHistory();
+document.querySelector('#review-lighting').onclick=()=>run(()=>navigate('Lighting',{keepDraft:true}));
 
 function status(message, error = false) {
   const el = document.querySelector('#status'); el.textContent = message; el.classList.toggle('error', error);
@@ -162,11 +164,11 @@ async function flushEdits() {
       try{await refresh(false);}catch{}
       saveUiState();updateDraftBar();renderInspector();throw error;
     }
-    if(draft.effect)rememberedEffects.set(draft.effect.id,clone(draft.effect));
+    for(const effect of effectDrafts(draft))rememberedEffects.set(effect.id,clone(effect));
     const controlChanged=draft.mode!==undefined;
-    const changedPorts=draft.brightness!==undefined?allPorts():[...(draft.effect?.ports||[]),...Object.keys(draft.colors||{}),...(draft.returnToEffect||[]),...sfpDraftPorts(state,draft)];
+    const changedPorts=draft.brightness!==undefined?allPorts():[...effectDrafts(draft).flatMap(effect=>effect.ports),...Object.keys(draft.colors||{}),...(draft.returnToEffect||[]),...sfpDraftPorts(state,draft)];
     edits.clear();draft={};draftBaseline=null;pendingPlan=null;compareApplied=false;portAnimator.setPreview(null);saveUiState();
-    try{await refresh(false);notify('Changes applied');if(!controlChanged)confirmPorts(changedPorts);}
+    try{await refresh(false);const covered=sceneAutomationMatches(history.after?.scene||history.before.scene,state,changedPorts).map(item=>item.port);notify(covered.length?`Setup saved. Automation matches ${covered.length===1?'port':'ports'} ${portRanges(covered)}.`:'Changes applied');if(!controlChanged)confirmPorts(changedPorts.filter(id=>!covered.includes(Number(id))));}
     catch{notify('Changes were applied. Status refresh is unavailable; reconnecting will refresh it.',true);}
     if(controlChanged)lastApplied=null;
   });
@@ -175,21 +177,21 @@ async function flushEdits() {
 function discardDraft(){const partial=Boolean(pendingPlan);edits.clear();draft={};draftBaseline=null;pendingPlan=null;compareApplied=false;saveUiState();portAnimator.setPreview(null);updateDraftBar();renderInspector();updateLive();focusLightingControls();if(partial)notify('Preview discarded. Saved changes remain applied.');}
 function draftSummary(){
   const changes=[];
-  if(draft.effect)changes.push(effectSpec(draft.effect.id)?.name||'Effect');
+  for(const effect of effectDrafts(draft)){const name=effectSpec(effect.id)?.name||'Effect';if(!changes.includes(name))changes.push(name);}
   if(Object.keys(draft.colors||{}).length)changes.push('Fixed colors');
   if(draft.returnToEffect?.length)changes.push('Follow group effect');
   if(Object.keys(draft.sfp||{}).length)changes.push('SFP lighting');
   if(draft.sfp_sync)changes.push('SFP synchronization');
-  const effectPorts=draft.effect?.ports;
-  const createsGroup=effectPorts?.length&&!state.zones?.some(zone=>zone.ports.length===effectPorts.length&&zone.ports.every(port=>effectPorts.includes(port)));
+  const effectPorts=effectDrafts(draft).flatMap(effect=>effect.ports);
   const targets=[...new Set([...(effectPorts||[]),...Object.keys(draft.colors||{}).map(Number),...(draft.returnToEffect||[]),...sfpDraftPorts(state,draft)])].sort((a,b)=>a-b);
-  const scope=createsGroup?`New group: Ports ${effectPorts.join(', ')}${targets.some(port=>isSfpPort(port))?' · SFP lighting':''}`:targets.length?selectionName(targets):'Entire setup';
+  const scope=targets.length?selectionName(targets):'Entire setup';
   if(draft.brightness!==undefined)changes.push('Default brightness');
   if(draft.mode)changes.push(draft.mode==='running'?'Enable EE lighting':'Return to UniFi');
   return `${changes.join(', ')} · ${scope} · Unsaved preview`;
 }
 function updateDraftBar(){
   updateUndo();
+  const pending=document.querySelector('#pending-lighting');if(pending){pending.hidden=!edits.size||page==='Lighting'||page==='Effects';pending.querySelector('span').textContent=draftSummary();}
   const bar=document.querySelector('#draft-actions');if(bar)bar.hidden=!edits.size;
   const label=bar?.querySelector('[data-draft-label]');if(label)label.textContent=pendingPlan?`${appliedCount} confirmed · ${pendingPlan.length} remaining`:draftSummary();
   const apply=bar?.querySelector('#apply-draft');if(apply){apply.disabled=Boolean(view.querySelector('input:invalid'))||busy>0||disconnected||!state.connected;apply.textContent=busy?'Applying…':pendingPlan?'Retry remaining changes':'Apply changes';apply.title=disconnected||!state.connected?'Reconnect the switch to apply this preview.':'';}
@@ -233,7 +235,7 @@ function copperSelection() { return (state.ports||[]).map(port=>port.port).filte
 function sfpSelection() { return (state.sfp||[]).map(port=>port.port).filter(port=>selected.has(port)).sort((a,b)=>a-b); }
 function canFollowGroup(){return copperSelection().some(id=>{
   if(Object.hasOwn(draft.colors||{},id))return true;
-  if(draft.returnToEffect?.includes(id)||(draft.effect?.clearOverrides&&draft.effect?.ports?.includes(id)))return false;
+  if(draft.returnToEffect?.includes(id)||effectDraftForPort(draft,id)?.clearOverrides)return false;
   const port=state.ports.find(port=>port.port===id);
   return Boolean(state.overrides?.[id]||port?.override||port?.source?.kind==='override');
 });}
@@ -247,9 +249,9 @@ function selectionName(ports = [...selected].sort((a,b) => a-b)) {
 }
 function zoneFor(port) { return state.zones?.find(zone => zone.ports.includes(port)); }
 function effectSignature(effect) { return effect ? JSON.stringify([effect.id,Object.entries(effect.params||{}).sort(([a],[b])=>a.localeCompare(b))]) : ''; }
-function selectionEffects() { return copperSelection().map(port=>effectSignature(draft.effect?.ports.includes(port)?draft.effect:zoneFor(port)?.effect)); }
+function selectionEffects() { return copperSelection().map(port=>effectSignature(effectDraftForPort(draft,port)||zoneFor(port)?.effect)); }
 function hasMixedEffects() { return new Set(selectionEffects()).size>1; }
-function currentEffect() { return hasMixedEffects() ? undefined : draft.effect || zoneFor(copperSelection()[0])?.effect; }
+function currentEffect() { return hasMixedEffects() ? undefined : effectDraftForPort(draft,copperSelection()[0]) || zoneFor(copperSelection()[0])?.effect; }
 function effectSpec(id) { return effects.find(effect => effect.id === id); }
 
 async function chooseEffect(config) {
@@ -263,11 +265,7 @@ async function chooseEffect(config) {
 function focusEditor(){const heading=document.querySelector('#inspector h2');if(heading){heading.tabIndex=-1;heading.focus();}}
 function focusLightingControls(){if(page==='Lighting'&&!document.querySelector('dialog[open]'))focusEditor();}
 function stageEffect(config){
-  draft.effect={...clone(config),clearOverrides:config.clearOverrides??draft.effect?.clearOverrides??false,zoneId:draft.effect?.zoneId||`group-${crypto.randomUUID()}`};
-  if(config.clearOverrides){
-    for(const id of config.ports||[])if(draft.colors)delete draft.colors[id];
-    if(draft.returnToEffect)draft.returnToEffect=draft.returnToEffect.filter(id=>!config.ports.includes(id));
-  }
+  draft=stageEffectDraft(draft,config,`group-${crypto.randomUUID()}`);
   queueEdit('effect');
 }
 
@@ -284,12 +282,12 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
     const allowed=await secondaryCleanup.canLeave();if(version!==navigationVersion)return;
     if(!allowed){await canceled();return;}
   }
-  const sharedEditor=['Lighting','Effects'].includes(page)&&['Lighting','Effects'].includes(target);
-  if(!keepDraft&&(!sharedEditor||pendingPlan)){
+  const invalid=secondaryCleanup?.canLeave?null:view.querySelector('input:invalid');if(invalid){invalid.focus();notify('Correct the highlighted value before leaving this page.',true);await canceled();return;}
+  if(!keepDraft&&pendingPlan){
     const allowed=await confirmDraft();if(version!==navigationVersion)return;
     if(!allowed){await canceled();return;}
   }
-  await operation.catch(()=>{});if(version!==navigationVersion)return;activeColorPopover?.();secondaryCleanup?.(); secondaryCleanup = undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
+  await operation.catch(()=>{});if(version!==navigationVersion)return;document.querySelector('.rack-workspace-dialog')?.close();activeColorPopover?.();secondaryCleanup?.(); secondaryCleanup = undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
   page = target;document.title=`${page} · Etherlighting Evolved`;
   routeHistory.commit(page,{fromHistory});
   saveUiState();
@@ -303,8 +301,10 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
   }else {
     view.innerHTML = '';
     const renderer = {Automation: renderAutomation, Profiles: renderProfiles, Settings: renderSettings,Help:renderHelp}[page];
-    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,onChange: async () => {await refresh(false); }});
+    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,getDraftScene:previewScene,onSavePreview:savePreviewProfile,onUndoApply:undoLastApply,canUndoApply:()=>Boolean(lastApplied?.after)&&!edits.size,initialRuleId:requestedRuleId,onBeforeMutation:confirmDraft,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,onChange: async () => {await refresh(false); }});
+    requestedRuleId=undefined;
   }
+  updateDraftBar();
 }
 
 function renderStudio() {
@@ -313,7 +313,7 @@ function renderStudio() {
     <div class="studio-content"><section class="canvas-area">
       <div class="canvas-heading"><div><h1><span id="switch-title">${escape(switchTitle(state))}</span> ${session.simulated?'<span class="demo-badge">Demo</span>':''}</h1><p class="muted" id="map-output-status">Select ports to preview and apply lighting.</p></div><span id="selected-label" class="selection-count"></span></div>
       <div id="uplink-bandwidth"></div>
-      <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button></div>
+      <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
       <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint"><section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section></div>
       <div class="canvas-footer"><div class="link-legend">${speedLegend()}<span class="uplink-label">${uplinkIcon()} Uplink</span><span>${poeIcon()} PoE</span></div><span class="muted" id="selection-hint">${escape(currentSelectionHint())}</span></div>
       <div class="brightness-controls"><div class="output-control"><label for="master">Default brightness</label><input id="master" type="range" min="0" max="100" step="1" value="${number(draft.brightness??state.brightness,100)}"><output id="master-value">${number(draft.brightness??state.brightness,100)}%</output></div><button class="button quiet" id="toggle-output"></button><span class="help-text ownership-preview" id="ownership-preview" hidden></span></div>
@@ -328,6 +328,7 @@ function renderStudio() {
   document.querySelector('#compare-draft').onclick=()=>{compareApplied=!compareApplied;updateDraftBar();};
   document.querySelector('#group-select').onchange=event=>{const option=portScopeOptions(state).find(item=>item.value===event.target.value);if(option)setSelection(option.ports);};
   document.querySelector('#manage-groups').onclick=()=>run(openGroups);
+  document.querySelector('#rack-workspace-toggle').onclick=openWorkspaceTools;
   document.querySelector('#select-all').onclick=()=>setSelection(allPorts());
   document.querySelector('#select-none').onclick=()=>setSelection([]);
   document.querySelector('[data-select="ethernet"]').onclick=()=>setSelection(state.ports.map(p=>p.port));
@@ -342,10 +343,24 @@ function renderStudio() {
   document.querySelector('#master').oninput=event=>{const value=Number(event.target.value);document.querySelector('#master-value').textContent=`${value}%`;if(value===state.brightness){delete draft.brightness;edits.delete('master');if(!edits.size)draftBaseline=null;saveUiState();updateDraftBar();portAnimator.setPreview(edits.size?previewDraft:null);updateLive();}else{draft.brightness=value;queueEdit('master');}};
   updateRangeProgress();
 }
+function openWorkspaceTools() {
+  const toolbar=document.querySelector('.workspace-toolbar');
+  if(!toolbar||toolbar.closest('dialog'))return;
+  const dialog=document.createElement('dialog');dialog.className='dialog rack-workspace-dialog';dialog.setAttribute('aria-label','Workspace');
+  dialog.innerHTML='<header class="dialog-header"><h2>Workspace</h2><button class="button quiet" type="button">Done</button></header>';
+  const place=document.createComment('Workspace tools');toolbar.before(place);dialog.append(toolbar);document.body.append(dialog);
+  const close=()=>dialog.close();
+  const action=event=>{if(event.target.closest('button'))close();};
+  const resized=()=>{if(!matchMedia('(max-width: 700px), (max-height: 500px) and (min-width: 900px)').matches)close();};
+  dialog.querySelector('.dialog-header button').onclick=close;
+  toolbar.addEventListener('click',action,true);window.addEventListener('resize',resized);
+  dialog.addEventListener('close',()=>{toolbar.removeEventListener('click',action,true);window.removeEventListener('resize',resized);if(place.isConnected)place.replaceWith(toolbar);else toolbar.remove();dialog.remove();if(page==='Lighting')document.querySelector('#rack-workspace-toggle')?.focus({preventScroll:true});},{once:true});
+  dialog.showModal();
+}
 function allPorts(){return [...(state.ports||[]),...(state.sfp||[])].map(p=>p.port);}
 function updateUndo(){const button=document.querySelector('#undo-last');if(button){button.disabled=!lastApplied?.after||Boolean(edits.size);button.title=edits.size?'Apply or discard the preview before undoing.':!lastApplied?.after?'Apply a lighting change to enable Undo.':'Restore the lighting before the last Apply.';}}
 async function undoLastApply(){
-  if(!lastApplied?.after||!await confirmDraft())return;
+  if(!lastApplied?.after||!await confirmDraft())return false;
   await serialize(async()=>{
     const saved=lastApplied;
     if(saved.mode!==state.mode)throw new Error('Lighting control changed. Review the current setup before undoing.');
@@ -364,7 +379,7 @@ function openPortDetails(){
     const link=linkStatus(port),source=controlSource(state,port.port,effects),power=portPower(port),name=portLabel(port,isSfpPort(port.port));
     const clients=port.controller?.clients;
     const clientNames=Array.isArray(clients)&&clients.length?`<dt>Associated clients</dt><dd><ul class="client-names">${clients.map(client=>`<li>${escape(client.name||'Unnamed device')}</li>`).join('')}</ul>${port.controller.clients_truncated?`<span class="muted">${number(port.controller.count)} clients total</span>`:''}</dd>`:'';
-    return `<section><h3>${escape(name.text)}</h3><dl class="settings-details"><dt>Link</dt><dd>${escape(link.label)}${isUplink(port)?' · Uplink':''}</dd>${!isSfpPort(port.port)?`<dt>Power</dt><dd>${escape(power.description)}${power.delivering?' · '+poeTier(port.poe).name:''}</dd>`:''}<dt>Lighting</dt><dd>${escape(source.label)}</dd>${clientNames}</dl></section>`;
+    return `<section><h3>${escape(`${isSfpPort(port.port)?'SFP':'Port'} ${port.port}`)}${name.text===`${isSfpPort(port.port)?'SFP':'Port'} ${port.port}`?'':' · '+escape(name.text)}</h3><dl class="settings-details"><dt>Link</dt><dd>${escape(link.label)}${isUplink(port)?' · Uplink':''}</dd>${!isSfpPort(port.port)?`<dt>Power</dt><dd>${escape(power.description)}${power.delivering?' · '+poeTier(port.poe).name:''}</dd>`:''}<dt>Lighting</dt><dd>${escape(source.label)}</dd>${clientNames}</dl></section>`;
   }).join('');
   dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port details</h2><button class="button icon-button" aria-label="Close">×</button></header>${sections}<footer class="dialog-footer"><button class="button">Done</button></footer></form>`;
   document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();
@@ -372,7 +387,7 @@ function openPortDetails(){
 function saveUiState(){clearTimeout(saveUiTimer);const key=workspaceStorageKey(session);if(!key||!workspaceReady)return;try{sessionStorage.setItem(key,JSON.stringify({page,editor,selected:[...selected],draft,draftBaseline,recovery:pendingPlan?{before:lastApplied?.before,after:lastApplied?.after,mode:lastApplied?.mode}:null,galleryState,effects:[...rememberedEffects]}));}catch{}}
 
 async function applyProfile(name){
-  if(!await confirmDraft())return;
+  if(!await confirmDraft())return false;
   await serialize(async()=>{
     if(disconnected||!state.connected)throw new Error('Reconnect the switch before applying a profile.');
     const send=workspaceRequest(),workspace=session.workspace_id;
@@ -414,7 +429,7 @@ function previewDraft(time){
     const peakTraffic=activityPeak(ports.map(port=>state.ports?.find(p=>p.port===port)?.facts||{}));
     ports.forEach((port,index)=>{
       if(!targets.has(port))return;
-      if(state.overrides?.[port]&&!draft.returnToEffect?.includes(port)&&!(draft.effect?.clearOverrides&&draft.effect.ports.includes(port))){const live=state.ports.find(p=>p.port===port);result[port]=masterDisplayRgb(live,master*100,number(state.brightness,100),state.rules,state.output?.gamma,date);return;}
+      if(state.overrides?.[port]&&!draft.returnToEffect?.includes(port)&&!effectDraftForPort(draft,port)?.clearOverrides){const live=state.ports.find(p=>p.port===port);result[port]=masterDisplayRgb(live,master*100,number(state.brightness,100),state.rules,state.output?.gamma,date);return;}
       if(normalized.id==='daylight'&&!Number.isFinite(hour)){result[port]??=portDisplayRgb(state.ports.find(p=>p.port===port)||{},state.output?.gamma);return;}
     const facts=state.ports?.find(p=>p.port===port)?.facts||{};
       const rule=matchingRule(state.rules||[],{id:port,facts},date);
@@ -425,7 +440,7 @@ function previewDraft(time){
   };
   const returned=new Set(draft.returnToEffect||[]),zones=new Set();
   for(const port of returned){const zone=zoneFor(port);if(zone&&!zones.has(zone.id)){zones.add(zone.id);render(zone.effect,zone.ports,returned);}}
-  if(draft.effect)render(draft.effect,draft.effect.ports);
+  for(const effect of effectDrafts(draft))render(effect,effect.ports);
   for(const [port,color] of Object.entries(draft.colors||{}))result[port]=manualDisplayRgb(color.color,color.brightness,master*100);
   const sync=sfpSync(state,draft),sfpPorts=sfpDraftPorts(state,draft);
   for(const port of sfpPorts){
@@ -443,7 +458,10 @@ function previewDraft(time){
 }
 
 function speedLegend() {
-  return [...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']].map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');
+  const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']];
+  const used=new Set([...(state.ports||[]),...(state.sfp||[])].map(port=>linkStatus(port).key));
+  const markup=items=>items.map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');
+  return `<span class="current-speed-legend">${markup(entries.filter(([key])=>used.has(key)))}</span><details class="full-speed-legend"><summary>All link speeds</summary><div>${markup(entries)}</div></details>`;
 }
 function speedMarkup(link) {return `<i class="speed-dot speed-${link.key}" aria-hidden="true"></i><span>${escape(link.label)}</span>`;}
 function poeTier(poe) {
@@ -491,6 +509,8 @@ function renderPorts() {
   }));
 }
 function updateLive() {
+  const legend=document.querySelector('.current-speed-legend');
+  if(legend){const keys=new Set([...(state.ports||[]),...(state.sfp||[])].map(port=>linkStatus(port).key));const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']].filter(([key])=>keys.has(key));const signature=entries.map(([key])=>key).join(',');if(legend.dataset.keys!==signature){legend.innerHTML=entries.map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');legend.dataset.keys=signature;}}
   uplinkBandwidth?.update(state,disconnected);
   if(document.hidden)return;
   if(page==='Effects'){secondaryCleanup?.update?.({state,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft});return;}
@@ -535,7 +555,7 @@ function updateLive() {
   const master = document.querySelector('#master');
   const mapStatus=document.querySelector('#map-output-status');
   if(mapStatus){const text=disconnected||!state.connected?'Last confirmed colors · Connection interrupted':state.mode==='released'?'UniFi controls the lighting':edits.size&&!compareApplied?'Previewing unapplied lighting':'Select ports to preview and apply lighting.';if(mapStatus.textContent!==text)mapStatus.textContent=text;}
-  const sourceLabel=document.querySelector('.control-source');if(sourceLabel){const text=sourceSummary();if(sourceLabel.textContent!==text)sourceLabel.textContent=text;}
+  updateControlSource();
   if (master && document.activeElement !== master && !edits.has('master') && !busy) {
     const value=String(number(state.brightness,100));if(master.value!==value)master.value=value;
     const output=document.querySelector('#master-value');if(output.textContent!==`${value}%`)output.textContent=`${value}%`;
@@ -560,17 +580,19 @@ function updateGroups() {
   const details=document.querySelector('#port-details');if(details)details.disabled=!selected.size;
 }
 async function setSelection(ports, mode) {
-  if(!await confirmDraft()){updateGroups();return false;} selected = new Set(ports); editor = mode||([...selected].length&&[...selected].every(id=>controlSource(state,id,effects).kind==='color')?'color':'effect'); inspectorSignature='';saveUiState();
+  if(pendingPlan&&!await confirmDraft()){updateGroups();return false;}
+  const invalid=view.querySelector('input:invalid');if(invalid){invalid.focus();notify('Correct the highlighted value before selecting other ports.',true);updateGroups();return false;}
+  activeColorPopover?.();selected = new Set(ports); editor = mode||([...selected].length&&[...selected].every(id=>draft.colors?.[id]||(!draft.returnToEffect?.includes(id)&&!effectDraftForPort(draft,id)?.clearOverrides&&controlSource(state,id,effects).kind==='color'))?'color':'effect'); inspectorSignature='';saveUiState();
   document.querySelectorAll('[data-port]').forEach(tile => { const active=selected.has(Number(tile.dataset.port)); tile.classList.toggle('selected',active); tile.setAttribute('aria-pressed', String(active)); });
   updateGroups();  renderInspector();
   return true;
 }
 
 function controlSection(title, content, symbol = '', className = '') {
-  return `<section class="control-section ${className}"><h3 class="control-section-heading">${symbol?icon(symbol):''}<span>${escape(title)}</span></h3><div class="parameter-grid control-section-body">${content}</div></section>`;
+  return `<section class="control-section ${className}">${className.includes('primary-appearance')?'':`<h3 class="control-section-heading">${symbol?icon(symbol):''}<span>${escape(title)}</span></h3>`}<div class="parameter-grid control-section-body">${content}</div></section>`;
 }
-function colorControl(key, caption, value, brightness=100, randomKey, random=false) {
-  return `<div class="parameter color-parameter"><label>${escape(caption)}</label><div class="color-control"><input class="color-swatch" type="color" data-color="${escape(key)}" value="${hex(value)}" aria-label="${escape(caption)}"><input class="hex-input" data-hex="${escape(key)}" value="${hex(value).toUpperCase()}" aria-label="${escape(caption)} hex color" maxlength="7" spellcheck="false"></div><div class="parameter-meta"><label for="brightness-${escape(key)}">Brightness</label><output>${number(brightness,100)}%</output></div><input id="brightness-${escape(key)}" data-brightness="${escape(key)}" type="range" min="0" max="100" step="1" value="${number(brightness,100)}" aria-label="${escape(caption)} brightness">${randomKey?`<label class="check-row"><input type="checkbox" data-random="${escape(randomKey)}" ${random?'checked':''}><span>Randomize</span></label>`:''}</div>`;
+function colorControl(key, caption, value, brightness=100, randomKey, random=false, relative=false) {
+  return `<div class="parameter color-parameter" ${relative?'data-relative-level="true"':''}><label>${escape(caption)}</label><div class="color-control"><input class="color-swatch" type="color" data-color="${escape(key)}" value="${hex(value)}" aria-label="${escape(caption)}"><input class="hex-input" data-hex="${escape(key)}" value="${hex(value).toUpperCase()}" aria-label="${escape(caption)} hex color" maxlength="7" spellcheck="false"></div><div class="parameter-meta"><label for="brightness-${escape(key)}">${relative?'Color level':'Brightness'}</label><output>${number(brightness,100)}%</output></div><input id="brightness-${escape(key)}" data-brightness="${escape(key)}" type="range" min="0" max="100" step="1" value="${number(brightness,100)}" aria-label="${escape(caption)} ${relative?'color level':'brightness'}"><span class="help-text configured-level" ${relative&&number(draft.brightness??state.brightness,100)<100?'':'hidden'}>Configured peak: ${Math.round(number(brightness,100)*number(draft.brightness??state.brightness,100)/100)}%</span>${randomKey?`<label class="check-row"><input type="checkbox" data-random="${escape(randomKey)}" ${random?'checked':''}><span>Randomize</span></label>`:''}</div>`;
 }
 function paramControl(spec, value) {
   const attr=`data-param="${escape(spec.key)}"`;
@@ -593,7 +615,33 @@ function preserveInspectorFocus(render,selector){
   render();const details=document.querySelector('#inspector .more-settings');if(details&&open)details.open=true;
   if(key)document.querySelector('#inspector')?.querySelector(key)?.focus({preventScroll:true});
 }
-function sourceSummary(){const sources=[...selected].map(id=>controlSource(state,id,effects));const labels=[...new Set(sources.map(s=>s.label))];return labels.length===1?`${state.mode==='released'?'Saved':'Applied'}: ${labels[0]}`:'Selected ports use different lighting';}
+function sourceSummary(){
+  const sources=[...selected].map(id=>controlSource(state,id,effects)),rules=sources.filter(source=>source.kind==='rule');
+  if(rules.length)return `${rules.length===sources.length?'Controlled by automation':`${rules.length} of ${sources.length} ports controlled by automation`}: ${[...new Set(rules.map(source=>source.label))].join(', ')}`;
+  const labels=[...new Set(sources.map(source=>source.label))];
+  return labels.length===1?`${state.mode==='released'?'Saved':'Applied'}: ${labels[0]}`:'Selected ports use different lighting';
+}
+function updateControlSource(){
+  const host=document.querySelector('.control-source');if(!host)return;
+  const rules=[...selected].map(id=>controlSource(state,id,effects)).filter(source=>source.kind==='rule');
+  const text=sourceSummary(),signature=JSON.stringify([text,rules.map(source=>source.rule?.id)]);
+  if(host.dataset.signature===signature)return;host.dataset.signature=signature;host.replaceChildren();
+  const caption=document.createElement('span');caption.textContent=text;host.append(caption);
+  if(rules.length){const button=document.createElement('button');button.className='button quiet';button.type='button';button.dataset.openRule=rules[0].rule?.id||'';button.textContent='Edit automation';button.onclick=()=>{requestedRuleId=button.dataset.openRule;run(()=>navigate('Automation'));};host.append(button);}
+}
+function previewScene(){
+  if(!edits.size||pendingPlan)return null;
+  return lightingSnapshot({zones:state.zones,rules:state.rules,overrides:state.overrides||{},brightness:state.brightness,sfp:Object.fromEntries((state.sfp||[]).map(light=>[light.port,sfpSettings(light)])),sfp_sync:state.sfp_sync},state,draft);
+}
+async function savePreviewProfile(name){
+  if(pendingPlan||draft.mode!==undefined)throw new Error('Apply or discard the lighting control change before saving this preview.');
+  return serialize(async()=>{
+    const send=workspaceRequest(),before=await send('/api/scene');
+    if(draftBaseline&&sceneFingerprint(before.scene)!==draftBaseline)throw new Error('The lighting setup changed while you were editing. Review the current setup before saving this preview.');
+    const scene=lightingSnapshot(before.scene,state,draft);
+    return send('/api/presets','POST',{name,scene,expected_revision:before.revision,overwrite:false});
+  });
+}
 function copperInspectorKey(){
   const colors=editor==='color'?[...selected].map(id=>{const settings=fixedColorSettings(state,id,draft);return {...settings,effectiveBrightness:fixedColorBrightness(settings,state,draft)};}):null;
   return JSON.stringify([editor,[...selected],selectionEffects(),colors]);
@@ -611,7 +659,7 @@ function renderInspector() {
   const header=host.querySelector('.inspector-header');
   if(header){const back=document.createElement('button');back.type='button';back.className='button quiet mobile-only';back.id='back-to-ports';back.textContent='Back to ports';back.onclick=()=>{const studio=document.querySelector('.studio-content');studio?.classList.remove('is-editing-ports');if(studio)studio.scrollTop=number(studio.dataset.canvasScroll);document.querySelector('#open-port-controls')?.focus({preventScroll:true});};header.prepend(back);}
   const details=host.querySelector('.more-settings');if(details&&open)details.open=true;
-  host.scrollTop=scroll;
+  updateControlSource();host.scrollTop=scroll;
   enterInspector(host.querySelector('.inspector-sections')||host.querySelector('.sfp-controls'));
 }
 function renderInspectorContent() {
@@ -621,12 +669,12 @@ function renderInspectorContent() {
   const both=Boolean(sfpSelection().length),current=currentEffect(),mixed=hasMixedEffects(),spec=effectSpec(current?.id),values={...defaultConfig(current?.id||'static').params,...current?.params};
   if(both)editor='color';
   inspectorSignature=copperInspectorKey();
-  host.innerHTML=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${escape(selectionName())}</p></div></header><p class="control-source">${escape(sourceSummary())}</p><div class="editor-tabs" role="group" aria-label="Edit mode"><button class="button ${editor==='color'?'selected':''}" data-editor="color" aria-pressed="${editor==='color'}">Fixed color</button><button class="button ${editor==='effect'?'selected':''}" data-editor="effect" aria-pressed="${editor==='effect'}">Effect</button></div><div class="inspector-sections" id="parameter-grid"></div><div class="inspector-actions"><button class="button quiet" id="copy-appearance" ${selected.size!==1?'disabled':''}>Copy appearance</button><button class="button quiet" id="paste-appearance" ${!copiedAppearance?'disabled':''}>Paste appearance</button></div>`;
+  host.innerHTML=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${escape(selectionName())}</p></div></header><div class="control-source"></div><div class="inspector-mode-row"><div class="editor-tabs" role="group" aria-label="Edit mode"><button class="button ${editor==='color'?'selected':''}" data-editor="color" aria-pressed="${editor==='color'}">Fixed color</button><button class="button ${editor==='effect'?'selected':''}" data-editor="effect" aria-pressed="${editor==='effect'}">Effect</button></div><div class="effect-choice-slot"></div></div><div class="inspector-sections" id="parameter-grid"></div><div class="inspector-actions"><button class="button quiet" id="copy-appearance" ${selected.size!==1?'disabled':''}>Copy appearance</button><button class="button quiet" id="paste-appearance" ${!copiedAppearance?'disabled':''}>Paste appearance</button></div>`;
   host.querySelectorAll('[data-editor]').forEach(button=>button.onclick=()=>{if(button.dataset.editor==='effect'&&both){run(()=>navigate('Effects'));return;}editor=button.dataset.editor;preserveInspectorFocus(renderInspector,`[data-editor="${editor}"]`);});
   if(both)host.querySelector('[data-editor="effect"]').textContent='Browse effects';
   const copyButton=host.querySelector('#copy-appearance');
   if(selected.size===1&&!currentEffect()&&!draft.colors?.[[...selected][0]]&&!state.overrides?.[[...selected][0]]){copyButton.disabled=true;copyButton.title='Choose a color or effect for this port first.';}
-  copyButton.onclick=()=>{const id=[...selected][0],p=[...state.ports,...state.sfp].find(p=>p.port===id),manual=draft.colors?.[id]||state.overrides?.[id];copiedAppearance=isSfpPort(id)?{type:'sfp',settings:sfpSettings({...p,...draft.sfp?.[id]})}:manual?{type:'color',settings:clone(manual)}:{type:'effect',settings:clone(currentEffect())};host.querySelector('#paste-appearance').disabled=false;notify('Appearance copied');};
+  copyButton.onclick=()=>{const id=[...selected][0],p=[...state.ports,...state.sfp].find(p=>p.port===id),manual=draft.colors?.[id]||(!draft.returnToEffect?.includes(id)&&!effectDraftForPort(draft,id)?.clearOverrides?state.overrides?.[id]:null);copiedAppearance=isSfpPort(id)?{type:'sfp',settings:sfpSettings({...p,...draft.sfp?.[id]})}:manual?{type:'color',settings:clone(manual)}:{type:'effect',settings:clone(currentEffect())};host.querySelector('#paste-appearance').disabled=false;notify('Appearance copied');};
   host.querySelector('#paste-appearance').onclick=()=>{
     if(copiedAppearance.type==='effect'){
       if(!copperSelection().length){notify('Select Ethernet ports for this effect.');return;}
@@ -649,7 +697,7 @@ function renderInspectorContent() {
     const settings=[...selected].map(id=>fixedColorSettings(state,id,draft));
     const sameColor=equalSetting(settings.map(s=>s.color)),sameBrightness=equalSetting(settings.map(s=>fixedColorBrightness(s,state,draft)));
     const followingSfp=both&&sfpSync(state,draft).mode==='ethernet';
-    grid.innerHTML=controlSection('Appearance',colorControl('manual','Color',settings[0].color,fixedColorBrightness(settings[0],state,draft))+`<p class="help-text">Apply keeps these ports at their previewed color and brightness.${followingSfp?' SFP lights continue following their selected Ethernet port.':both&&(draft.brightness??state.brightness)<100?' SFP colors also follow Default brightness.':''}</p><button class="button quiet" id="restore-effect" ${!canFollowGroup()?'disabled':''}>Follow group effect</button>`,'blend');
+    grid.innerHTML=controlSection('Appearance',colorControl('manual','Color',settings[0].color,fixedColorBrightness(settings[0],state,draft))+`<p class="help-text">Apply keeps these ports at their previewed color and brightness.${followingSfp?' SFP lights continue following their selected Ethernet port.':both&&(draft.brightness??state.brightness)<100?' SFP colors also follow Default brightness.':''}</p><button class="button quiet" id="restore-effect" ${!canFollowGroup()?'disabled':''}>Resume group effect</button>`,'blend','primary-appearance');
     if(!sameColor){const field=grid.querySelector('[data-hex]');field.value='';field.placeholder='#409EFF';field.dataset.allowEmpty='true';setMixedColor(grid.querySelector('[data-color]'),true);}
     if(!sameBrightness)grid.querySelector('output').textContent='Mixed';
     bindColors(grid,(_key,value,brightness,changed)=>{
@@ -663,12 +711,12 @@ function renderInspectorContent() {
       for(const id of followingSfp?[]:sfpEditTargets(state,sfpSelection(),draft))draft.sfp[id]={...sfpSettings(editableSfpLight(state,id,draft)),mode:'color',effect:'steady',[changed==='brightness'?'color_brightness':changed]:changed==='color'?value:brightness};
       queueEdit('colors');
     });
-    grid.querySelector('#restore-effect').onclick=()=>{draft.returnToEffect=copperSelection();delete draft.colors;queueEdit('return-effect');editor='effect';renderInspector();};
+    grid.querySelector('#restore-effect').onclick=()=>{draft.returnToEffect=[...new Set([...(draft.returnToEffect||[]),...copperSelection()])];for(const id of copperSelection())if(draft.colors)delete draft.colors[id];queueEdit('return-effect');editor='effect';renderInspector();};
     updateDraftBar();return;
   }
   const description=EFFECTS.find(effect=>effect.id===spec?.id)?.description||spec?.description;
-  grid.innerHTML=controlSection('Effect',`<div class="effect-summary"><strong>${mixed?'Multiple effects':escape(spec?.name||'Choose an effect')}</strong><p class="muted">${escape(mixed?'Choose one effect for the selected ports.':description||'Browse animated previews to choose an effect.')}</p><button class="button" id="browse-effects">Browse effects</button></div>`,'wave');
-  grid.querySelector('#browse-effects').onclick=()=>run(()=>navigate('Effects'));
+  host.querySelector('.effect-choice-slot').innerHTML=`<div class="effect-summary effect-choice"><button class="button" id="browse-effects" aria-label="Choose effect: ${mixed?'Multiple effects':escape(spec?.name||'None')}" title="${escape(description||'Browse lighting effects')}">${mixed?'Multiple effects':escape(spec?.name||'Choose effect')} ${icon('chevron')}</button></div>`;
+  host.querySelector('#browse-effects').onclick=()=>run(()=>navigate('Effects'));
   if(!spec)return;
   const ports=copperSelection(),source={id:current.id,params:clone(values)};
   const editParams=change=>{for(const [left,right] of spec.exclusive_params||[]){if(change[left]===true)change[right]=false;if(change[right]===true)change[left]=false;}Object.assign(source.params,change);stageEffect({...clone(source),ports});};
@@ -678,12 +726,12 @@ function renderInspectorContent() {
     if(spec.id==='breathing'){if(p.key==='pace')return values.playback==='synchronized';if(['period','floor','ripple'].includes(p.key))return values.playback!=='synchronized';}
     return true;
   });
-  const controls=visible.map(p=>({param:p,html:p.type==='color'?colorControl(p.key,p.label,values[p.key]??p.default,values[p.brightness_param]??100,values.playback==='synchronized'?null:p.random_param,values[p.random_param]??false):paramControl(p,values[p.key]??p.default)}));
+  const controls=visible.map(p=>({param:p,html:p.type==='color'?colorControl(p.key,p.label,values[p.key]??p.default,values[p.brightness_param]??100,values.playback==='synchronized'?null:p.random_param,values[p.random_param]??false,true):paramControl(p,values[p.key]??p.default)}));
   const uplink=spec.id==='traffic'?controls.filter(c=>['custom_uplink','uplink_color'].includes(c.param.key)):[];
   const colors=controls.filter(c=>c.param.type==='color'&&!uplink.includes(c));
   const motion=controls.filter(c=>['speed','rate','period','pace','playback','color_transition'].includes(c.param.key)||spec.id==='daylight');
   const more=controls.filter(c=>!colors.includes(c)&&!motion.includes(c)&&!uplink.includes(c));
-  grid.insertAdjacentHTML('beforeend',(colors.length?controlSection('Appearance',colors.map(c=>c.html).join(''),'blend'):'')+(uplink.length?controlSection('Uplink',uplink.map(c=>c.html).join(''),'arrow'):'')+(motion.length?controlSection('Motion',motion.map(c=>c.html).join(''),'clock'):'')+(more.length?`<details class="more-settings control-section"><summary>More settings</summary><div class="parameter-grid control-section-body">${more.map(c=>c.html).join('')}</div></details>`:''));
+  grid.insertAdjacentHTML('beforeend',(colors.length?controlSection('Appearance',colors.map(c=>c.html).join(''),'blend','primary-appearance'):'')+(uplink.length?controlSection('Uplink',uplink.map(c=>c.html).join(''),'arrow'):'')+(motion.length?controlSection('Motion',motion.map(c=>c.html).join(''),'clock'):'')+(more.length?`<details class="more-settings control-section"><summary>More settings</summary><div class="parameter-grid control-section-body">${more.map(c=>c.html).join('')}</div></details>`:''));
   bindColors(grid,(key,value,brightness,changed)=>{const p=spec.params.find(p=>p.key===key);editParams(changed==='brightness'&&p.brightness_param?{[p.brightness_param]:brightness}:{[key]:value});});
   grid.querySelectorAll('[data-random]').forEach(input=>input.onchange=()=>{editParams({[input.dataset.random]:input.checked});preserveInspectorFocus(renderInspector,`[data-random="${input.dataset.random}"]`);});
   grid.querySelectorAll('[data-param]').forEach(input=>{const p=spec.params.find(p=>p.key===input.dataset.param);input.addEventListener(input.type==='range'?'input':'change',()=>{const value=p.type==='bool'?input.checked:p.type==='choice'?input.value:Number(input.value);const output=input.closest('.parameter').querySelector('output');if(output)output.textContent=paramValue(p,value);editParams({[p.key]:value});if(p.key==='playback'||p.key==='custom_uplink'||spec.exclusive_params?.some(pair=>pair.includes(p.key)))preserveInspectorFocus(renderInspector,`[data-param="${p.key}"]`);});});
@@ -704,7 +752,7 @@ function bindColors(host,onEdit) {
     const emptyAllowed=()=>field.dataset.allowEmpty==='true'&&!field.value.trim();
     field.addEventListener('input',()=>{validate(emptyAllowed()||Boolean(normalizeHex(field.value)));updateDraftBar();});
     field.addEventListener('change',()=>{const normalized=normalizeHex(field.value);validate(emptyAllowed()||Boolean(normalized));if(emptyAllowed()){setMixedColor(input,true);apply('resetColor');return;}if(!normalized)return;setMixedColor(input,false);input.value=normalized;field.value=normalized.toUpperCase();apply('color');});
-    brightness.addEventListener('input',()=>{brightness.closest('.parameter').querySelector('output').textContent=brightness.value+'%';apply('brightness');});
+    brightness.addEventListener('input',()=>{const parameter=brightness.closest('.parameter');parameter.querySelector('output').textContent=brightness.value+'%';const configured=parameter.querySelector('.configured-level');if(configured)configured.textContent=`Configured peak: ${Math.round(Number(brightness.value)*number(draft.brightness??state.brightness,100)/100)}%`;apply('brightness');});
   });updateRangeProgress();
 }
 function sfpInspectorKey(){return JSON.stringify(['sfp',sfpSelection(),sfpSync(state,draft),...sfpSelection().map(id=>sfpSettings(effectiveSfpLight(state,id,draft)))]);}
@@ -732,7 +780,7 @@ function bindSfpSync(host){
 function renderSfp(host){
   const sync=sfpSync(state,draft),ports=sfpSelection(),lights=ports.map(id=>editableSfpLight(state,id,draft)),current=lights[0];
   const targets=sync.mode==='ethernet'?(state.sfp||[]).map(port=>port.port):ports;
-  const header=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${targets.length>4?`SFP ports ${portRanges(targets)}`:targets.map(id=>`SFP ${id}`).join(', ')}</p></div></header><p class="control-source">${escape(sourceSummary())}</p>`;
+  const header=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${targets.length>4?`SFP ports ${portRanges(targets)}`:targets.map(id=>`SFP ${id}`).join(', ')}</p></div></header><div class="control-source"></div>`;
   if(sync.mode==='ethernet'){
     host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}</div>`;
     bindSfpSync(host);inspectorSignature=sfpInspectorKey();updateDraftBar();return;
@@ -742,15 +790,15 @@ function renderSfp(host){
   let appearance=modeControl, motion='';
   if(mode==='color'){
     appearance+=`<div class="parameter parameter-inline"><label for="sfp-effect">Effect</label><select id="sfp-effect">${effect==='mixed'?'<option value="mixed" disabled selected>Mixed</option>':''}${[['steady','Steady'],['pulse','Gentle pulse'],['two_color','Two-color fade'],['color_cycle','Color cycle']].map(([id,name])=>`<option value="${id}" ${id===effect?'selected':''}>${name}</option>`).join('')}</select></div><button class="button quiet" id="sfp-gallery">Browse effects</button>`;
-    if(effect!=='color_cycle')appearance+=colorControl('color','Primary color',current.color,current.color_brightness??100);
-    if(effect==='two_color')appearance+=colorControl('secondary_color','Secondary color',current.secondary_color,current.secondary_brightness??100);
-    if(effect==='color_cycle')appearance+=paramControl({key:'color_brightness',label:'Brightness',type:'int',min:0,max:100,step:1,unit:'%'},current.color_brightness??100);
+    if(effect!=='color_cycle')appearance+=colorControl('color','Primary color',current.color,current.color_brightness??100,null,false,true);
+    if(effect==='two_color')appearance+=colorControl('secondary_color','Secondary color',current.secondary_color,current.secondary_brightness??100,null,false,true);
+    if(effect==='color_cycle')appearance+=paramControl({key:'color_brightness',label:'Color level',type:'int',min:0,max:100,step:1,unit:'%'},current.color_brightness??100,null,false,true);
     if(!['steady','mixed'].includes(effect)){
       const range=sfpDurationRange(effect,current.period??6,sfpNativeAvailable(state));
       motion=paramControl({key:'period',label:'Cycle duration',type:'float',min:range.min,max:range.max,step:range.step,unit:'s',description:range.savedCustom?`Saved duration: ${current.period} s. Moving the slider selects a new duration.`:undefined},range.value);
     }
   }else appearance+=`<p class="help-text">${mode==='unmanaged'?'The indicator follows the port’s link status. Its color appears here when reported.':mode==='off'?'The selected lights are turned off.':'Choose a lighting mode for the selected SFP ports.'}</p>`;
-  host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}${controlSection('Appearance',appearance,'blend')}${motion?controlSection('Motion',motion,'clock'):''}</div>`;
+  host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}${controlSection('Appearance',appearance,'blend','primary-appearance')}${motion?controlSection('Motion',motion,'clock'):''}</div>`;
   bindSfpSync(host);
   const set=change=>{draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft)){const light=editableSfpLight(state,port,draft);draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(light),...(typeof change==='function'?change(light):change)});}queueEdit('sfp');};
   host.querySelector('#sfp-mode').onchange=event=>{set({mode:event.target.value});preserveInspectorFocus(renderInspector,'#sfp-mode');};
@@ -774,6 +822,10 @@ function reconcileEditor(force = false) {
 }
 
 function updateRangeProgress() {
+  document.querySelectorAll('[data-relative-level] .configured-level').forEach(output=>{
+    const input=output.closest('.parameter').querySelector('[data-brightness]'),master=number(draft.brightness??state.brightness,100);
+    output.hidden=master===100;output.textContent=`Configured peak: ${Math.round(number(input?.value,100)*master/100)}%`;
+  });
   document.querySelectorAll('input[type="range"]').forEach(input=>{
     const output=input.closest('.parameter')?.querySelector('output')||(input.id==='master'?document.querySelector('#master-value'):null);
     if(output){input.setAttribute('aria-valuetext',output.textContent);if(input.id)output.setAttribute('for',input.id);}
@@ -785,53 +837,14 @@ function updateRangeProgress() {
 }
 function openColorPopover(anchor) {
   activeColorPopover?.();
-  let [h,s,v]=hexToHsv(anchor.value),dismissal;
-  const popup=document.createElement('div'); popup.className='color-popover popover'; popup.setAttribute('role','dialog');popup.setAttribute('aria-label','Choose color');
-  popup.innerHTML=`<div class="color-sv" tabindex="0" role="slider" aria-label="Saturation and value. Arrow keys adjust color." aria-valuemin="0" aria-valuemax="100"><span class="color-sv-cursor"></span></div><label class="sr-only" for="popup-hue">Hue</label><input class="color-hue" id="popup-hue" type="range" min="0" max="359" step="1"><div class="color-rgb">${['R','G','B'].map((key,index)=>`<label>${key}<input type="number" min="0" max="255" step="1" data-rgb="${index}" aria-label="${['Red','Green','Blue'][index]}"></label>`).join('')}</div><div class="color-popup-footer"><label class="sr-only" for="popup-hex">Hex color</label><input id="popup-hex" class="hex-input" maxlength="7" spellcheck="false" aria-label="Hex color"><button class="button quiet" type="button">Done</button></div>`;
-  document.body.append(popup);
-  const library=document.createElement('div');library.className='color-library';popup.append(library);
-  const colorLibrary=mountColorLibrary(library,{getColor:()=>hsvToHex(h,s,v),onChoose:color=>{[h,s,v]=hexToHsv(color);update();},onError:message=>notify(message,true)});
-  const sv=popup.querySelector('.color-sv'),cursor=popup.querySelector('.color-sv-cursor'),hue=popup.querySelector('.color-hue'),field=popup.querySelector('#popup-hex');
-  const position=()=>{
-    const rect=anchor.getBoundingClientRect(),size=popup.getBoundingClientRect();
-    popup.style.position='fixed';popup.style.zIndex='1000';
-    popup.style.left=Math.max(12,Math.min(rect.left,innerWidth-size.width-12))+'px';
-    popup.style.top=Math.max(12,rect.top-size.height-10>=12?rect.top-size.height-10:Math.min(rect.bottom+10,innerHeight-size.height-12))+'px';
-  };
-  const resizeObserver=new ResizeObserver(position);resizeObserver.observe(popup);
-  const reposition=event=>{if(!popup.contains(event.target))position();};
-  const update=(emit=true)=>{
-    const color=hsvToHex(h,s,v);sv.style.setProperty('--hue-color',hsvToHex(h,1,1));cursor.style.left=`${s*100}%`;cursor.style.top=`${(1-v)*100}%`;
-    sv.setAttribute('aria-valuenow',Math.round(s*100));sv.setAttribute('aria-valuetext',`${Math.round(s*100)}% saturation, ${Math.round(v*100)}% value`);hue.value=h;
-    if(emit||document.activeElement!==field){field.value=color;field.setCustomValidity('');}
-    hexToRgb(color).forEach((value,index)=>{const input=popup.querySelector(`[data-rgb="${index}"]`);if(input!==document.activeElement)input.value=value;});
-    if(emit){anchor.value=color;anchor.dispatchEvent(new Event('input',{bubbles:true}));}
-    updateRangeProgress();colorLibrary?.update?.();
-  };
-  const close=(restore=false)=>{
-    dismissal?.();window.removeEventListener('resize',position);window.removeEventListener('scroll',reposition,true);resizeObserver.disconnect();colorLibrary?.();popup.remove();activeColorPopover=undefined;if(restore&&anchor.isConnected)anchor.focus();
-  };
-  const point=event=>{const rect=sv.getBoundingClientRect();s=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));v=1-Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height));update();};
-  sv.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();sv.focus();sv.setPointerCapture(event.pointerId);point(event);});
-  sv.addEventListener('pointermove',event=>{if(sv.hasPointerCapture(event.pointerId))point(event);});
-  sv.addEventListener('pointerup',event=>{if(sv.hasPointerCapture(event.pointerId))sv.releasePointerCapture(event.pointerId);});
-  sv.addEventListener('pointercancel',event=>{if(sv.hasPointerCapture(event.pointerId))sv.releasePointerCapture(event.pointerId);});
-  sv.addEventListener('keydown',event=>{const step=event.shiftKey ? 0.1 : 0.01;if(event.key==='ArrowLeft')s=Math.max(0,s-step);else if(event.key==='ArrowRight')s=Math.min(1,s+step);else if(event.key==='ArrowUp')v=Math.min(1,v+step);else if(event.key==='ArrowDown')v=Math.max(0,v-step);else return;event.preventDefault();update();});
-  hue.addEventListener('input',()=>{h=Number(hue.value);update();});
-  hue.style.touchAction='none';
-  popup.querySelectorAll('[data-rgb]').forEach(input=>input.addEventListener('change',()=>{if(!input.checkValidity()){input.reportValidity();return;}const values=[...popup.querySelectorAll('[data-rgb]')].map(field=>Number(field.value));[h,s,v]=hexToHsv(rgbToHex(values));update();}));
-  field.addEventListener('change',()=>{const color=normalizeHex(field.value);if(!color){field.setCustomValidity('Enter a hex color.');field.reportValidity();return;}field.setCustomValidity('');[h,s,v]=hexToHsv(color);update();field.value=color;});
-  popup.querySelector('.color-popup-footer button').addEventListener('click',()=>{if(!field.checkValidity()){field.reportValidity();return;}close(true);});
-  dismissal=bindPopoverDismissal(popup,anchor,close);
-  window.addEventListener('resize',position);window.addEventListener('scroll',reposition,true);
-  activeColorPopover=close;update(false);position();sv.focus();
+  activeColorPopover=openColorPicker(anchor,{onClose:()=>{activeColorPopover=undefined;},onError:message=>notify(message,true),onRangeChange:updateRangeProgress});
 }
 
 async function openGroups() {
   if(!await confirmDraft())return;
   const send=workspaceRequest(),workspace=session.workspace_id,before=await send('/api/scene');
   const dialog=document.createElement('dialog');dialog.className='dialog group-dialog';dialog.setAttribute('aria-label','Port groups');
-  dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port groups</h2><button class="button icon-button" value="cancel" aria-label="Close">×</button></header><p class="muted">Each Ethernet port belongs to one group. Select ports on the canvas, then create a group for them.</p><div class="group-list">${(state.zones||[]).map(zone=>`<div class="row"><label class="field"><span>Group name</span><input data-group-name="${escape(zone.id)}" value="${escape(zone.name)}" maxlength="${GROUP_NAME_LIMIT}" required></label><span class="muted">${escape(zone.ports.join(', '))}</span></div>`).join('')}</div><div class="field"><label for="new-group-name">Group for ${escape(selectionName())}</label><input id="new-group-name" placeholder="Group name" maxlength="${GROUP_NAME_LIMIT}" ${!copperSelection().length?'disabled':''}></div><p class="inline-error" id="group-error" role="alert"></p><footer class="dialog-footer"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" id="save-groups" type="button">Save groups</button></footer></form>`;
+  dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port groups</h2><button class="button icon-button" value="cancel" aria-label="Close">×</button></header><p class="muted">Each Ethernet port belongs to one group. Select ports on the canvas, then create a group for them.</p><h3>Existing groups</h3><div class="group-list">${(state.zones||[]).map(zone=>`<div class="row"><label class="field"><span>Group name</span><input data-group-name="${escape(zone.id)}" value="${escape(zone.name)}" maxlength="${GROUP_NAME_LIMIT}" required></label><span class="muted">Ports ${escape(portRanges(zone.ports))}</span></div>`).join('')}</div><h3>New group</h3><div class="field"><label for="new-group-name">Group for ${escape(selectionName())}</label><input id="new-group-name" placeholder="Group name" maxlength="${GROUP_NAME_LIMIT}" ${!copperSelection().length?'disabled':''}></div><label class="field"><span>Group effect</span><select id="new-group-effect" ${!copperSelection().length?'disabled':''}><option value="" ${hasMixedEffects()?'':'selected'}>${hasMixedEffects()?'Choose an effect':'Keep selected effect'}</option>${effects.map(effect=>`<option value="${escape(effect.id)}">${escape(effect.name)}</option>`).join('')}</select></label><p class="help-text">Creating a group moves these selected Ethernet ports from their current groups. The chosen effect starts when you save.</p><p class="inline-error" id="group-error" role="alert"></p><footer class="dialog-footer"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" id="save-groups" type="button">Save groups</button></footer></form>`;
   document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
   let saving=false;
   dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
@@ -844,11 +857,11 @@ async function openGroups() {
       const names=[...dialog.querySelectorAll('[data-group-name]')],freshInput=dialog.querySelector('#new-group-name');
       for(const input of [...names,...(freshInput.value.trim()?[freshInput]:[])]){const error=groupNameError(input.value);if(error){input.focus();throw new Error(error);}}
       const fresh=freshInput.value.trim(),ports=copperSelection();
-      if(fresh&&ports.length&&hasMixedEffects())throw new Error('Choose one effect for these ports before creating a group.');
-      saving=true;dialog.setAttribute('aria-busy','true');const controls=[...dialog.querySelectorAll('input,button')];for(const control of controls){control.dataset.groupDisabled=String(control.disabled);control.disabled=true;}
+      const chosenEffect=dialog.querySelector('#new-group-effect').value;if(fresh&&ports.length&&hasMixedEffects()&&!chosenEffect)throw new Error('Choose the effect for the new group.');
+      saving=true;dialog.setAttribute('aria-busy','true');const controls=[...dialog.querySelectorAll('input,select,button')];for(const control of controls){control.dataset.groupDisabled=String(control.disabled);control.disabled=true;}
       await serialize(async()=>{
         const zones=clone(before.scene.zones||[]);for(const input of names){const zone=zones.find(z=>z.id===input.dataset.groupName);if(zone)zone.name=input.value.trim();}
-        if(fresh&&ports.length){const selectedPorts=new Set(ports);for(const zone of zones)zone.ports=zone.ports.filter(p=>!selectedPorts.has(p));zones.push({id:`group-${crypto.randomUUID()}`,name:fresh,ports,effect:clone(currentEffect()||{id:'static',params:{}})});}
+        if(fresh&&ports.length){const selectedPorts=new Set(ports);for(const zone of zones)zone.ports=zone.ports.filter(p=>!selectedPorts.has(p));zones.push({id:`group-${crypto.randomUUID()}`,name:fresh,ports,effect:clone(chosenEffect?defaultConfig(chosenEffect):currentEffect()||{id:'static',params:{}})});}
         await commitScene(before,{...before.scene,zones:zones.filter(zone=>zone.ports.length)},send);if(workspace===session.workspace_id){lastApplied=null;await refresh(false);}
       });
       dialog.close();updateGroups();notify('Port groups saved');
@@ -884,8 +897,8 @@ function connectFrames() {
 }
 document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>run(()=>navigate(button.dataset.page))));
 document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))updateRangeProgress();});
-document.addEventListener('click',event=>{if(event.target.matches('input[type="color"]')&&!event.target.disabled){event.preventDefault();openColorPopover(event.target);}},true);
-document.addEventListener('keydown',event=>{if(event.target.matches('input[type="color"]')&&!event.target.disabled&&(event.key==='Enter'||event.key===' ')){event.preventDefault();openColorPopover(event.target);}},true);
+document.addEventListener('click',event=>{if(event.target.matches('input[type="color"][data-color]')&&!event.target.disabled){event.preventDefault();openColorPopover(event.target);}},true);
+document.addEventListener('keydown',event=>{if(event.target.matches('input[type="color"][data-color]')&&!event.target.disabled&&(event.key==='Enter'||event.key===' ')){event.preventDefault();openColorPopover(event.target);}},true);
 document.addEventListener('focusout',()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>reconcileEditor(),150);});
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){saveUiState();portAnimator.stop();return;}
@@ -898,7 +911,7 @@ window.addEventListener('popstate',()=>{const historyEntry=routeHistory.observe(
 
 function resetWorkspace() {
   navigationVersion++;
-  document.querySelectorAll('.group-dialog,.draft-dialog').forEach(dialog=>dialog.close('stay'));
+  document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog').forEach(dialog=>dialog.close('stay'));
   activeColorPopover?.();secondaryCleanup?.();secondaryCleanup=undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
   state={};selected=new Set();draft={};draftBaseline=null;edits.clear();pendingPlan=null;lastApplied=null;copiedAppearance=null;compareApplied=false;
   rememberedEffects.clear();previewClocks.clear();previewStates.clear();for(const key of Object.keys(galleryState))delete galleryState[key];
@@ -918,7 +931,7 @@ function showLoginHelp(){
   if(document.querySelector('.login-help'))return;
   const dialog=document.createElement('dialog');dialog.className='dialog login-help';dialog.setAttribute('aria-label','Help');
   const content=document.createElement('div'),close=document.createElement('button');close.className='button';close.textContent='Back to connection';close.onclick=()=>dialog.close();
-  dialog.append(content,close);document.body.append(dialog);renderHelp(content);dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.showModal();close.focus();
+  dialog.append(content,close);document.body.append(dialog);renderHelp(content,{state});dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.showModal();close.focus();
 }
 async function acceptSession(next) {
   if(closingWorkspace)return;

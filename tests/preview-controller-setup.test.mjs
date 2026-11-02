@@ -112,6 +112,79 @@ const workingController={...disconnected,configured:true,connected:true,controll
 const candidate={url:'https://candidate-console',controller_kind:'unifi_os',sites:[{id:'site-one',name:'First site'},{id:'site-two',name:'Second site'}]};
 const pendingController={...workingController,pending_site_choice:candidate,can_save_login:false};
 
+test('connected controller leads with status and details while editing remains available',async context=>{
+  const dom=controllerDom(context),sent=[];
+  const cleanup=renderControllerConnection(dom.host,{request:async(...args)=>{sent.push(args);return workingController;}});dom.after(cleanup);
+  await flush();
+  const status=dom.byClass(dom.host,'connection-state')[0],edit=dom.button('Edit connection');
+  assert.equal(status.textContent,'Controller connected');assert.match(status.className,/online/);
+  assert.equal(dom.form().hidden,true);assert.equal(edit.hidden,false);assert.equal(edit.getAttribute('aria-expanded'),'false');
+  assert.equal(edit.getAttribute('aria-controls'),dom.form().id);
+  assert.equal(dom.button('Disconnect controller').hidden,false);
+  assert.equal(dom.byClass(dom.host,'connection-reconnect')[0].hidden,false);
+  assert.ok(dom.findAll(dom.host,item=>item.tagName==='dd'&&item.textContent==='Working site').length);
+  edit.click();
+  assert.equal(dom.form().hidden,false);assert.equal(edit.getAttribute('aria-expanded'),'true');
+  assert.equal(edit.textContent,'Hide connection details');assert.equal(dom.doc.activeElement,dom.field('controller_kind'));
+  assert.equal(sent.length,1,'opening details must not reconnect');
+});
+
+test('hiding and refreshing controller details preserve the draft and current connection',async context=>{
+  const dom=controllerDom(context),sent=[];
+  const cleanup=renderControllerConnection(dom.host,{request:async(...args)=>{sent.push(args);return workingController;}});dom.after(cleanup);
+  await flush();dom.button('Edit connection').click();
+  fill(dom,{...credentials,url:'https://draft-controller:8443'});
+  const form=dom.form();dom.button('Hide connection details').click();
+  assert.equal(form.hidden,true);assert.equal(cleanup.hasChanges(),true);
+  assert.ok(dom.findAll(dom.host,item=>item.textContent==='Connection edits are not applied.'&&!item.hidden).length);
+  cleanup.update({...workingController,mapped_ports:7});
+  assert.equal(dom.form(),form);assert.equal(form.hidden,true);assert.equal(dom.field('password').value,credentials.password);
+  dom.button('Refresh controller').click();await cleanup.canLeave();
+  assert.equal(form.hidden,true);assert.equal(dom.field('url').value,'https://draft-controller:8443');
+  dom.button('Edit connection').click();assert.equal(form.hidden,false);
+  assert.equal(dom.field('username').value,credentials.username);assert.equal(dom.field('password').value,credentials.password);
+  assert.equal(dom.byClass(dom.host,'connection-state')[0].textContent,'Controller connected');
+  assert.ok(sent.every(([,method])=>method===undefined),'editor visibility and refresh must not mutate the connection');
+});
+
+test('disabling reconnect explains credential removal before Apply and keeps the draft after failure',async context=>{
+  const dom=controllerDom(context),sent=[],saved={...workingController,auto_reconnect:true,saved_login_available:true,saved_login_matches_connection:true};
+  let fail=true;
+  const cleanup=renderControllerConnection(dom.host,{request:async(...args)=>{
+    sent.push(args);if(args[1]!=='PUT')return saved;
+    if(fail)throw {code:'controller_login_remove_failed'};
+    return {...saved,auto_reconnect:false,saved_login_available:false,saved_login_matches_connection:false};
+  }});dom.after(cleanup);
+  await flush();const reconnect=dom.field('auto_reconnect');reconnect.checked=false;reconnect.listeners.get('change')();
+  const help=dom.findAll(dom.host,item=>item.id===reconnect.getAttribute('aria-describedby'))[0];
+  assert.match(help.textContent,/removes the saved controller login/);assert.match(help.textContent,/connection stays active/);
+  assert.equal(sent.length,1);assert.equal(dom.form().hidden,true);
+  const save=dom.button('Save reconnect preference');save.click();await cleanup.canLeave();
+  assert.equal(reconnect.checked,false);assert.equal(save.disabled,false);assert.match(help.textContent,/removes/);
+  assert.equal(cleanup.hasChanges(),true);assert.equal(dom.form().hidden,true);
+  fail=false;save.click();await cleanup.canLeave();
+  assert.deepEqual(sent.at(-1),['/api/controller/preferences','PUT',{auto_reconnect:false}]);
+  assert.equal(cleanup.hasChanges(),false);assert.equal(reconnect.checked,false);assert.equal(save.disabled,true);
+  assert.equal(dom.byClass(dom.host,'connection-state')[0].textContent,'Controller connected');
+});
+
+test('disconnected reconnect removal does not claim an active controller connection',async context=>{
+  const dom=controllerDom(context),cleanup=renderControllerConnection(dom.host,{request:async()=>({...workingController,connected:false,auto_reconnect:true,saved_login_available:true,can_save_login:false})});dom.after(cleanup);
+  await flush();const reconnect=dom.field('auto_reconnect');reconnect.checked=false;reconnect.listeners.get('change')();
+  const help=dom.findAll(dom.host,item=>item.id===reconnect.getAttribute('aria-describedby'))[0];
+  assert.match(help.textContent,/removes the saved controller login/);assert.doesNotMatch(help.textContent,/stays active/);
+  assert.equal(dom.form().hidden,false);assert.equal(dom.button('Hide connection details').hidden,true);
+});
+
+test('pending site choice stays visible and a successful connection returns to its summary',async context=>{
+  const dom=controllerDom(context),cleanup=renderControllerConnection(dom.host,{request:async(path,method,payload)=>method==='POST'
+    ?{...workingController,...candidate,site:payload.site,pending_site_choice:null}:pendingController});dom.after(cleanup);
+  await flush();assert.equal(dom.form().hidden,false);assert.equal(dom.button('Hide connection details').hidden,true);
+  dom.field('site').value='site-two';dom.submit();await cleanup.canLeave();
+  assert.equal(dom.form().hidden,true);assert.equal(dom.button('Edit connection').hidden,false);
+  assert.equal(dom.doc.activeElement,dom.button('Edit connection'));assert.equal(cleanup.hasChanges(),false);
+});
+
 test('a pending replacement keeps the active controller status and credentials until a site is explicitly selected',async context=>{
   const dom=controllerDom(context),sent=[];
   const cleanup=renderControllerConnection(dom.host,{request:async(...args)=>{
@@ -147,7 +220,7 @@ test('canceling the pending candidate preserves active status and returns only i
   dom.button('Cancel connection change').click();await cleanup.canLeave();
   assert.deepEqual(sent[1],['/api/controller/cancel','POST']);assert.equal(dom.field('url').value,workingController.url);assert.equal(dom.field('controller_kind').value,'self_hosted');
   assert.equal(dom.field('password').value,'');assert.equal(dom.button('Cancel connection change').hidden,true);assert.equal(cleanup.hasChanges(),false);
-  assert.equal(dom.byClass(dom.host,'connection-state')[0].textContent,'Controller connected');assert.equal(dom.doc.activeElement,dom.button('Update connection'));
+  assert.equal(dom.byClass(dom.host,'connection-state')[0].textContent,'Controller connected');assert.equal(dom.doc.activeElement,dom.button('Edit connection'));
 });
 
 test('canceling an older candidate keeps a newly typed unrelated connection draft',async context=>{

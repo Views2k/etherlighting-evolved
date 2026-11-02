@@ -18,8 +18,16 @@ def base():
         "brightness": 20,
         "zones": [{"id": "all", "ports": [1], "effect": {"id": "static", "params": {"color": "#00ff00"}}}],
         "overrides": {},
-        "rules": [{"id": "sfp-level", "name": "SFP level", "enabled": True, "ports": [9], "conditions": [],
-                   "look": {"style": "effect", "brightness": 80, "color": "#ff0000"}}],
+        "rules": [
+            {
+                "id": "sfp-level",
+                "name": "SFP level",
+                "enabled": True,
+                "ports": [9],
+                "conditions": [],
+                "look": {"style": "effect", "brightness": 80, "color": "#ff0000"},
+            }
+        ],
         "sfp": {"9": {"mode": "color", "effect": "steady", "color": "#0000ff", "brightness": 100}},
         "sfp_sync": {"mode": "independent"},
     }
@@ -47,8 +55,15 @@ scene["rules"] = []
 cases.append(("Ungrouped copper starts dark", scene))
 
 scene = base()
-scene["rules"] = [{"id": "ungrouped", "name": "Ungrouped rule", "ports": [2, 3], "conditions": [],
-                   "look": {"style": "solid", "color": "#ff0000", "brightness": 60}}]
+scene["rules"] = [
+    {
+        "id": "ungrouped",
+        "name": "Ungrouped rule",
+        "ports": [2, 3],
+        "conditions": [],
+        "look": {"style": "solid", "color": "#ff0000", "brightness": 60},
+    }
+]
 scene["overrides"] = {"3": {"color": "#0000ff", "brightness": None}, "4": {"color": "#ffffff", "brightness": 30}}
 cases.append(("Ungrouped ports apply rules and inherited or explicit overrides", scene))
 
@@ -82,6 +97,8 @@ for name, scene in cases:
     engine.compose(t=0, clock=0, now=datetime(2026, 10, 31, 12))
     colors = {str(port): engine._display_rgb(*engine._shown[port - 1]) for port in range(1, engine.num_ports + 1)}
     colors.update({str(port): engine._display_rgb(*engine._sfp_color(port, 0)) for port in engine.sfp})
-    result.append({"name": name, "scene": engine.snapshot(), "state": {"num_ports": engine.num_ports}, "colors": colors})
+    result.append(
+        {"name": name, "scene": engine.snapshot(), "state": {"num_ports": engine.num_ports}, "colors": colors}
+    )
 
 Path(__file__).with_name("profile-colors.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

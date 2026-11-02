@@ -8,6 +8,7 @@ import {requestHandoff, renderControllerConnection, renderPrivateAccess, showCon
 import {switchConnectionStatus} from './workspace-session.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {receiveScheduleClock,scheduleClockLabel} from './schedule-clock.mjs';
+import {openColorPicker} from './color-picker.mjs';
 
 const node = (tag, className = '', text) => {
   const element = document.createElement(tag);
@@ -40,14 +41,14 @@ function check(label, checked = false) {
   const wrapper = node('label', 'check'); const control = input('', 'checkbox'); control.checked = checked;
   wrapper.append(control, node('span', '', label)); return {wrapper, control};
 }
-function button(label, action, className = '') {
+function button(label, action, className = '', enabled = () => true) {
   const element = node('button', `button ${className}`, label); element.type = 'button';
   element.addEventListener('click', async () => {
     if (element.disabled) return;
     const owner = element.closest('dialog,main'), restoreFocus = document.activeElement === element;
     element.disabled = true;
     try { await action(); } finally {
-      element.disabled = false;
+      element.disabled = !enabled();
       if (restoreFocus && owner) requestAnimationFrame(() => {
         if (!owner.isConnected || owner.inert || document.activeElement !== document.body) return;
         const target = (element.isConnected ? element : [...owner.querySelectorAll('button')].find(control =>
@@ -99,7 +100,21 @@ function retryPanel(host, message, retry) {
   panel.append(node('p', 'muted', message), button('Retry', retry)); host.replaceChildren(panel);
 }
 function focusControl(form, key) {
-  form.querySelector(`[data-focus="${key}"]`)?.focus({preventScroll:true});
+  const control = form.querySelector(`[data-focus="${key}"]`);
+  if (!control) return;
+  control.focus({preventScroll:true});
+  const scroller = control.closest('.rule-form-body');
+  if (!scroller) return;
+  const target = control.closest('.condition-row') || control;
+  const bounds = scroller.getBoundingClientRect();
+  const padding = 12, available = bounds.height - padding * 2;
+  const row = target.getBoundingClientRect();
+  const position = row.height <= available ? row : control.getBoundingClientRect();
+  if (position.top < bounds.top + padding) {
+    scroller.scrollTop += position.top - bounds.top - padding;
+  } else if (position.bottom > bounds.bottom - padding) {
+    scroller.scrollTop += position.bottom - bounds.bottom + padding;
+  }
 }
 function frame(host, title, description) {
   host.replaceChildren();
@@ -181,14 +196,16 @@ function conditionEditor(condition, specs, onChange, remove, index) {
   return {row, read};
 }
 
-export async function renderAutomation(host, {request, state, onChange, getState = () => state}) {
+export async function renderAutomation(host, {request, state, onChange, getState = () => state, initialRuleId, getDraftScene = () => null, onBeforeMutation = async () => true}) {
   const controller = new AbortController();
   const {header, notice, status} = frame(host, 'Automation', 'Choose when your ports change color.');
   const gate = operationGate(host, status);
   const split = node('div', 'secondary-split split automation-workspace'), list = node('aside', 'secondary-list list');
   list.setAttribute('aria-label', 'Lighting rules');
   const editor = node('section', 'secondary-editor panel rule-editor'); split.append(list, editor); host.append(split, notice);
-  let dirty = false, orderDirty = false, specs = [], templates = [], rules = [], savedOrder = [], draft, form, readers = [], selectedId, summary, sceneBase, scheduleHint;
+  let dirty = false, orderDirty = false, specs = [], templates = [], rules = [], savedOrder = [], draft, form, readers = [], selectedId, summary, sceneBase, scheduleHint, closePicker;
+  let activeSection = 'when';
+  selectedId = initialRuleId;
   const ruleStatusNodes = new Map();
   let outputState = getState();
   const sceneKey = value => Number.isSafeInteger(value?.revision) ? `revision:${value.revision}` : sceneFingerprint(value);
@@ -214,9 +231,25 @@ export async function renderAutomation(host, {request, state, onChange, getState
       const value = Array.isArray(condition.value) ? condition.value.join(condition.op === 'between' ? ' to ' : ', ') : typeof condition.value === 'boolean' ? condition.value ? 'Yes' : 'No' : condition.value;
       return `${spec?.label || condition.field} ${operatorNames[condition.op] || condition.op} ${value}${spec?.unit ? ` ${spec.unit}` : ''}`;
     });
-    summary.textContent = !draft.name || !conditions.length ? 'Enter a rule name and add a condition, or choose a template.'
-      : `${scopeText(draft.ports)} · ${conditions.join(draft.match === 'any' ? ' or ' : ' and ')} → ${styleNames[draft.look.style]}${draft.look.brightness != null ? ` at ${draft.look.brightness}%` : ''}`;
-    form.querySelector('button[type="submit"]').disabled = Boolean(validateRuleDraft(draft,specs));
+    summary.textContent = `${scopeText(draft.ports)} · ${styleNames[draft.look.style]}${draft.look.brightness != null ? ` at ${draft.look.brightness}%` : ''} · ${conditions.length} ${conditions.length === 1 ? 'condition' : 'conditions'}`;
+    const save = form.querySelector('button[type="submit"]');
+    save.textContent = orderDirty ? 'Apply rule and priority' : 'Apply rule';
+    save.disabled = Boolean(validateRuleDraft(draft,specs));
+  }
+  async function prepareMutation() {
+    const hadLightingDraft = Boolean(getDraftScene());
+    if (!await onBeforeMutation()) return false;
+    if (!hadLightingDraft) return true;
+    const latest = await request('/api/scene');
+    if (!gate.active) return false;
+    if (latest.revision !== sceneBase?.revision) {
+      if (JSON.stringify(latest.scene.rules) !== JSON.stringify(sceneBase?.scene.rules)) {
+        throw new Error('The automations changed while the lighting preview was resolved. Your rule edits are kept. Refresh rules to review the updated setup before applying.');
+      }
+      sceneBase = latest;
+      observedSceneKey = latestSceneKey = sceneKey(getState());
+    }
+    return true;
   }
   async function applyRules(nextRules) {
     if (!sceneBase?.revision) throw new Error('Refresh the rules before applying changes.');
@@ -320,8 +353,9 @@ export async function renderAutomation(host, {request, state, onChange, getState
     if (orderDirty) {
       const actions = node('div','rule-order-actions');
       actions.append(node('p','help-text','Priority changes'), button('Apply priority', () => gate.run(async () => {
+        if (!await prepareMutation()) return;
         const confirmationError = await applyRules(rules); orderDirty = false;
-        await refreshAfterWrite('Rule priority applied.',drawList,confirmationError);
+        await refreshAfterWrite('Rule priority applied.',() => { drawList(); updateSummary(); },confirmationError);
       }), 'primary'), button('Cancel priority', () => {
         const order = new Map(savedOrder.map((id,index) => [id,index]));
         rules.sort((a,b) => (order.get(a.id) ?? rules.length) - (order.get(b.id) ?? rules.length));
@@ -332,12 +366,25 @@ export async function renderAutomation(host, {request, state, onChange, getState
   function drawEditor(focusKey) {
     if (!gate.active || !draft) return;
     const scroll = editor.querySelector('[data-rule-scroll]')?.scrollTop || 0;
+    closePicker?.(); closePicker = null;
     editor.replaceChildren(); readers = []; scheduleHint = null; form = node('form', 'rule-form');
     const body = node('div', 'rule-form-body'); body.dataset.ruleScroll = '';
-    const nameRow = node('div', 'form-grid');
+    const nameRow = node('div', 'form-grid rule-editor-header');
     const name = input(draft.name); name.name = 'ruleName'; name.maxLength = 60; name.required = true; name.dataset.focus = 'rule-name';
     const enabled = check('Enabled', draft.enabled !== false); enabled.control.name = 'enabled';
-    nameRow.append(field('Rule name', name), enabled.wrapper); body.append(nameRow);
+    nameRow.append(field('Rule name', name), enabled.wrapper);
+    const sectionNav = node('nav','rule-section-nav'); sectionNav.setAttribute('aria-label','Rule sections');
+    const sectionButtons = new Map();
+    const selectSection = key => {
+      activeSection = key; form.dataset.ruleSection = key; editor.dataset.ruleSection = key;
+      for (const [sectionKey, control] of sectionButtons) control.setAttribute('aria-pressed',String(sectionKey === key));
+      body.scrollTop = 0;
+    };
+    for (const [key,label] of [['when','When'],['ports','Ports'],['appearance','Appearance']]) {
+      const control = button(label,() => selectSection(key),'quiet');
+      control.setAttribute('aria-controls',`rule-section-${key}`);
+      sectionButtons.set(key,control); sectionNav.append(control);
+    }
     const when = section('When', 'Choose the conditions that trigger this rule.');
     const templateRow = node('div','row template-row'), template = select([['','Choose a template'], ...templates.map((item,index) => [String(index),item.name])], '');
     template.setAttribute('aria-label','Rule template');
@@ -347,9 +394,8 @@ export async function renderAutomation(host, {request, state, onChange, getState
       draft = templateForRule(templates[Number(template.value)], draft, copperPorts);
       dirty = true; drawEditor('condition-0-property');
     })));
-    when.append(templateRow);
     const match = select([['all','All conditions'],['any','Any condition']], draft.match || 'all'); match.name = 'match';
-    when.append(field('Match',match));
+    const matchField = field('Match',match); matchField.classList.add('rule-match');
     const conditionList = node('div','condition-list');
     if (!draft.conditions?.length) {
       draft.conditions = [];
@@ -367,13 +413,13 @@ export async function renderAutomation(host, {request, state, onChange, getState
     const addCondition = button('Add condition', () => {
       sync(); draft.conditions.push(initialCondition(specs.find(item => item.key === 'anomaly') || specs[0])); dirty = true; drawEditor(`condition-${draft.conditions.length-1}-property`);
     }, 'quiet'); addCondition.dataset.focus = 'condition-add';
-    when.append(conditionList, addCondition);
+    when.append(conditionList, matchField, addCondition, templateRow);
     if (draft.conditions.some(condition => ['time','weekday'].includes(condition.field))) {
       scheduleHint = node('p','help-text');
       when.append(scheduleHint); updateRuleOutput(getState());
     }
     body.append(when);
-    const scope = section('On these ports');
+    const scope = section('Ports');
     const toolbar = node('div','scope-toolbar'), count = node('span','scope-count'), boxes = [];
     const all = check('All ports', false); all.control.setAttribute('aria-label','All ports');
     const updateScope = () => {
@@ -390,20 +436,26 @@ export async function renderAutomation(host, {request, state, onChange, getState
       box.control.dataset.port = port; box.control.addEventListener('change',updateScope); boxes.push(box); portChecks.append(box.wrapper);
     }
     scope.append(toolbar,portChecks); body.append(scope); updateScope();
-    const appearance = section('Show this');
+    const appearance = section('Appearance');
     const look = draft.look || {}, lookRow = node('div','form-grid look-fields');
     const style = select(Object.entries(styleNames), look.style || 'solid'); style.name = 'style';
     const colorRow = node('div','row color-field');
-    const color = input(/^#[a-f\d]{6}$/i.test(look.color) ? look.color : '#ffffff','color'); color.name = 'ruleColor'; color.setAttribute('aria-label','Rule color');
+    const color = input(/^#[a-f\d]{6}$/i.test(look.color) ? look.color : '#ffffff','hidden'); color.name = 'ruleColor';
     const hex = input(color.value); hex.maxLength = 7; hex.pattern = '#[a-fA-F0-9]{6}'; hex.required = true; hex.setAttribute('aria-label','Hex color');
-    color.addEventListener('input', () => hex.value = color.value);
-    hex.addEventListener('input', () => { if (/^#[a-f\d]{6}$/i.test(hex.value)) color.value = hex.value; }); colorRow.append(color,hex);
+    const swatch = node('button','swatch-button'); swatch.type = 'button'; swatch.setAttribute('aria-label','Rule color');
+    const showColor = value => { color.value = hex.value = value; swatch.style.background = value; };
+    showColor(color.value);
+    swatch.addEventListener('click', () => {
+      closePicker?.();
+      closePicker = openColorPicker(swatch,{color:color.value,onChange:value => { showColor(value); dirty = true; updateSummary(); },onClose:() => { closePicker = null; },onError:message => status(message,true)});
+    });
+    hex.addEventListener('input', () => { if (/^#[a-f\d]{6}$/i.test(hex.value)) { color.value = hex.value; swatch.style.background = hex.value; } }); colorRow.append(swatch,color,hex);
     const originalRate = look.rate ?? .25;
     const cycle = input(String(1 / originalRate),'number'); cycle.name = 'cycle'; cycle.step = 'any'; cycle.required = true;
     cycle.dataset.rate=String(originalRate);cycle.dataset.initial=cycle.value;
     const cycleField = field('Cycle time · seconds',cycle), colorField = field('Color',colorRow);
     function updateStyle() {
-      colorField.hidden = style.value === 'effect'; color.disabled = hex.disabled = style.value === 'effect';
+      colorField.hidden = style.value === 'effect'; color.disabled = hex.disabled = swatch.disabled = style.value === 'effect';
       const animated = ['pulse','blink','flash'].includes(style.value); cycleField.hidden = !animated; cycle.disabled = !animated;
       cycle.min = String(Math.min(style.value === 'pulse' ? 3.04 : style.value === 'flash' ? 2 : 1,Number(cycle.dataset.initial)));
       cycle.max = String(Math.max(20,Number(cycle.dataset.initial)));
@@ -418,7 +470,7 @@ export async function renderAutomation(host, {request, state, onChange, getState
     level.addEventListener('input',updateLevel);updateLevel();
     levelRow.append(custom.wrapper,level,output); appearance.append(levelRow,node('p','help-text','Set brightness replaces the default brightness for matching ports. Use port effect keeps their effect and changes only the brightness.'));
     body.append(appearance);
-    summary = node('p','rule-summary'); body.append(summary);
+    summary = node('p','rule-summary');
     const actions = node('div','view-actions rule-actions'), save = node('button','button primary',orderDirty?'Apply rule and priority':'Apply rule'); save.type = 'submit';
     actions.append(save,button('Cancel rule changes', () => { dirty = false; draft = copy(rules.find(rule => rule.id === selectedId) || blank()); drawEditor('rule-name'); }));
     if (selectedId) {
@@ -431,6 +483,7 @@ export async function renderAutomation(host, {request, state, onChange, getState
       up.disabled = index === 0; down.disabled = index === rules.length - 1; priority.append(up,down); actions.append(priority);
       actions.append(button('Delete rule', () => gate.run(async () => {
         const id = selectedId;
+        if (!await prepareMutation()) return;
         if (!await confirmAction(host,'Delete rule?','This rule will be removed from your lighting setup.','Delete',controller.signal)) return;
         const pendingOrder=orderDirty?rules.filter(rule=>rule.id!==id).map(rule=>rule.id):null;
         const confirmationError = await applyRules(sceneBase.scene.rules.filter(rule => rule.id !== id));
@@ -439,7 +492,16 @@ export async function renderAutomation(host, {request, state, onChange, getState
         await refreshAfterWrite('Rule deleted.',() => { drawList(); drawEditor(); },confirmationError);
       }),'quiet danger'));
     }
-    form.append(body,actions);
+    for (const [key, content] of [['when',when],['ports',scope],['appearance',appearance]]) {
+      content.classList.add('rule-edit-section'); content.dataset.ruleSection = key; content.id = `rule-section-${key}`;
+    }
+    if (focusKey?.startsWith('condition-')) activeSection = 'when';
+    selectSection(activeSection);
+    form.append(nameRow,sectionNav,body,summary,actions);
+    form.addEventListener('invalid',event => {
+      const content = event.target.closest('[data-rule-section]');
+      if (content && content !== form) selectSection(content.dataset.ruleSection);
+    },true);
     const changed = () => { dirty = true; updateSummary(); };
     form.addEventListener('input',changed); form.addEventListener('change',changed);
     form.addEventListener('submit', event => {
@@ -447,6 +509,7 @@ export async function renderAutomation(host, {request, state, onChange, getState
       const error = validateRuleDraft(draft,specs); if (error) { status(error,true); return; }
       const payload = copy(draft), id = selectedId || crypto.randomUUID().replaceAll('-',''); payload.id=id;
       void gate.run(async () => {
+        if (!await prepareMutation()) return;
         const index = rules.findIndex(rule => rule.id === id);
         const next=copy(rules);if(index<0)next.push(payload);else next[index]=payload;
         const confirmationError = await applyRules(next);
@@ -476,7 +539,7 @@ export async function renderAutomation(host, {request, state, onChange, getState
   }),'primary'); newRule.disabled = true;
   header.append(button('Refresh rules',reload,'quiet'),newRule);
   editor.append(node('p','secondary-loading','Loading rules…')); void reload();
-  const cleanup = () => { gate.close(); controller.abort(); host.inert = false; host.removeAttribute('aria-busy'); };
+  const cleanup = () => { closePicker?.(); gate.close(); controller.abort(); host.inert = false; host.removeAttribute('aria-busy'); };
   cleanup.canLeave = async () => await gate.settle() && ((!dirty && !orderDirty) || await confirmAction(host,'Discard changes?','Your unapplied rule and priority changes will be discarded.','Discard',controller.signal));
   cleanup.hasChanges = () => dirty || orderDirty;
   cleanup.update = nextState => {
@@ -492,21 +555,28 @@ function nameDialog(title, current, scenes, signal, unchanged) {
     const dialog = node('dialog','dialog'), heading = node('h2','',title); heading.id = `profile-name-${crypto.randomUUID()}`;
     dialog.setAttribute('aria-labelledby',heading.id);
     const form = node('form'), name = input(current), error = node('p','inline-error'); name.maxLength = 64; name.required = true; name.setAttribute('aria-label','Profile name');
+    error.id = `${heading.id}-error`; error.setAttribute('aria-live','polite'); name.setAttribute('aria-describedby',error.id);
+    const validate = () => {
+      const value = name.value.trim();
+      return value === unchanged ? '' : profileNameError(value) || (Object.hasOwn(scenes,value) ? 'A profile with this name already exists.' : '');
+    };
+    const showError = message => { error.textContent = message; message ? name.setAttribute('aria-invalid','true') : name.removeAttribute('aria-invalid'); };
+    name.addEventListener('input',() => { if (name.getAttribute('aria-invalid') === 'true') showError(validate()); });
     const close = value => { dialog.close(); dialog.remove(); signal?.removeEventListener('abort',abort); resolve(value); };
     const abort = () => close(null), actions = node('div','dialog-footer'), submit = node('button','button primary',title); submit.type = 'submit';
     actions.append(button('Cancel',() => close(null)),submit);
     form.append(field('Profile name',name),error,actions); dialog.append(heading,form); document.body.append(dialog);
     form.addEventListener('submit',event => {
       event.preventDefault(); const value = name.value.trim();if(value===unchanged){close(value);return;}
-      const invalid = profileNameError(value) || (Object.hasOwn(scenes,value) ? 'A profile with this name already exists.' : '');
-      if (invalid) { error.textContent = invalid; name.setAttribute('aria-invalid','true'); name.focus(); return; } close(value);
+      const invalid = validate();
+      if (invalid) { showError(invalid); name.focus(); return; } showError(''); close(value);
     });
     dialog.addEventListener('cancel',event => { event.preventDefault(); close(null); }); signal?.addEventListener('abort',abort,{once:true});
     dialog.showModal(); name.focus(); name.select();
   });
 }
 
-export async function renderProfiles(host, {request, state, onChange, getState = () => state, effects = [], onApplyProfile}) {
+export async function renderProfiles(host, {request, state, onChange, getState = () => state, effects = [], onApplyProfile, getDraftScene = () => null, onSavePreview, onUndoApply, canUndoApply = () => false, onBeforeMutation = async () => true}) {
   const controller = new AbortController();
   const {header,notice,status} = frame(host,'Profiles','Save a complete lighting setup and apply it when you want.');
   const gate = operationGate(host,status);
@@ -528,31 +598,34 @@ export async function renderProfiles(host, {request, state, onChange, getState =
     if (!gate.active) return;
     previews.clear();list.replaceChildren(); detail.replaceChildren();
     currentFingerprint=sceneFingerprint(current);
+    saveNew.textContent = getDraftScene() && onSavePreview ? 'Save preview as profile' : 'Save current as profile';
+    undo.disabled = !canUndoApply();
     const match = matchingProfile(scenes,current);
-    list.append(node('p','profile-state',match ? `Active: ${match}` : Object.keys(scenes).length ? 'Current setup: Modified' : 'Current setup'));
+    list.append(node('p','profile-state',match ? `Applied: ${match}` : Object.keys(scenes).length ? 'Applied setup: Custom' : 'Applied setup'));
     for (const key of Object.keys(scenes).sort((a,b) => a.localeCompare(b))) {
       const scene = scenes[key], item = button('',() => { selected = key; draw(); },`scene-item ${key === selected ? 'selected' : ''}`);
-      item.append(previews.add(scene,key===match),node('span','item-name',key),node('span','muted',`${scene.brightness ?? 100}% brightness${key === match ? ' · Active' : ''}`));
+      item.append(previews.add(scene,key===match),node('span','item-name',key),node('span','muted',`${scene.brightness ?? 100}% brightness${key === match ? ' · Applied' : ''}`));
       item.setAttribute('aria-pressed',String(key === selected)); list.append(item);
     }
-    if (!selected || !scenes[selected]) { detail.append(node('h2','','Save your first profile'),node('p','muted','Choose Save new profile to keep your current colors, effects, port groups, and rules.')); return; }
+    if (!selected || !scenes[selected]) { detail.append(node('h2','','Save your first profile'),node('p','muted','Choose Save current as profile to keep your applied lighting, or Save preview as profile to keep unapplied changes.')); return; }
     const scene = scenes[selected], heading = node('div','profile-heading');
-    heading.append(node('h2','',selected),node('span','profile-state',selected === match ? 'Active profile' : 'Saved profile')); detail.append(heading,previews.add(scene,selected===match));
+    heading.append(node('h2','',selected),node('span','profile-state',selected === match ? 'Applied profile' : 'Saved profile')); detail.append(heading,previews.add(scene,selected===match));
     const layoutNotice = profileLayoutNotice(scene,current);
     if (layoutNotice) detail.append(node('p','help-text',layoutNotice));
     const actions = node('div','row profile-actions');
     actions.append(button('Apply profile',() => gate.run(async () => {
       const target = selected;
-      if(onApplyProfile){await onApplyProfile(target);if(!gate.active)return;current=getState();previews.update(current);draw();status('Profile applied.');}
+      if(onApplyProfile){if(await onApplyProfile(target) === false || !gate.active)return;current=getState();previews.update(current);draw();status('Profile applied.');}
       else {
         const before=await request('/api/scene');
         await request('/api/scene','PUT',{scene:copy(scenes[target]),expected_revision:before.revision,preserve_unchanged:true,confirm_output:true});
         await afterWrite('Profile applied.');
       }
     }),'primary'));
-    const updateProfile=button('Update from current',() => gate.run(async () => {
+    const updateProfile=button('Replace with applied setup',() => gate.run(async () => {
+      if (!await onBeforeMutation()) return;
       const target = selected;
-      if (!await confirmAction(host,'Update profile?',`Replace “${target}” with your current lighting setup?`,'Update',controller.signal)) return;
+      if (!await confirmAction(host,'Update profile?',`Replace “${target}” with the lighting currently applied to the switch?`,'Update',controller.signal)) return;
       scenes = await request('/api/presets','POST',{name:target}); await afterWrite('Profile updated.');
     }));
     if(profileNameError(selected)){updateProfile.disabled=true;updateProfile.title='Rename this profile before updating it.';}
@@ -595,13 +668,24 @@ export async function renderProfiles(host, {request, state, onChange, getState =
       loaded = true; saveNew.disabled = false; draw(); status('');
     } catch(error) { if (!loaded) retryPanel(detail,'Profiles could not be loaded. Your saved profiles are unchanged.',reload); throw error; }
   });
-  const saveNew = button('Save new profile',() => gate.run(async () => {
-    const name = await nameDialog('Save profile','',scenes,controller.signal); if (!name) return;
-    scenes = await request('/api/presets','POST',{name}); selected = name; await afterWrite('Profile saved.');
+  const saveNew = button('Save current as profile',() => gate.run(async () => {
+    const preview = Boolean(getDraftScene() && onSavePreview);
+    const name = await nameDialog(preview ? 'Save preview as profile' : 'Save profile','',scenes,controller.signal); if (!name) return;
+    if (preview) {
+      if (await onSavePreview(name) === false) return;
+      scenes = await request('/api/presets');
+    } else scenes = await request('/api/presets','POST',{name,overwrite:false});
+    selected = name; await afterWrite(preview ? 'Preview saved. Choose Apply profile when you want to use it.' : 'Profile saved.');
   }),'primary'); saveNew.disabled = true;
-  header.append(button('Refresh profiles',reload,'quiet'),saveNew); detail.append(node('p','secondary-loading','Loading profiles…')); void reload();
+  const undo = button('Undo last apply',() => gate.run(async () => {
+    if (!canUndoApply() || !onUndoApply) return;
+    if (await onUndoApply() === false) return;
+    await afterWrite('Previous lighting restored.');
+  }),'quiet',() => Boolean(onUndoApply) && canUndoApply()); undo.disabled = !canUndoApply();
+  const undoStatus = node('div','profile-undo-status'); undoStatus.append(undo);
+  header.append(button('Refresh profiles',reload,'quiet'),saveNew,undoStatus); detail.append(node('p','secondary-loading','Loading profiles…')); void reload();
   const cleanup = () => { previews.dispose();gate.close(); controller.abort(); host.inert = false; host.removeAttribute('aria-busy'); };
-  cleanup.update=next=>{if(!gate.active)return;current=next;previews.update(current);if(loaded&&sceneFingerprint(current)!==currentFingerprint)draw();};
+  cleanup.update=next=>{if(!gate.active)return;current=next;previews.update(current);undo.disabled=!canUndoApply();if(loaded&&sceneFingerprint(current)!==currentFingerprint)draw();};
   cleanup.canLeave = () => gate.settle(); return cleanup;
 }
 
@@ -637,12 +721,34 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   if (onHelp) about.append(button('Open help',onHelp,'quiet'));
   let controllerCleanup, switchState;
   const privateHost=node('div','private-access-settings');
-  host.append(content,health,controllerHost,privateHost,about,notice);
+  const workspace = node('div','settings-workspace'), navigation = node('nav','settings-nav'), pane = node('div','settings-pane');
+  navigation.setAttribute('aria-label','Settings sections');
+  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[about,'About']];
+  const sectionButtons = sections.map(([section,label],index) => {
+    const control = button(label, () => {
+      const top = pane.scrollTop + section.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+      pane.scrollTo({top,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    }, 'quiet');
+    section.id = `settings-section-${index}`;control.setAttribute('aria-controls',section.id);
+    navigation.append(control);return control;
+  });
+  const updateSection = () => {
+    const visible = sections.map(([section],index)=>({section,index})).filter(({section,index})=>!section.hidden&&!sectionButtons[index].hidden);
+    const edge = pane.getBoundingClientRect().top + 24;
+    const atEnd = pane.scrollHeight > pane.clientHeight && pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2;
+    const selected = atEnd ? visible.at(-1)?.index : visible.filter(({section})=>section.getBoundingClientRect().top<=edge).at(-1)?.index ?? visible[0]?.index;
+    sectionButtons.forEach((control,index)=>{
+      control.classList.toggle('selected',index===selected);control.setAttribute('aria-pressed',String(index===selected));
+    });
+  };
+  pane.addEventListener('scroll',updateSection,{passive:true});
+  pane.append(content,health,controllerHost,privateHost,about);workspace.append(navigation,pane);host.append(workspace,notice);
+  updateSection();
   const privateCleanup=renderPrivateAccess(privateHost,request,{signal:lifecycle.signal});
   const reload = () => gate.run(async () => {
     try {
       const [session, state] = await Promise.all([request('/api/session'),request('/api/state')]); if (!gate.active) return;
-      health.hidden = Boolean(session.simulated); updateHealth(state);
+      health.hidden = Boolean(session.simulated); sectionButtons[1].hidden = sectionButtons[2].hidden = Boolean(session.simulated); updateHealth(state);
       content.replaceChildren();
       switchState = node('p','connection-state');
       showConnectionStatus(switchState,switchConnectionStatus(session));
@@ -673,14 +779,14 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       }
       const details = node('dl','settings-details');
       for (const [label,value] of [['Lighting',state.mode === 'released' ? 'Controlled by UniFi' : 'Controlled by EE'],['Ethernet ports',lightingPorts(state).copper.length],['SFP lights',lightingPorts(state).sfp.length]]) details.append(node('dt','muted',label),node('dd','',value));
-      content.append(details); status('');
+      content.append(details); status(''); updateSection();
       if (onCloseWorkspace) content.append(button('Close web session',()=>gate.run(async()=>{
         if(await confirmAction(host,'Close web session?','This releases the switch connection and closes the web service. Your saved setup is preserved.','Close web session',lifecycle.signal)&&gate.active)await onCloseWorkspace();
       }),'quiet'));
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();
-  const cleanup = () => { lifecycle.abort();controllerCleanup?.();privateCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
+  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
   cleanup.update = (state,session,unavailable = false) => {
     if (!gate.active) return;
     if (switchState) showConnectionStatus(switchState,switchConnectionStatus(session,unavailable));
@@ -691,20 +797,23 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   cleanup.canLeave=async()=>{await gate.settle();await privateCleanup.canLeave();if(!gate.active)return false;if(cleanup.hasChanges()&&!await confirmAction(host,'Leave connection settings?','Your unapplied connection changes will be discarded.','Leave',lifecycle.signal))return false;return gate.active&&(await controllerCleanup?.canLeave?.()??true);};return cleanup;
 }
 
-export function renderHelp(host) {
+export function renderHelp(host, {state = {}} = {}) {
+  const {copper,sfp} = lightingPorts(state);
+  const sfpScope = sfp.length ? `SFP ${sfp.join(', ')}` : 'the SFP indicators';
   frame(host,'Help','Start with your ports, preview a change, then apply it.');
   const chapters = [
     ['Change a port’s lighting', [
       'Open Lighting and select a port. All ports selects every Ethernet and SFP port. Ethernet and SFP select those ports together.',
       'Turn on Select multiple to add or remove ports with a click or tap. Shift-click selects a range; Ctrl-click on Windows or Command-click on Mac adds individual ports.',
       'In Port controls, choose a fixed color or an effect, then adjust its settings. Apply changes sends the changes; Discard returns to your applied settings.',
+      'On a rack screen, open Workspace for groups, saved profiles, and Undo last apply.',
       'Copy appearance keeps a selected port’s settings. Select compatible ports and choose Paste appearance to preview the same look before applying it.'
     ]],
     ['Preview and apply changes', [
       'Editing colors, brightness, or effect settings creates a preview. The Apply bar identifies changes waiting to be sent.',
       'The port map previews those changes. Show applied lets you compare them with the applied lighting; Show preview returns to your edits.',
-      'When you leave an editor with changes, choose whether to apply or discard them. Profiles apply a saved setup with their own Apply profile button.',
-      'Undo last apply on Lighting restores the setup from before your most recent Apply changes on that page. If the setup has since changed elsewhere, refresh and review the current lighting first.',
+      'Lighting previews stay available while you browse. Return to Lighting to continue editing, or save the preview as a profile. Apply changes sends it to the switch.',
+      'Undo last apply restores the setup from before the most recent lighting or profile apply. It is available in Lighting and Profiles while that setup is still current.',
       'Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.'
     ]],
     ['Brightness and colors', [
@@ -727,8 +836,8 @@ export function renderHelp(host) {
       'SFP lights have their own color and animation controls. Link status lets the switch manage the indicator.'
     ]],
     ['Sync SFP lights', [
-      'Select an SFP port, then choose a sync mode in Port controls. Together shares one effect, color palette, and timing across both indicators.',
-      'Follow Ethernet port tracks a chosen Ethernet port’s color and brightness with smooth fades on both SFP lights. Targeted SFP automations can override it.',
+      `Select an SFP port, then choose a sync mode in Port controls. Together shares one effect, color palette, and timing across ${sfpScope}.`,
+      ...(copper.length ? [`Follow Ethernet port tracks a chosen Ethernet port’s color and brightness across ${sfpScope}. Targeted SFP automations can override it.`] : []),
       'Independent returns each indicator to its separate controls. Review the preview, then choose Apply changes. Sync settings are included in saved profiles.'
     ]],
     ['Create an automation', [
@@ -738,16 +847,16 @@ export function renderHelp(host) {
       'For an SFP alert, select the Anomaly template, select the SFP targets, choose the alert color, and apply the rule.'
     ]],
     ['Save and reuse profiles', [
-      'Save new profile captures your applied colors, effects, groups, individual port colors, SFP lights, brightness, and rules.',
-      'Select a saved profile to review it, then choose Apply profile. The Active label identifies a profile matching the current setup.',
-      'Update from current replaces the selected saved setup after confirmation. Rename and Duplicate organize profiles without changing your lighting.'
+      'Save current as profile captures your applied lighting. Save preview as profile keeps unapplied changes so you can apply the complete setup later.',
+      'Select a saved profile to review it, then choose Apply profile. The Applied label identifies a profile matching the current setup.',
+      'Replace with applied setup updates the selected saved profile after confirmation. Rename and Duplicate organize profiles without changing your lighting.'
     ]],
     ['Connection and recovery', [
       'Settings shows the current connection and which application controls the lighting. Refresh connection checks again.',
       'Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. Your saved logins, profiles, and lighting setup are kept. EE waits until you connect again.',
       'When you want to resume EE, choose Connect with saved login or enter your SSH login. Choose Retry handoff when it is offered. If EE requests a recovery review, keep it disconnected until that review is complete.',
       'Connect UniFi Network in Settings to display device names from your controller. Enter its HTTPS address and account details. If prompted, verify the controller certificate fingerprint before approving it.',
-      'To reconnect when EE opens, check Reconnect controller automatically and choose Apply setting. Turning it off and applying removes the saved controller login while keeping the current connection.',
+      'To reconnect when EE opens, check Reconnect controller automatically and choose Save reconnect preference. Turning it off and applying removes the saved controller login while keeping the current connection.',
       'If applying lighting fails, keep your changes and retry after the connection returns. A saved profile gives you a known setup to apply.',
       'The Demo badge identifies simulated ports used to explore the interface.'
     ]]

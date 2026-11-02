@@ -84,21 +84,22 @@ test('explicit navigation from an untracked cursor starts a new chain without as
 
 const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
 const navigateSource=source.slice(source.indexOf('async function navigate(target,'),source.indexOf('function renderStudio()'));
-function app(b,confirmDraft){
+function app(b,confirmDraft,{pendingPlan=null}={}){
   const no=()=>{},rendered=[];
   const context={workspaceReady:true,navigationVersion:0,page:'Profiles',routeHistory:b.routes,
-    secondaryCleanup:Object.assign(()=>{},{canLeave:async()=>true}),pendingPlan:null,operation:Promise.resolve(),
+    secondaryCleanup:Object.assign(()=>{},{canLeave:async()=>true}),pendingPlan,operation:Promise.resolve(),
     confirmDraft,activeColorPopover:undefined,portAnimator:{stop:no},portGlow:null,uplinkBandwidth:null,saveUiState:no,
-    document:{title:'',querySelectorAll:()=>[]},view:{querySelector:()=>null,classList:{remove:no,add:no},offsetWidth:1,innerHTML:''},
+    document:{title:'',querySelector:()=>null,querySelectorAll:()=>[]},view:{querySelector:()=>null,classList:{remove:no,add:no},offsetWidth:1,innerHTML:''},
     renderStudio:()=>rendered.push('Lighting'),renderEffectGallery:()=>()=>{},renderAutomation:async()=>()=>{},renderProfiles:async()=>()=>{},
     renderSettings:async()=>()=>{},renderHelp:async()=>{rendered.push('Help');return ()=>{};},
-    workspaceRequest:()=>no,state:{},effects:[],applyProfile:no,acceptSession:no,closeWorkspace:no,refresh:async()=>{},notify:no};
+    workspaceRequest:()=>no,state:{},effects:[],applyProfile:no,acceptSession:no,closeWorkspace:no,refresh:async()=>{},notify:no,
+    previewScene:no,savePreviewProfile:no,undoLastApply:no,lastApplied:null,edits:new Set(),requestedRuleId:undefined,updateDraftBar:no};
   vm.createContext(context);vm.runInContext(navigateSource,context);return {context,rendered};
 }
 const populated=()=>{const b=browser();b.routes.commit('Lighting',{fromHistory:true});b.routes.commit('Settings');b.routes.commit('Profiles');return b;};
 
 test('two rapid Back requests sharing Keep editing preserve every original destination',async()=>{
-  const b=populated(),choice=deferred(),{context}=app(b,()=>choice.promise),draft={color:'#123456'};
+  const b=populated(),choice=deferred(),{context}=app(b,()=>choice.promise,{pendingPlan:true}),draft={color:'#123456'};
   context.draft=draft;const before=structuredClone(b.records);
   const first=context.navigate('Settings',{fromHistory:true,historyEntry:b.visit(1)});await flush();
   const second=context.navigate('Lighting',{fromHistory:true,historyEntry:b.visit(0)});await flush();
@@ -108,7 +109,7 @@ test('two rapid Back requests sharing Keep editing preserve every original desti
 });
 
 test('a later Back intent waits for reversal and then reaches its original entry before confirmation',async()=>{
-  const b=populated();let choices=0;const {context}=app(b,async()=>++choices!==1);
+  const b=populated();let choices=0;const {context}=app(b,async()=>++choices!==1,{pendingPlan:true});
   const first=context.navigate('Settings',{fromHistory:true,historyEntry:b.visit(1)});await flush();assert.equal(b.pending[0],2);
   const latest=context.navigate('Lighting',{fromHistory:true,historyEntry:b.visit(0)});await flush();
   assert.equal(choices,1);b.deliver();await flush();assert.equal(b.pending[0],0);
@@ -118,7 +119,7 @@ test('a later Back intent waits for reversal and then reaches its original entry
 });
 
 test('a new app navigation during reversal preserves the restored trail before adding its destination',async()=>{
-  const b=populated();let choices=0;const {context}=app(b,async()=>++choices!==1);
+  const b=populated();let choices=0;const {context}=app(b,async()=>++choices!==1,{pendingPlan:true});
   const first=context.navigate('Settings',{fromHistory:true,historyEntry:b.visit(1)});await flush();
   const next=context.navigate('Help');await flush();assert.equal(b.records.length,3);
   b.deliver();await Promise.all([first,next]);
@@ -132,4 +133,50 @@ test('an older secondary-page rejection cannot reverse a newer accepted navigati
   const next=context.navigate('Lighting',{fromHistory:true,historyEntry:b.visit(0)});await next;
   old.resolve(false);await first;
   assert.equal(context.page,'Lighting');assert.equal(b.index,0);assert.deepEqual(b.pending,[]);
+});
+
+test('accepted navigation closes the rack Workspace dialog while canceled navigation preserves it',async()=>{
+  const b=populated(),{context,rendered}=app(b,async()=>true);let closed=0;
+  context.document.querySelector=selector=>selector==='.rack-workspace-dialog'?{close(){closed++;}}:null;
+  context.secondaryCleanup.canLeave=async()=>false;
+  await context.navigate('Lighting');
+  assert.equal(closed,0);assert.equal(context.page,'Profiles');assert.deepEqual(rendered,[]);
+  context.secondaryCleanup.canLeave=async()=>true;
+  await context.navigate('Lighting');
+  assert.equal(closed,1);assert.equal(context.page,'Lighting');assert.deepEqual(rendered,['Lighting']);
+});
+
+test('ordinary lighting drafts remain intact across Profiles and Help without an apply confirmation',async()=>{
+  const b=browser();b.routes.commit('Lighting',{fromHistory:true});let confirmations=0,profiles;
+  const {context,rendered}=app(b,async()=>{confirmations++;return false;});
+  const draft={colors:{1:{color:'#123456',brightness:75}},effects:[{id:'breathing',ports:[2,3],params:{color:'#0066FF'}}]};
+  const baseline={revision:'fixture-revision'},edits=new Set(['color:1','effect']);
+  Object.assign(context,{page:'Lighting',draft,draftBaseline:baseline,edits,
+    renderProfiles:async(_host,options)=>{profiles=options;return ()=>{};}});
+  await context.navigate('Profiles');
+  assert.equal(context.page,'Profiles');assert.equal(context.draft,draft);assert.equal(context.draftBaseline,baseline);assert.equal(context.edits,edits);
+  assert.equal(profiles.getDraftScene,context.previewScene);assert.equal(profiles.onSavePreview,context.savePreviewProfile);
+  assert.equal(profiles.onUndoApply,context.undoLastApply);assert.equal(profiles.onBeforeMutation,context.confirmDraft);
+  await context.navigate('Help');await context.navigate('Lighting');
+  assert.equal(confirmations,0);assert.equal(context.draft,draft);assert.equal(context.draftBaseline,baseline);assert.equal(context.edits.size,2);
+  assert.deepEqual(rendered,['Help','Lighting']);
+  assert.deepEqual(b.records.map(entry=>entry.hash),['#lighting','#profiles','#help','#lighting']);
+});
+
+
+test('accepted secondary-page discard can leave an incomplete new rule',async()=>{
+  const b=populated(),{context,rendered}=app(b,async()=>true);let focused=0;
+  context.page='Automation';
+  context.view.querySelector=selector=>selector==='input:invalid'?{focus(){focused++;}}:null;
+  await context.navigate('Lighting');
+  assert.equal(context.page,'Lighting');assert.deepEqual(rendered,['Lighting']);assert.equal(focused,0);
+});
+
+test('invalid lighting color still blocks navigation and preserves the draft',async()=>{
+  const b=browser(),{context,rendered}=app(b,async()=>true);let focused=0;
+  const draft={colors:{1:{color:'#123456',brightness:50}}};
+  Object.assign(context,{page:'Lighting',secondaryCleanup:undefined,draft});
+  context.view.querySelector=selector=>selector==='input:invalid'?{focus(){focused++;}}:null;
+  await context.navigate('Help');
+  assert.equal(context.page,'Lighting');assert.equal(context.draft,draft);assert.deepEqual(rendered,[]);assert.equal(focused,1);
 });

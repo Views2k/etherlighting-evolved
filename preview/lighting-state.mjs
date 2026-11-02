@@ -1,3 +1,4 @@
+import {effectDrafts} from './effect-draft.mjs';
 import {matchingRule, matchingSfpRule} from '../src/rules.mjs';
 import {EFFECTS} from '../src/effects.mjs';
 import {editableSfpLight,effectiveSfpLight} from './sfp-sync.mjs';
@@ -13,6 +14,22 @@ const same = (first, second) => {
 };
 export function equalSetting(values) {
   return values.length > 0 && values.every(value => same(value, values[0]));
+}
+export function sceneAutomationMatches(scene, state, portIds, date = hostScheduleDate(state)) {
+  const rules = scene.rules || [], sync = scene.sfp_sync || {mode:'independent',source_port:1};
+  const sfp = (state.sfp || []).filter(port => Object.hasOwn(scene.sfp || {}, port.port))
+    .map(port => ({...port,...scene.sfp[port.port],port:port.port}));
+  const projected = {sfp, sfp_sync:sync}, matches = [];
+  for (const id of [...new Set(portIds.map(Number))].sort((a,b) => a-b)) {
+    const light = sfp.find(port => port.port === id);
+    const port = light || state.ports?.find(port => port.port === id);
+    if (!port || !light && Object.hasOwn(scene.overrides || {}, id)) continue;
+    const rule = light
+      ? matchingSfpRule(rules,{...light,mode:sync.mode === 'ethernet' ? 'color' : effectiveSfpLight(projected,id).mode},date)
+      : matchingRule(rules,{id,facts:port.facts || {}},date);
+    if (rule) matches.push({port:id,rule});
+  }
+  return matches;
 }
 export function controlSource(state, id, effects = [], date = hostScheduleDate(state)) {
   const sfp = state.sfp?.some(port => port.port === id) === true;
@@ -97,7 +114,7 @@ function validateSfp(settings) {
 }
 
 export function lightingOperations(state, draft) {
-  fields(draft,['brightness','effect','returnToEffect','colors','sfp','sfp_sync','mode'],'Choose valid lighting changes.');
+  fields(draft,['brightness','effect','effects','returnToEffect','colors','sfp','sfp_sync','mode'],'Choose valid lighting changes.');
   const operations = [];
   const add = (key, label, path, method, body) => operations.push({key,label,path,method,body});
   const copperPorts = values => {
@@ -109,21 +126,26 @@ export function lightingOperations(state, draft) {
     range(draft.brightness,0,100,'Brightness must be a whole number from 0 to 100.',true);
     if (draft.brightness !== state.brightness) add('brightness','Default brightness','/api/brightness','PUT',{value:draft.brightness});
   }
-  if (Object.hasOwn(draft,'effect')) {
-    validateEffect(draft.effect);
-    const ports = copperPorts(draft.effect.ports), target = new Set(ports), effect = {id:draft.effect.id,params:copy(draft.effect.params || {})};
+  if (Object.hasOwn(draft,'effects') && (!Array.isArray(draft.effects) || draft.effects.length > 64)) throw new Error('Choose valid effect previews.');
+  if (Object.hasOwn(draft,'effect')) validateEffect(draft.effect);
+  let effectZones = copy(state.zones || []);
+  for (const effectDraft of effectDrafts(draft)) {
+    validateEffect(effectDraft);
+    const ports = copperPorts(effectDraft.ports), target = new Set(ports), effect = {id:effectDraft.id,params:copy(effectDraft.params || {})};
     if (!ports.length) throw new Error('Select at least one Ethernet port.');
-    const exact = state.zones?.find(zone => zone.ports.length === ports.length && zone.ports.every(port => target.has(port)));
+    const exact = effectZones?.find(zone => zone.ports.length === ports.length && zone.ports.every(port => target.has(port)));
     let id = exact?.id;
     if (!id) {
-      const zones = (state.zones || []).map(zone => ({...copy(zone),ports:zone.ports.filter(port => !target.has(port))})).filter(zone => zone.ports.length);
-      const base = draft.effect.zoneId || `selection-${ports.join('-')}`, used = new Set(zones.map(zone => zone.id));
+      const zones = effectZones.map(zone => ({...copy(zone),ports:zone.ports.filter(port => !target.has(port))})).filter(zone => zone.ports.length);
+      const base = effectDraft.zoneId || `selection-${ports.join('-')}`, used = new Set(zones.map(zone => zone.id));
       id = base;
       for (let suffix = 2; used.has(id); suffix++) id = `${base}-${suffix}`;
       zones.push({id,name:`Ports ${ports.join(', ')}`,ports:[...ports],effect});
+      effectZones = zones;
       add('group','Selected port group','/api/zones','PUT',{zones});
     }
-    add('effect',draft.effect.clearOverrides ? 'Effect and selected port colors' : 'Effect',`/api/zones/${encodeURIComponent(id)}/effect`,'PUT',{...effect,clear_overrides:draft.effect.clearOverrides === true});
+    effectZones.find(zone => zone.id === id).effect = copy(effect);
+    add('effect',effectDraft.clearOverrides ? 'Effect and selected port colors' : 'Effect',`/api/zones/${encodeURIComponent(id)}/effect`,'PUT',{...effect,clear_overrides:effectDraft.clearOverrides === true});
   }
   for (const port of copperPorts(draft.returnToEffect ?? [])) add(`return:${port}`,`Port ${port}: follow effect`,`/api/ports/${port}`,'DELETE');
   if (Object.hasOwn(draft,'returnToEffect') && !Array.isArray(draft.returnToEffect)) throw new Error('Choose Ethernet ports for this change.');

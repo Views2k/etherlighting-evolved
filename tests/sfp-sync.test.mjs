@@ -198,3 +198,22 @@ test('shared Off suppresses fallback rules just as the backend does, while Follo
   state.sfp[1].rule=null;
   assert.deepEqual(controlSource(state,10),{kind:'sync',label:'Following port 3'});
 });
+
+test('Follow Ethernet preview includes its source in any retained effect draft', () => {
+  for (const ids of [[9,10],[25,26,27,28]]) {
+    const state={sfp:ids.map(port=>({port})),sfp_sync:{mode:'ethernet',source_port:3}};
+    const source={id:'breathing',ports:[3]}, unrelated={id:'marquee',ports:[1,2]};
+    for (const [draft,expected] of [
+      [{effects:[unrelated,source,{id:'static',ports:[4]}]},ids],
+      [{effect:source,effects:[unrelated]},ids],
+      [{effect:unrelated,effects:[source]},ids],
+      [{effect:source},ids],
+      [{effects:[unrelated]},[]],
+      [{effects:[]},[]],
+    ]) {
+      const before=structuredClone({state,draft});
+      assert.deepEqual(sfpDraftPorts(state,draft),expected);
+      assert.deepEqual({state,draft},before);
+    }
+  }
+});

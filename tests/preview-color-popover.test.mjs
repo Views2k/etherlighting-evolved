@@ -5,11 +5,11 @@ import vm from 'node:vm';
 import {bindPopoverDismissal} from '../preview/popover-interaction.mjs';
 import {hexToHsv,hsvToHex,hexToRgb,rgbToHex,normalizeHex} from '../src/color.mjs';
 
-const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
-const popoverSource=source.slice(source.indexOf('function openColorPopover(anchor)'),source.indexOf('async function openGroups()'));
+const source=await readFile(new URL('../preview/color-picker.mjs',import.meta.url),'utf8');
+const popoverSource=source.slice(source.indexOf('export function openColorPicker')).replace('export function','function');
 const settle=()=>new Promise(resolve=>setTimeout(resolve,5));
 
-function fixture({height=800}={}){
+function fixture({height=800,callback=false,color}={}){
   class Target {
     listeners=new Map();
     addEventListener(name,callback){if(!this.listeners.has(name))this.listeners.set(name,new Set());this.listeners.get(name).add(callback);}
@@ -44,18 +44,22 @@ function fixture({height=800}={}){
   document.body=new Element();document.documentElement=new Element();document.activeElement=document.body;
   document.createElement=()=>new Element();
   const anchor=new Element();anchor.value='#FF0000';document.body.append(anchor);
-  const draft={},writes=[];anchor.addEventListener('input',()=>{draft.color=anchor.value;});
+  const draft={},writes=[];let activeClose,closed=0,rangeUpdates=0;anchor.addEventListener('input',()=>{draft.color=anchor.value;});
   const context={document,window:new Target(),innerWidth:800,innerHeight:height,hexToHsv,hsvToHex,hexToRgb,rgbToHex,normalizeHex,
     bindPopoverDismissal,ResizeObserver:class{observe(){}disconnect(){}},Event:class{constructor(type){this.type=type;}},
-    mountColorLibrary:()=>Object.assign(()=>{},{update(){}}),updateRangeProgress(){},notify(){},activeColorPopover:undefined,
+    mountColorLibrary:()=>Object.assign(()=>{},{update(){}}),
     request:(...args)=>writes.push(args)};
-  vm.createContext(context);vm.runInContext(popoverSource,context);context.openColorPopover(anchor);
+  vm.createContext(context);vm.runInContext(popoverSource,context);
+  const open=()=>{activeClose?.();activeClose=context.openColorPicker(anchor,{color,
+    ...(callback?{onChange:value=>{draft.color=value;}}:{}),onClose(){closed++;activeClose=undefined;},onRangeChange(){rangeUpdates++;}});};
+  open();
   const popup=document.body.children.find(item=>item!==anchor),sv=popup.querySelector('.color-sv'),hue=popup.querySelector('.color-hue');
   const pointer=(name,target,id=1,values={})=>{
     const event={target,pointerId:id,pointerType:'touch',button:0,clientX:70,clientY:70,...values};
     document.emit(name,event);target.emit(name,event);
   };
-  return {document,context,popup,anchor,sv,hue,draft,writes,pointer,Element,close:()=>context.activeColorPopover?.()};
+  return {document,context,popup,anchor,sv,hue,draft,writes,pointer,Element,open,
+    get activeClose(){return activeClose;},get closed(){return closed;},get rangeUpdates(){return rangeUpdates;},close:()=>activeClose?.()};
 }
 
 test('a short viewport keeps the scrollable picker below the top edge',()=>{
@@ -144,8 +148,8 @@ test('closing a picker cancels deferred focus checks without dismissing its repl
   const f=fixture();context.after(f.close);
   f.document.emit('keydown',{key:'Tab'});
   const next=new f.Element();f.document.body.append(next);next.focus();f.popup.emit('focusout',{relatedTarget:next});
-  f.context.openColorPopover(f.anchor);await settle();
-  assert.equal(f.popup.isConnected,false);assert.equal(typeof f.context.activeColorPopover,'function');
+  f.open();await settle();
+  assert.equal(f.popup.isConnected,false);assert.equal(typeof f.activeClose,'function');
   assert.equal(f.document.body.children.filter(item=>item.className==='color-popover popover').length,1);
 });
 
@@ -167,5 +171,59 @@ test('a valid hue edit also replaces an invalid hex entry when focus has not mov
     const hex=f.popup.querySelector('#popup-hex');hex.focus();hex.value='invalid';hex.emit('change');
     f.hue.value=120;f.hue.emit('input');
     assert.equal(hex.value,'#00FF00');assert.equal(hex.checkValidity(),true);assert.equal(f.draft.color,'#00FF00');assert.deepEqual(f.writes,[]);
+  }finally{f.close();}
+});
+
+
+test('a second finger cannot move the color or end the active saturation/value drag',()=>{
+  const f=fixture();
+  try{
+    f.pointer('pointerdown',f.sv,1,{clientX:70,clientY:70});const first=f.draft.color;
+    f.pointer('pointerdown',f.sv,2,{clientX:120,clientY:20});
+    f.pointer('pointermove',f.sv,2,{clientX:20,clientY:120});
+    assert.equal(f.draft.color,first);assert.equal(f.sv.hasPointerCapture(2),false);
+    f.pointer('pointerup',f.sv,2);
+    f.pointer('pointermove',f.sv,1,{clientX:120,clientY:20});assert.equal(f.draft.color,'#FF0000');
+    f.pointer('pointerup',f.sv,1);
+    f.pointer('pointerdown',f.sv,3,{clientX:20,clientY:120});assert.equal(f.draft.color,'#000000');
+    assert.equal(f.popup.isConnected,true);assert.deepEqual(f.writes,[]);
+  }finally{f.close();}
+});
+
+test('canceled or lost capture lets the next gesture start without accepting stale movement',()=>{
+  for(const end of ['pointercancel','lostpointercapture']){
+    const f=fixture();
+    try{
+      f.pointer('pointerdown',f.sv,1,{clientX:70,clientY:70});
+      if(end==='lostpointercapture')f.sv.releasePointerCapture(1);
+      f.pointer(end,f.sv,1);assert.equal(f.sv.hasPointerCapture(1),false);
+      f.pointer('pointerdown',f.sv,2,{clientX:120,clientY:20});assert.equal(f.draft.color,'#FF0000');
+      f.pointer('pointermove',f.sv,1,{clientX:20,clientY:120});assert.equal(f.draft.color,'#FF0000');
+      f.pointer('pointermove',f.sv,2,{clientX:20,clientY:120});assert.equal(f.draft.color,'#000000');
+      assert.equal(f.popup.isConnected,true);assert.deepEqual(f.writes,[]);
+    }finally{f.close();}
+  }
+});
+
+test('secondary mouse and pen buttons do not begin a saturation/value gesture',()=>{
+  const f=fixture();
+  try{
+    for(const pointerType of ['mouse','pen']){
+      f.pointer('pointerdown',f.sv,1,{pointerType,button:2});
+      assert.equal(f.sv.hasPointerCapture(1),false);assert.equal(f.draft.color,undefined);
+    }
+    f.pointer('pointerdown',f.sv,2,{pointerType:'mouse',clientX:120,clientY:20});
+    assert.equal(f.draft.color,'#FF0000');assert.deepEqual(f.writes,[]);
+  }finally{f.close();}
+});
+
+test('callback mode starts from its supplied color and stages updates without changing the anchor or sending requests',()=>{
+  const f=fixture({callback:true,color:'#00FF00'});
+  try{
+    assert.equal(f.popup.querySelector('#popup-hex').value,'#00FF00');assert.equal(f.draft.color,undefined);
+    f.hue.value=240;f.hue.emit('input');
+    assert.equal(f.draft.color,'#0000FF');assert.equal(f.anchor.value,'#FF0000');assert.deepEqual(f.writes,[]);
+    assert.ok(f.rangeUpdates>=2);f.popup.querySelector('.color-popup-footer button').emit('click');
+    assert.equal(f.closed,1);assert.equal(f.document.activeElement,f.anchor);assert.equal(f.activeClose,undefined);
   }finally{f.close();}
 });
