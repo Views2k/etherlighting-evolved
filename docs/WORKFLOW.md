@@ -9,7 +9,7 @@ This repository is the source of truth for EE. All application changes, tests, a
 3. Implement the change in this checkout. Update the API and workflow documentation when behavior or contracts change.
 4. Run the relevant checks locally. Run `tools/verify.ps1` for a complete source, backend, contract, and browser check. Reuse evidence only when its recorded source inputs are unchanged.
 5. Push the branch and open a pull request. Review the diff and the EE Quality result for that revision before merging.
-6. The `main` run verifies the merged revision, builds the Windows installer, compares its contents with the source, and exercises the packaged simulator. Deliver that verified artifact with its revision and SHA256.
+6. For a private build, run `packaging/build.ps1` from the merged checkout and give the tester a direct link to the local Setup EXE. Full release packaging is a separate manual run.
 
 Keep the configured repository author. Public releases and live deployments require a separate owner instruction. A successful simulator check establishes the tested software behavior; physical lighting and rack-screen acceptance are recorded separately.
 
@@ -25,9 +25,9 @@ With the existing tools installed, run from the repository root:
 
 The script uses `.venv/Scripts/python.exe` by default. Use `-PythonExe` for another existing environment and `-OutputRoot` for an empty results directory. It does not install dependencies or connect to a switch. It records an exact source manifest, step results, logs, browser captures, and simulator results.
 
-EE Quality runs on pull requests and `main`. The GitHub-hosted Windows runner uses the versions in `requirements-ci.txt`, Python 3.12.10, and Node 22.23.1. Workflow actions are pinned to commit IDs. Browser checks use a separate simulator data directory and browser profile.
+EE Quality verifies source and simulator workflows on pull requests. The GitHub-hosted Windows runner uses the versions in `requirements-ci.txt`, Python 3.12.10, and Node 22.23.1. Workflow actions are pinned to commit IDs. Browser checks use a separate simulator data directory and browser profile.
 
-The `main` job prepares the official pinned Inno Setup compiler on the hosted runner, verifies its SHA256 and publisher signature, and runs `packaging/build.ps1`. Local builds use existing tools. Updating a tool or dependency requires updating its pin and checking the affected build and tests together.
+To prepare a release candidate, select **Run workflow** on `main` in EE Quality. The hosted runner verifies the pinned Inno Setup compiler and publisher, builds with `-ReleaseCandidate`, compares the package with the checkout, and tests the packaged simulator. Private builds use existing local tools. Updating a tool or dependency requires updating its pin and checking the affected build and tests together.
 
 ## Artifacts and records
 

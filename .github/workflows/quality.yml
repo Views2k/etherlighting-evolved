@@ -1,8 +1,6 @@
 name: EE Quality
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -67,7 +65,7 @@ jobs:
       - name: Build verified main installer
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          & .\packaging\build.ps1 -PythonExe @(Get-Command python -CommandType Application)[0].Source -NodeExe @(Get-Command node -CommandType Application)[0].Source -CompilerExe $env:EE_CI_COMPILER -OutputRoot '.\outputs\candidate'
+          & .\packaging\build.ps1 -PythonExe @(Get-Command python -CommandType Application)[0].Source -NodeExe @(Get-Command node -CommandType Application)[0].Source -CompilerExe $env:EE_CI_COMPILER -ReleaseCandidate -OutputRoot '.\outputs\candidate'
       - name: Verify the packaged simulator
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |

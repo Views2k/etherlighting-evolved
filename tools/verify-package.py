@@ -7,6 +7,7 @@ import marshal
 import re
 import runpy
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,22 @@ from PyInstaller.archive.readers import CArchiveReader
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_contents(app):
+    private = {'private-access.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
+               'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
+               'known_switches.json', 'port_led_fw.bin'}
+    for item in app.rglob('*'):
+        if item.name.lower() in private:
+            raise ValueError('Private state or analysis artifact is included in the package.')
+    for name in ['LICENSE.txt', 'licenses/Node-LICENSE.txt', 'licenses/Python-LICENSE.txt', 'licenses/COMPONENTS.txt']:
+        if not (app / name).is_file() or not (app / name).stat().st_size:
+            raise ValueError(f'Missing notice: {name}')
+    for name in ['EtherlightingEvolved.exe', 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html']:
+        path = app / name
+        if not path.is_file() or not path.stat().st_size:
+            raise ValueError(f'Missing application file: {name}')
 
 
 def verify(root, app, node, installer=None):
@@ -67,15 +84,7 @@ def verify(root, app, node, installer=None):
                 raise ValueError(f'Unexpected authoring metadata: {relative.as_posix()}')
             sources[relative.as_posix()] = digest(source)
             assets += 1
-    private = {'private-access.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
-               'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
-               'known_switches.json', 'port_led_fw.bin'}
-    for item in app.rglob('*'):
-        if item.name.lower() in private:
-            raise ValueError('Private state or analysis artifact is included in the package.')
-    for name in ['LICENSE.txt', 'licenses/Node-LICENSE.txt', 'licenses/Python-LICENSE.txt', 'licenses/COMPONENTS.txt']:
-        if not (app / name).is_file() or not (app / name).stat().st_size:
-            raise ValueError(f'Missing notice: {name}')
+    check_contents(app)
     if digest(app / 'runtime/node.exe') != digest(node):
         raise ValueError('Bundled Node differs from the selected runtime.')
     try:
@@ -97,10 +106,16 @@ def verify(root, app, node, installer=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
-    parser.add_argument('--node', type=Path, required=True)
+    parser.add_argument('--node', type=Path)
     parser.add_argument('--installer', type=Path)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--check-contents', action='store_true')
     args = parser.parse_args()
+    if args.check_contents:
+        check_contents(args.app.resolve())
+        sys.exit(0)
+    if not args.node or not args.output:
+        parser.error('--node and --output are required for release verification')
     result = verify(Path(__file__).resolve().parents[1], args.app.resolve(), args.node.resolve(), args.installer)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
