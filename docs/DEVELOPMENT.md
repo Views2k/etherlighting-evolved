@@ -75,23 +75,19 @@ Run checks affected by a change and retain their command, source revision, resul
 
 ## Windows installer
 
-The packaging entry point delegates to `tools/build-workspace.ps1`. Supply the existing Python environment and Node executable:
+Build the private Windows installer with the existing local tools.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
-& .\packaging\build.ps1 `
-    -PythonExe (Resolve-Path .\.venv\Scripts\python.exe).Path `
-    -NodeExe (Get-Command node).Source
+& .\packaging\build.ps1
 ```
 
-The selected Node distribution must include its `LICENSE` beside `node.exe`; that notice is bundled with the application. Use `-NodeExe` to select a distribution containing both files.
+Open the printed path to `EtherlightingEvolved-Setup-<version>.exe`. The default destination is `outputs/releases/<version>/dist/`. Use a new `-OutputRoot` for a second build of the same version to preserve the earlier installer.
 
-Use `-CompilerExe` to select an existing Inno Setup compiler, `-OutputRoot` for a new output directory, or `-SkipInstaller` to package the application without compiling Setup. The default output is `outputs/releases/<version>/`; a nonempty output directory is rejected to protect existing artifacts.
+The build uses the checkout's Python environment and the Node distribution under `outputs/build-tools/node/`, falling back to Node on the system path. Use `-PythonExe`, `-NodeExe`, or `-CompilerExe` to select an existing tool. Node needs its license beside the executable. Use `-SkipInstaller` to produce the app folder alone.
 
-The build packages the desktop host and engine, copies the current workspace assets and Node runtime, collects third-party notices, and runs `tools/verify-package.py`. It records verification results and hashes in the output directory. Version values in `package.json`, `pyproject.toml`, and the Python package must agree. It does not install or launch the result.
-
-Before delivery, verify the package against this checkout, exercise the packaged simulator, and retain the installer hash. Installed upgrade and hardware acceptance are separate checks.
+Private builds check required application files, third-party notices, and exclusion of private data before compiling Setup. For a release candidate, run EE Quality manually on `main`. It passes `-ReleaseCandidate` for the full package comparison and then exercises the packaged simulator.
 
 ## Shared browser code and fixtures
 

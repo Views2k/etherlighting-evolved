@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$NodeExe,
     [string]$CompilerExe,
     [string]$OutputRoot,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$ReleaseCandidate
 )
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path $PSScriptRoot -Parent
@@ -56,13 +57,19 @@ Copy-Item -LiteralPath $nodeLicense -Destination (Join-Path $app 'licenses\Node-
 if ($LASTEXITCODE) { throw 'Dependency notice collection failed.' }
 & $node -p 'process.versions.node' | Set-Content -LiteralPath (Join-Path $OutputRoot 'node-version.txt')
 if ($LASTEXITCODE) { throw 'The Node.js version could not be read.' }
+if (-not $ReleaseCandidate) {
+    & $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') --app $app --check-contents
+    if ($LASTEXITCODE) { throw 'Package content check failed.' }
+}
 if (-not $SkipInstaller) {
     & $compiler /Q "/DAppVersion=$version" "/DAppSourceDir=$app" "/O$dist" (Join-Path $backend 'packaging\installer.iss') *> (Join-Path $OutputRoot 'installer-build.log')
     if ($LASTEXITCODE) { throw 'Installer compilation failed. See installer-build.log.' }
 }
-$verificationArgs = @('--app', $app, '--node', $node, '--output', (Join-Path $OutputRoot 'package-verification.json'))
-if (-not $SkipInstaller) { $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe")) }
-& $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') @verificationArgs *> (Join-Path $OutputRoot 'package-verification.log')
-if ($LASTEXITCODE) { throw 'Package verification failed. See package-verification.log.' }
+if ($ReleaseCandidate) {
+    $verificationArgs = @('--app', $app, '--node', $node, '--output', (Join-Path $OutputRoot 'package-verification.json'))
+    if (-not $SkipInstaller) { $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe")) }
+    & $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') @verificationArgs *> (Join-Path $OutputRoot 'package-verification.log')
+    if ($LASTEXITCODE) { throw 'Package verification failed. See package-verification.log.' }
+}
 if ($SkipInstaller) { Write-Output (Join-Path $app 'EtherlightingEvolved.exe') }
 else { Write-Output (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe") }

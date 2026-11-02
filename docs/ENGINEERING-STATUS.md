@@ -26,4 +26,4 @@ Preserve current admission, pacing, identity, and cleanup gates while resolving 
 
 ## Evidence locations
 
-CI results and installer provenance are attached to their exact revision. Local verification is under `outputs/verification/`, delivered packages under `outputs/releases/`, and historical audit evidence under `outputs/audits/`. These generated records are excluded from Git. Credentials and live application state are not build inputs.
+CI results are attached to the tested revision. Release candidates also include installer provenance. Local verification is under `outputs/verification/`, delivered packages under `outputs/releases/`, and historical audit evidence under `outputs/audits/`. These generated records are excluded from Git. Credentials and live application state are not build inputs.
