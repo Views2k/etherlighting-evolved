@@ -309,18 +309,28 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
 
 function renderStudio() {
   view.innerHTML = `<div class="studio"><section class="workspace">
-    <div class="workspace-toolbar"><div class="group-control"><label class="sr-only" for="group-select">Port group</label><select id="group-select"></select><button class="button quiet" id="manage-groups">Groups</button></div><span id="quick-profile"></span><button class="button quiet" id="save-scene">Profiles</button><button class="button quiet" id="undo-last" disabled>Undo last apply</button></div>
+    <div class="workspace-toolbar"><div class="group-control"><label class="sr-only" for="group-select">Port group</label><select id="group-select"></select><button class="button quiet" id="manage-groups">Groups</button></div><span id="quick-profile"></span><button class="button quiet" id="save-scene">Profiles</button><button class="button quiet" id="undo-last" disabled>Undo last apply</button><button class="button quiet" id="toggle-output"></button></div>
     <div class="studio-content"><section class="canvas-area">
-      <div class="canvas-heading"><div><h1><span id="switch-title">${escape(switchTitle(state))}</span> ${session.simulated?'<span class="demo-badge">Demo</span>':''}</h1><p class="muted" id="map-output-status">Select ports to preview and apply lighting.</p></div><span id="selected-label" class="selection-count"></span></div>
-      <div id="uplink-bandwidth"></div>
-      <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
-      <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint"><section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section></div>
-      <div class="canvas-footer"><div class="link-legend">${speedLegend()}<span class="uplink-label">${uplinkIcon()} Uplink</span><span>${poeIcon()} PoE</span></div><span class="muted" id="selection-hint">${escape(currentSelectionHint())}</span></div>
-      <div class="brightness-controls"><div class="output-control"><label for="master">Default brightness</label><input id="master" type="range" min="0" max="100" step="1" value="${number(draft.brightness??state.brightness,100)}"><output id="master-value">${number(draft.brightness??state.brightness,100)}%</output></div><button class="button quiet" id="toggle-output"></button><span class="help-text ownership-preview" id="ownership-preview" hidden></span></div>
-      <p class="help-text brightness-help">Default brightness applies to effects and SFP lighting. Fixed port colors and rules with their own brightness keep that setting. <button class="button quiet" id="lighting-help">Lighting help</button></p>
+      <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint">
+        <div class="faceplate-toolbar">
+          <div class="canvas-heading"><div><h1><span id="switch-title">${escape(switchTitle(state))}</span> ${session.simulated?'<span class="demo-badge">Demo</span>':''}</h1><p class="muted" id="map-output-status">Select ports to preview and apply lighting.</p></div><div id="uplink-bandwidth"></div></div>
+          <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
+        </div>
+        <section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section>
+        <div class="canvas-footer"><div class="link-legend"><span class="current-speed-legend"></span><span class="uplink-label">${uplinkIcon()} Uplink</span><span>${poeIcon()} PoE</span></div><span id="selected-label" class="selection-count"></span></div>
+      </div>
     </section><section class="inspector" id="inspector" aria-label="Port controls"></section></div>
-    <div class="draft-actions" id="draft-actions" hidden><span data-draft-label>Unsaved preview</span><button class="button quiet" id="compare-draft">Show applied</button><button class="button quiet" id="cancel-draft">Discard</button><button class="button primary" id="apply-draft">Apply changes</button></div>
-  </section></div>`;
+      <dialog class="dialog map-key" aria-labelledby="map-key-title">
+        <form method="dialog" class="dialog-header"><h2 id="map-key-title">Port map key</h2><button class="button quiet">Done</button></form>
+        <div class="link-legend">${speedLegend()}<span class="uplink-label">${uplinkIcon()} Uplink</span><span>${poeIcon()} PoE</span></div>
+        <p id="selection-hint">${escape(currentSelectionHint())}</p>
+        <p id="brightness-description">Default brightness applies to effects and SFP lighting. Fixed port colors and rules with their own brightness keep that setting.</p>
+        <button class="button quiet" id="lighting-help">Lighting help</button>
+      </dialog>
+    <div class="output-dock">
+      <div class="brightness-controls"><div class="output-control"><label for="master">Default brightness</label><input id="master" aria-describedby="brightness-description" type="range" min="0" max="100" step="1" value="${number(draft.brightness??state.brightness,100)}"><output id="master-value">${number(draft.brightness??state.brightness,100)}%</output></div><button class="button quiet" id="open-map-key" aria-haspopup="dialog">Map key</button><span class="help-text ownership-preview" id="ownership-preview" hidden></span></div>
+      <div class="draft-actions" id="draft-actions" hidden><span data-draft-label>Unsaved preview</span><button class="button quiet" id="compare-draft">Show applied</button><button class="button quiet" id="cancel-draft">Discard</button><button class="button primary" id="apply-draft">Apply changes</button></div>
+    </div></section></div>`;
   uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(document.querySelector('#uplink-bandwidth'));
   renderPorts();updateGroups();renderInspector();updateLive();updateDraftBar();renderQuickProfiles();updateUndo();
   document.querySelector('#apply-draft').onclick=()=>run(flushEdits);
@@ -335,7 +345,8 @@ function renderStudio() {
   document.querySelector('[data-select="sfp"]').onclick=()=>setSelection(state.sfp.map(p=>p.port));
   document.querySelector('#select-multiple').onclick=event=>{multipleSelection=!multipleSelection;event.currentTarget.setAttribute('aria-pressed',String(multipleSelection));document.querySelector('#selection-hint').textContent=currentSelectionHint();};
   document.querySelector('#save-scene').onclick=()=>run(()=>navigate('Profiles'));
-  document.querySelector('#lighting-help').onclick=()=>run(()=>navigate('Help'));
+  document.querySelector('#open-map-key').onclick=()=>document.querySelector('.map-key').showModal();
+  document.querySelector('#lighting-help').onclick=()=>{document.querySelector('.map-key').close();run(()=>navigate('Help'));};
   document.querySelector('#port-details').onclick=openPortDetails;
   document.querySelector('#open-port-controls').onclick=()=>{const studio=document.querySelector('.studio-content');studio.dataset.canvasScroll=String(studio.scrollTop);studio.classList.add('is-editing-ports');studio.scrollTop=0;document.querySelector('#back-to-ports')?.focus({preventScroll:true});};
   document.querySelector('#undo-last').onclick=()=>run(undoLastApply);
@@ -459,11 +470,13 @@ function previewDraft(time){
 
 function speedLegend() {
   const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']];
-  const used=new Set([...(state.ports||[]),...(state.sfp||[])].map(port=>linkStatus(port).key));
   const markup=items=>items.map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');
-  return `<span class="current-speed-legend">${markup(entries.filter(([key])=>used.has(key)))}</span><details class="full-speed-legend"><summary>All link speeds</summary><div>${markup(entries)}</div></details>`;
+  return markup(entries);
 }
-function speedMarkup(link) {return `<i class="speed-dot speed-${link.key}" aria-hidden="true"></i><span>${escape(link.label)}</span>`;}
+function speedMarkup(link) {
+  const label=link.key==='offline'?'<span class="link-long">Disconnected</span><span class="link-short">No link</span>':`<span>${escape(link.label)}</span>`;
+  return `<i class="speed-dot speed-${link.key}" aria-hidden="true"></i>${label}`;
+}
 function poeTier(poe) {
   const pdClass=poe?.pd_class;
   const plus=Number.isInteger(pdClass)&&pdClass>=0&&pdClass<=8?(pdClass>=7?3:pdClass>=5?2:pdClass===4?1:0):0;
@@ -493,6 +506,10 @@ function renderPorts() {
   document.querySelector('#copper-range').textContent=ports.length?`Ports ${ports[0].port}–${ports.at(-1).port}`:'';
   copper.innerHTML = ports.map(port => portMarkup(port)).join('');
   const sfp=document.querySelector('#sfp-ports'),lights=state.sfp||[];
+  const map=copper.closest('.port-map');
+  const inlineBanks=ports.length>0 && lights.length>0 && ports.length<=8 && lights.length<=2;
+  map.classList.toggle('inline-banks',inlineBanks);
+  if(inlineBanks)map.style.setProperty('--bank-widths',`minmax(0, ${ports.length}fr) minmax(0, ${lights.length}fr)`);
   sfp.style.setProperty('--port-count',Math.max(1,lights.length));
   sfp.classList.toggle('dense-bank',lights.length>16);
   sfp.classList.toggle('wide-bank',lights.length>4||!ports.length);
@@ -554,7 +571,7 @@ function updateLive() {
   }
   const master = document.querySelector('#master');
   const mapStatus=document.querySelector('#map-output-status');
-  if(mapStatus){const text=disconnected||!state.connected?'Last confirmed colors · Connection interrupted':state.mode==='released'?'UniFi controls the lighting':edits.size&&!compareApplied?'Previewing unapplied lighting':'Select ports to preview and apply lighting.';if(mapStatus.textContent!==text)mapStatus.textContent=text;}
+  if(mapStatus){const text=disconnected||!state.connected?'Last confirmed colors · Connection interrupted':state.mode==='released'?'UniFi controls the lighting':edits.size&&!compareApplied?'Previewing unapplied lighting':'Select ports to preview and apply lighting.';mapStatus.hidden=!disconnected&&state.connected&&state.mode!=='released'&&(!edits.size||compareApplied);if(mapStatus.textContent!==text)mapStatus.textContent=text;}
   updateControlSource();
   if (master && document.activeElement !== master && !edits.has('master') && !busy) {
     const value=String(number(state.brightness,100));if(master.value!==value)master.value=value;

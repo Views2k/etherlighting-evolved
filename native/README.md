@@ -30,7 +30,7 @@ launch the application.
 [WINDOWS POWERSHELL]
 
 ```powershell
-.venv/Scripts/python.exe native/verify_package.py outputs/native-release-0.4.15
+.venv/Scripts/python.exe native/verify_package.py outputs/native-release-0.4.16
 ```
 
 For source launches, the service is resolved from this checkout and Python is read
