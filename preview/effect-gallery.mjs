@@ -6,7 +6,7 @@ import {sfpSync, effectiveSfpLight, sfpNativePeriod, sfpNativeAvailable, sfpCand
 import {hostScheduleDate,receiveScheduleClock} from './schedule-clock.mjs';
 import {portDisplayRgb} from './port-display.mjs';
 import {lightingPorts, previewGrid, portRanges} from './port-topology.mjs';
-import {effectDrafts as pendingEffects, effectDraftForPort} from './effect-draft.mjs';
+import {effectDrafts as pendingEffects, effectDraftForPort, portEffect} from './effect-draft.mjs';
 
 const node = (tag, className = '', text) => {
   const element = document.createElement(tag);
@@ -60,18 +60,18 @@ export function galleryConfig(effect, state = {}, selectedPorts = [], remembered
   return {id:effect.id, params:{...defaults, ...copy(chosen?.params || {})}};
 }
 
-function copperOwnership(state, id, draft) {
-  const port = state.ports?.find(item => item.port === id), zone = state.zones?.find(item => item.ports.includes(id));
-  const pending=effectDraftForPort(draft,id), effect=pending||zone?.effect;
+function effectOwnership(state, id, draft) {
+  const optical = state.sfp?.find(light=>light.port===id), port = optical || state.ports?.find(item=>item.port===id);
+  const pending=effectDraftForPort(draft,id), effect=portEffect(state,draft,id);
   if (draft.colors?.[id]) return {kind:'manual-preview', effect};
   if ((port?.override || state.overrides?.[id] || port?.source?.kind === 'override') && !draft.returnToEffect?.includes(id) && !pending?.clearOverrides) return {kind:'manual', effect};
   if (pending) return {kind:'preview', effect};
-  if (port?.source?.kind === 'rule') return {kind:'rule', effect:zone?.effect, name:port.source.name};
-  return {kind:'effect', effect:zone?.effect};
+  if (optical?.rule || port?.source?.kind === 'rule') return {kind:'rule',effect};
+  return {kind:'effect',effect};
 }
 
 export function galleryStatus(effect, state = {}, selected = [], draft = {}, config) {
-  const owners = selectedCopper(state, selected).map(id => copperOwnership(state, id, draft));
+  const owners = [...selectedCopper(state,selected),...selectedSfp(state,selected)].map(id=>effectOwnership(state,id,draft));
   const assigned = owners.filter(owner => owner.effect?.id === effect.id);
   if (!assigned.length) return {label:'', selected:false};
   const previewing = assigned.filter(owner => owner.kind === 'preview').length;
@@ -119,10 +119,11 @@ export function sfpGalleryStatus(effect, state = {}, selected = [], draft = {}) 
   const sync=sfpSync(state,draft);
   if(sync.mode==='ethernet')return {label:'',selected:false};
   const ports = selectedSfp(state, selected), lights = ports.map(port => effectiveSfpLight(state,port,draft));
-  const matching = lights.filter(light => light.mode === 'color' && light.effect === effect.id);
+  const matches = light => !portEffect(state,draft,light.port) && light.mode === 'color' && light.effect === effect.id;
+  const matching = lights.filter(matches);
   if (!matching.length) return {label:'', selected:false};
   const changed = new Set(sfpDraftPorts(state,draft));
-  const staged = ports.filter((port,index) => changed.has(port) && lights[index].mode === 'color' && lights[index].effect === effect.id);
+  const staged = ports.filter((port,index) => changed.has(port) && matches(lights[index]));
   if (staged.length) return {label:staged.length === ports.length ? 'Previewing' : `Previewing on ${staged.length} ${staged.length===1?'port':'ports'}`, selected:true};
   const active = matching.filter(light => !light.rule);
   if (!active.length) return {label:'Automation active', selected:false};
@@ -146,8 +147,11 @@ export function renderEffectGallery(host, context) {
   targetCopy.append(targetName,targetNote);
   const changeSelection = node('button','button quiet','Change selection'); changeSelection.type='button';
   changeSelection.addEventListener('click',()=>onChangeSelection?.());
-  const typeFilters = node('div','gallery-filters gallery-type-filters');typeFilters.setAttribute('role','group');typeFilters.setAttribute('aria-label','Port type');
-  target.append(targetCopy,typeFilters,changeSelection);
+  const typeFilters = node('div','gallery-filters gallery-type-filters');typeFilters.setAttribute('role','group');typeFilters.setAttribute('aria-label','Effect library');
+  const includeLabel = node('label','check'), includeSfp = node('input');
+  includeSfp.type='checkbox';includeSfp.checked=Boolean(selectedSfp(state,selectedPorts).length);
+  includeLabel.append(includeSfp,node('span','','Include SFP lights'));
+  target.append(targetCopy,typeFilters,includeLabel,changeSelection);
   const toolbar = node('div','gallery-toolbar'), search = node('input','gallery-search');
   search.type='search';search.placeholder='Search effects';search.setAttribute('aria-label','Search effects');search.value=galleryState.search || '';
   const filters = node('div','gallery-filters');filters.setAttribute('role','group');filters.setAttribute('aria-label','Effect category');
@@ -164,30 +168,40 @@ export function renderEffectGallery(host, context) {
   const notice=node('p','inline-error');notice.setAttribute('role','status');notice.hidden=true;
   const galleryHeading=node('div','gallery-heading');galleryHeading.append(header,target);
   page.append(galleryHeading,toolbar,notice,grid,empty);host.append(page);
-  let cards=[],favorites=getFavoriteEffects(),recent=getRecentEffects(),type=galleryState.type || (selectedSfp(state,selectedPorts).length&&!selectedCopper(state,selectedPorts).length?'sfp':'ethernet');
+  let cards=[],favorites=getFavoriteEffects(),recent=getRecentEffects(),type=galleryState.type || 'ethernet';
   let frame=0,disposed=false,previousTime=0;
   let targetTypes='',configurationKey='';
   const visible=new Set(),started=performance.now(),reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
   const measureRender=new URLSearchParams(location.search).has('motion-check');
   const observer=new IntersectionObserver(entries=>{for(const entry of entries)entry.isIntersecting?visible.add(entry.target):visible.delete(entry.target);schedule();},{rootMargin:'40px'});
-  const scope=()=>type==='sfp'?selectedSfp(state,selectedPorts):selectedCopper(state,selectedPorts);
+  const scope=()=>{
+    const copper=selectedCopper(state,selectedPorts), sfp=selectedSfp(state,selectedPorts);
+    if(type==='sfp')return sfp;
+    if(!copper.length)return sfp;
+    return includeSfp.checked?[...copper,...(sfp.length?sfp:lightingPorts(state).sfp)]:copper;
+  };
+  includeSfp.addEventListener('change',()=>{updateTarget();buildCards();});
   const master=()=>draft.brightness ?? state.brightness ?? 100;
   const reportError=error=>{notice.textContent=error.message;notice.hidden=false;};
   function statusFor(item){return type==='sfp'?sfpGalleryStatus(item.effect,state,scope(),draft):item.effect.id==='daylight'&&!Number.isFinite(hostScheduleDate(state).getHours())?{label:'Waiting for EE clock',selected:false}:galleryStatus(item.effect,state,scope(),draft,item.config);}
   function updateTarget(){
     const ports=scope(),copper=selectedCopper(state,selectedPorts),sfp=selectedSfp(state,selectedPorts);
-    targetName.textContent=ports.length?`${type==='sfp'?'SFP':'Ethernet'} ${ports.length===1?'port':'ports'} ${portRanges(ports)}`:'Select ports to preview effects';
-    const ownership=type==='sfp'?ports.map(port=>state.sfp?.find(light=>light.port===port)?.rule?'rule':'effect'):ports.map(port=>state.ports?.find(item=>item.port===port)?.source?.kind==='rule'?'rule':copperOwnership(state,port,draft).kind);
+    const opticalIds=lightingPorts(state).sfp, opticalCount=ports.filter(port=>opticalIds.includes(port)).length;
+    const portType=opticalCount===ports.length?'SFP':!opticalCount?'Ethernet':'';
+    const portLabel=ports.length===1?'port':'ports';
+    targetName.textContent=ports.length?`${portType?portType+' '+portLabel:portLabel[0].toUpperCase()+portLabel.slice(1)} ${portRanges(ports)}`:'Select ports to preview effects';
+    includeLabel.hidden=type==='sfp'||!copper.length||!opticalIds.length;
+    const ownership=type==='sfp'?ports.map(port=>state.sfp?.find(light=>light.port===port)?.rule?'rule':'effect'):ports.map(port=>state.ports?.find(item=>item.port===port)?.source?.kind==='rule'?'rule':effectOwnership(state,port,draft).kind);
     const note=ownership.includes('rule')?' · Automation active':ownership.some(kind=>kind.startsWith('manual'))?' · Fixed colors active':'';
     targetNote.textContent=`Effect preview · ${Math.round(master())}% default brightness${note}${type==='sfp'&&sfpSync(state,draft).mode==='ethernet'?' · Choosing an effect replaces Follow Ethernet':''}`;
     changeSelection.textContent=ports.length?'Change selection':'Select ports';
     const nextTypes=JSON.stringify([copper,sfp,type]);
     if(nextTypes===targetTypes)return;
-    targetTypes=nextTypes;typeFilters.replaceChildren();typeFilters.hidden=!(copper.length&&sfp.length);
-    for(const [kind,name,ids] of [['ethernet','Ethernet',copper],['sfp','SFP',sfp]]){
+    targetTypes=nextTypes;typeFilters.replaceChildren();typeFilters.hidden=!sfp.length;
+    for(const [kind,name,ids] of [['ethernet','Port effects',selectedPorts],['sfp','SFP lighting',sfp]]){
       if(!ids.length)continue;
-      const button=node('button',`button quiet ${type===kind?'selected':''}`,`${name} (${ids.length})`);button.type='button';button.setAttribute('aria-pressed',String(type===kind));
-      button.addEventListener('click',()=>{type=kind;galleryState.type=kind;galleryState.scroll=0;buildCards();updateTarget();typeFilters.querySelector(`[data-type="${kind}"]`)?.focus();});button.dataset.type=kind;typeFilters.append(button);
+      const button=node('button',`button quiet ${type===kind?'selected':''}`,name);button.type='button';button.setAttribute('aria-pressed',String(type===kind));
+      button.addEventListener('click',()=>{type=kind;galleryState.type=kind;galleryState.scroll=0;buildCards();updateTarget();[...typeFilters.children].find(control=>control.dataset.type===kind)?.focus();});button.dataset.type=kind;typeFilters.append(button);
     }
   }
   function updateCard(item){
@@ -244,13 +258,15 @@ export function renderEffectGallery(host, context) {
     const renderStarted=measureRender?performance.now():0,elapsed=previousTime?now-previousTime:16;previousTime=now;
     const time=reducedMotion.matches?1.25:(now-started)/1000,shown=cards.filter(item=>!item.card.hidden&&visible.has(item.card)),ids=scope(),count=Math.max(1,ids.length);
     const date=hostScheduleDate(state),hour=date.getHours()+date.getMinutes()/60+date.getSeconds()/3600;
-    const traffic=shown.some(item=>item.category==='Activity')?(simulated?dataPreviewFacts(count,time):ids.map(id=>state.ports?.find(port=>port.port===id)?.facts||{})):[],peakTraffic=activityPeak(traffic),brightness=percent(master());
+    const traffic=shown.some(item=>item.category==='Activity')?(simulated?dataPreviewFacts(count,time):ids.map(id=>(state.ports?.find(port=>port.port===id)||state.sfp?.find(port=>port.port===id))?.facts||{})):[],brightness=percent(master());
     for(const item of shown){
       const phase=type==='sfp'?0:previewPhase(item.clock,item.config,time),colorPhase=type==='sfp'?0:previewColorPhase(item.colorClock,item.config,time);
       const resolvedParams=type==='sfp'?null:resolvedColorParams(item.config,time,colorPhase);
+      const peakTraffic=item.category==='Activity'?activityPeak(traffic,item.config?.params?.include_uplinks):0;
       for(let index=0;index<item.ports.length;index++){
-        const port=ids[index];
-        const target=type==='sfp'?sfpPreviewColor(sfpCandidateSettings(state,port,item.effect.id,draft),item.effect.id,time,master(),state.output?.gamma,sfpNativeAvailable(state)):item.effect.id==='daylight'&&!Number.isFinite(hour)?portDisplayRgb(state.ports?.find(item=>item.port===port)||{},state.output?.gamma):dim(effectColor(item.config,index,item.ports.length,time,{...traffic[index],hour,phase,colorPhase,resolvedParams,peakTraffic,animationState:item.animation[index]}),brightness);
+        const port=ids[index], optical=type==='sfp'?null:state.sfp?.find(light=>light.port===port);
+        const portBrightness=brightness*(optical?percent(draft.sfp?.[port]?.brightness??optical.brightness):1);
+        const target=type==='sfp'?sfpPreviewColor(sfpCandidateSettings(state,port,item.effect.id,draft),item.effect.id,time,master(),state.output?.gamma,sfpNativeAvailable(state)):item.effect.id==='daylight'&&!Number.isFinite(hour)?portDisplayRgb(state.ports?.find(item=>item.port===port)||state.sfp?.find(item=>item.port===port)||{},state.output?.gamma):dim(effectColor(item.config,index,item.ports.length,time,{...traffic[index],hour,phase,colorPhase,resolvedParams,peakTraffic,animationState:item.animation[index]}),portBrightness);
         const color=smoothColor(reducedMotion.matches?undefined:item.colors[index],target,elapsed),css=rgbCss(color);
         if(item.styles[index]!==css){item.ports[index].style.backgroundColor=css;item.ports[index].style.color=css;item.styles[index]=css;}item.colors[index]=color;
       }
@@ -263,16 +279,15 @@ export function renderEffectGallery(host, context) {
   const synchronize=()=>{cancelAnimationFrame(frame);frame=0;previousTime=0;schedule();};
   document.addEventListener('visibilitychange',synchronize);reducedMotion.addEventListener('change',synchronize);
   if(type==='sfp'&&!selectedSfp(state,selectedPorts).length&&selectedCopper(state,selectedPorts).length)type='ethernet';
-  if(type==='ethernet'&&!selectedCopper(state,selectedPorts).length&&selectedSfp(state,selectedPorts).length)type='sfp';
   updateTarget();buildCards();schedule();
   const cleanup=()=>{galleryState.search=search.value;galleryState.category=category;galleryState.type=type;galleryState.scroll=grid.scrollTop;disposed=true;cancelAnimationFrame(frame);observer.disconnect();document.removeEventListener('visibilitychange',synchronize);reducedMotion.removeEventListener('change',synchronize);};
   cleanup.update=next=>{
     receiveScheduleClock(next.state?.schedule_clock);
-    const previousScope=scope().join(',');state=next.state ?? state;selectedPorts=next.selectedPorts ?? selectedPorts;effectDrafts=next.effectDrafts ?? effectDrafts;draft=next.draft ?? draft;
+    const previousScope=scope().join(','), previousSelection=selectedPorts.join(',');state=next.state ?? state;selectedPorts=next.selectedPorts ?? selectedPorts;effectDrafts=next.effectDrafts ?? effectDrafts;draft=next.draft ?? draft;
+    if(selectedPorts.join(',')!==previousSelection)includeSfp.checked=Boolean(selectedSfp(state,selectedPorts).length);
     const key=JSON.stringify([Number.isFinite(hostScheduleDate(state).getHours()),selectedPorts,draft,effectDrafts instanceof Map?[...effectDrafts]:effectDrafts,state.zones,state.overrides,state.brightness,state.mode,state.sfp_sync,state.ports?.map(port=>[port.port,port.source,port.override]),state.sfp?.map(({port,mode,effect,color,secondary_color,brightness,color_brightness,secondary_brightness,period,rule})=>({port,mode,effect,color,secondary_color,brightness,color_brightness,secondary_brightness,period,rule}))]);
     if(key===configurationKey)return;configurationKey=key;
     if(type==='sfp'&&!selectedSfp(state,selectedPorts).length&&selectedCopper(state,selectedPorts).length)type='ethernet';
-    if(type==='ethernet'&&!selectedCopper(state,selectedPorts).length&&selectedSfp(state,selectedPorts).length)type='sfp';
     updateTarget();if(previousScope!==scope().join(','))buildCards();else for(const item of cards)updateCard(item);schedule();
   };
   return cleanup;

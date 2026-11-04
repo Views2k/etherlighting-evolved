@@ -205,6 +205,8 @@ class Engine:
         sfp_ports = self._output_sfp_ports or ((9, 10) if self.num_ports == 8 and self._profile_model is None else ())
         self.sfp: dict[int, SfpLight] = {port: SfpLight() for port in sfp_ports}
         self.sfp_sync = SfpSync()
+        self._sfp_zones: dict[int, Zone] = {}
+        self._sfp_zone_colors: dict[int, Color] = {}
         self._sfp_playback = SfpPlayback()
         self._sfp_revisions = {port: 0 for port in sfp_ports}
         self._sfp_acknowledged = {port: 0 for port in sfp_ports}
@@ -327,16 +329,20 @@ class Engine:
 
     # Zones
 
-    def _port(self, port: Any) -> int:
+    def _port(self, port: Any, *, effect_port: bool = False) -> int:
+        error = ("Select an available Ethernet or SFP effect port" if effect_port
+                 else f"ports are numbered 1 to {self.num_ports}")
         try:
             number = float(port)
-        except (TypeError, ValueError):
-            raise ValueError(f"ports are numbered 1 to {self.num_ports}") from None
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(error) from None
         if isinstance(port, bool) or not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"ports are numbered 1 to {self.num_ports}")
+            raise ValueError(error)
         port = int(number)
+        if effect_port and port in self.switch.sfp_ports:
+            return port
         if not 1 <= port <= self.num_ports:
-            raise ValueError(f"ports are numbered 1 to {self.num_ports}")
+            raise ValueError(error)
         return port
 
     def zone(self, zone_id: str | None = None) -> Zone:
@@ -355,7 +361,8 @@ class Engine:
         synchronized = [zone for zone in zones if self._synchronized(zone.effect)]
         if len({zone.effect.p["pace"] for zone in synchronized}) > 1:
             raise ValueError("synchronized Breathing groups must use the same pace")
-        if (synchronized and (require_capability or self.switch_info)
+        if (any(port <= self.num_ports for zone in synchronized for port in zone.ports)
+                and (require_capability or self.switch_info)
                 and not self.switch.native_breathing
                 and not isinstance(self.switch.transport, SimulatedTransport)):
             raise ValueError("synchronized Breathing is unavailable on this switch")
@@ -383,7 +390,7 @@ class Engine:
             raw_ports = spec.get("ports", [])
             if not isinstance(raw_ports, list):
                 raise ValueError("zone ports must be a list")
-            ports = tuple(sorted({self._port(p) for p in raw_ports}))
+            ports = tuple(sorted({self._port(p, effect_port=True) for p in raw_ports}))
             if not ports:
                 raise ValueError(f"zone {name!r} has no ports")
             if claimed & set(ports):
@@ -401,6 +408,28 @@ class Engine:
             zones.append(Zone(zone_id, name, ports, effect))
         return zones
 
+    def _replace_zones(self, zones: list[Zone]) -> set[int]:
+        previous = self._sfp_zones
+        self.zones = zones
+        self._sfp_zones = {port: zone for zone in zones for port in zone.ports if port in self.sfp}
+        changed = {port for port in previous.keys() | self._sfp_zones.keys()
+                   if port not in previous or port not in self._sfp_zones
+                   or previous[port].effect is not self._sfp_zones[port].effect}
+        for port in changed:
+            self._sfp_zone_colors.pop(port, None)
+        return changed
+
+    def _revise_sfp_outputs(self, ports: set[int]) -> None:
+        if not ports:
+            return
+        for port in ports:
+            self._sfp_revisions[port] += 1
+            if self._sfp_requires_output(port):
+                self._sfp_release_ports.discard(port)
+            else:
+                self._sfp_release_ports.add(port)
+        self._sfp_changed.set()
+
     def set_zones(self, specs: list[dict], *, clear_overrides: bool = False) -> None:
         """Replace all zones. Each spec: {"name", "ports": [...], "effect": {"id", "params"}, optional "id"}.
         Ports left out of every zone stay dark unless a rule or override lights them."""
@@ -417,7 +446,8 @@ class Engine:
                 zone.effect = previous.effect
                 zone.started_at = previous.started_at
                 zone.wall_started_at = previous.wall_started_at
-        self.zones = zones
+        self._revise_sfp_outputs(self._replace_zones(zones))
+        self._sync_sfp_rules()
         if clear_overrides:
             for zone in zones:
                 for port in zone.ports:
@@ -439,6 +469,7 @@ class Engine:
         target.effect = effect
         target.started_at = self._animation_clock()
         target.wall_started_at = timing.monotonic()
+        self._revise_sfp_outputs(self._sfp_zones.keys() & target.ports)
         if clear_overrides:
             for port in target.ports:
                 self.overrides.pop(port, None)
@@ -479,9 +510,13 @@ class Engine:
                                        if key not in {"speed", "period", "rate"}):
             for port in target.ports:
                 i = port - 1
-                if self._keys[i] is not None and self.last_sources[i].get("kind") == "zone":
+                if port <= self.num_ports and self._keys[i] is not None and self.last_sources[i].get("kind") == "zone":
                     color, brightness = self._shown[i]
                     self._fades[i] = (color, brightness, clock)
+        affected = self._sfp_zones.keys() & target.ports
+        if synchronized:
+            affected.update(port for zone in shared for port in zone.ports if port in self._sfp_zones)
+        self._revise_sfp_outputs(affected)
         self._changed()
 
     # Rules
@@ -595,16 +630,14 @@ class Engine:
         if not changes:
             raise ValueError("provide an SFP lighting setting")
         updated = self.sfp[port].updated(changes)
+        if port in self._sfp_zones and set(changes) != {"brightness"}:
+            raise ValueError("Remove this SFP port from its effect group before changing its indicator settings")
         self.sfp[port] = updated
-        affected = self.switch.sfp_ports if self.sfp_sync.mode == "together" and port == self._sfp_leader else (port,)
-        for changed_port in affected:
-            self._sfp_revisions[changed_port] += 1
-            if self._sfp_requires_output(changed_port):
-                self._sfp_release_ports.discard(changed_port)
-            else:
-                self._sfp_release_ports.add(changed_port)
+        affected = {port}
+        if self.sfp_sync.mode == "together" and port == self._sfp_leader:
+            affected.update(p for p in self.switch.sfp_ports if p not in self._sfp_zones)
+        self._revise_sfp_outputs(affected)
         self._sync_sfp_rules()
-        self._sfp_changed.set()
         self._changed()
 
     def set_sfp_sync(self, changes: dict) -> None:
@@ -616,14 +649,8 @@ class Engine:
         if (updated.mode == "ethernet" or self.num_ports) and updated.source_port > self.num_ports:
             raise ValueError("SFP source must be an available Ethernet port")
         self.sfp_sync = updated
-        for port in self.switch.sfp_ports:
-            self._sfp_revisions[port] += 1
-            if self._sfp_requires_output(port):
-                self._sfp_release_ports.discard(port)
-            else:
-                self._sfp_release_ports.add(port)
+        self._revise_sfp_outputs(set(self.switch.sfp_ports) - self._sfp_zones.keys())
         self._sync_sfp_rules()
-        self._sfp_changed.set()
         self._changed()
 
     async def wait_for_sfp_sync(self) -> None:
@@ -640,7 +667,10 @@ class Engine:
     def _sfp_color(self, port: int, elapsed: float) -> tuple[Color, float]:
         light = self._sfp_light(port)
         follows_ethernet = self.sfp_sync.mode == "ethernet"
-        if follows_ethernet:
+        grouped = port in self._sfp_zones
+        if grouped:
+            color, brightness = self._sfp_zone_colors.get(port, BLACK), self.brightness
+        elif follows_ethernet:
             color, brightness = self._shown[self.sfp_sync.source_port - 1]
         else:
             color, brightness = light.render(elapsed, port), self.brightness
@@ -649,6 +679,8 @@ class Engine:
             color = rule.look.render(elapsed, color)
             if rule.look.brightness is not None:
                 brightness = rule.look.brightness
+        if grouped:
+            return color, brightness * self.sfp[port].brightness / 100
         return color, brightness if follows_ethernet else brightness * light.brightness / 100
 
     @staticmethod
@@ -672,7 +704,8 @@ class Engine:
             self._sfp_playback.discard(port)
             color, brightness = self._sfp_color(port, elapsed)
             outputs[port] = to_output(color, brightness, self.dimming, self.gamma,
-                                      precise=self._sfp_port_animating(port) and self.switch.sfp_precise)
+                                      precise=self.switch.sfp_precise and (port in self._sfp_zones
+                                                                           or self._sfp_port_animating(port)))
         if (self.sfp_sync.mode != "independent" and native and set(native) == set(self.switch.sfp_ports)
                 and all(spec == native[self._sfp_leader] for spec in native.values())):
             signature, anchors, duration, follow = native[self._sfp_leader]
@@ -686,7 +719,7 @@ class Engine:
         return outputs
 
     def _sfp_native_spec(self, port: int) -> tuple | None:
-        if not self.switch.sfp_native_gradient:
+        if port in self._sfp_zones or not self.switch.sfp_native_gradient:
             return None
         rule = self._sfp_rule(port)
         if rule is not None and rule.look.style != "effect":
@@ -711,7 +744,8 @@ class Engine:
         light = self._sfp_light(port)
         kind = ("follow" if spec[3] else "native") if spec is not None else (
             "custom" if self._sfp_port_animating(port) else "steady")
-        return {"kind": kind, "periods": list(NATIVE_PERIODS.get(light.effect, ())),
+        periods = [] if port in self._sfp_zones else list(NATIVE_PERIODS.get(light.effect, ()))
+        return {"kind": kind, "periods": periods,
                 "segment_seconds": spec[2] if spec is not None else None}
 
     def _sfp_transition_state(self, port: int) -> dict | None:
@@ -732,22 +766,26 @@ class Engine:
     def _sfp_rule(self, port: int) -> Rule | None:
         light = self._sfp_light(port)
         follows_ethernet = self.sfp_sync.mode == "ethernet"
-        if light.mode == "off" and not follows_ethernet:
+        indicator_active = follows_ethernet or port in self._sfp_zones
+        if light.mode == "off" and not indicator_active:
             return None
         # Existing all-copper rules must never silently acquire the SFP indicators.
         rule = first_match([rule for rule in self.rules if rule.ports], self.facts(port))
-        if rule is not None and rule.look.style == "effect" and light.mode == "unmanaged" and not follows_ethernet:
+        if rule is not None and rule.look.style == "effect" and light.mode == "unmanaged" and not indicator_active:
             return None
         return rule
 
     def _sfp_requires_output(self, port: int) -> bool:
-        return (self.sfp_sync.mode == "ethernet" or self._sfp_light(port).mode != "unmanaged"
+        return (port in self._sfp_zones or self.sfp_sync.mode == "ethernet" or self._sfp_light(port).mode != "unmanaged"
                 or self._sfp_rule(port) is not None)
 
     def _sfp_port_animating(self, port: int) -> bool:
         rule = self._sfp_rule(port)
         if rule is not None and rule.look.style != "effect":
             return rule.look.style in ("pulse", "blink", "flash")
+        zone = self._sfp_zones.get(port)
+        if zone is not None:
+            return zone.effect.category != "static"
         if self.sfp_sync.mode == "ethernet":
             return True
         light = self._sfp_light(port)
@@ -768,7 +806,7 @@ class Engine:
 
     def _sfp_animating(self) -> bool:
         return self.mode == "running" and any(
-            self._sfp_port_animating(port)
+            port not in self._sfp_zones and self._sfp_port_animating(port)
             and (self.sfp_sync.mode == "ethernet" or self._sfp_light(port).brightness > 0)
             and port not in self._sfp_releasing
             for port in self.switch.sfp_ports
@@ -787,7 +825,9 @@ class Engine:
         elapsed = timing.monotonic() - self._t0
         return [
             {"port": port, **self.sfp[port].to_dict(),
-             "effective_settings": None if self.sfp_sync.mode == "ethernet" else self._sfp_light(port).to_dict(),
+             "effect_zone": self._sfp_zones[port].id if port in self._sfp_zones else None,
+             "effective_settings": (None if port in self._sfp_zones or self.sfp_sync.mode == "ethernet"
+                                    else self._sfp_light(port).to_dict()),
              "playback": self._sfp_playback_state(port), "native_transition": self._sfp_transition_state(port),
              "control": self._sfp_control(port), "revision": self._sfp_revisions[port],
              "acknowledged_revision": self._sfp_acknowledged[port],
@@ -1142,7 +1182,9 @@ class Engine:
                 zone.effect = previous.effect
                 zone.started_at = previous.started_at
                 zone.wall_started_at = previous.wall_started_at
-        self.zones, self.rules, self.overrides, self.brightness = zones, rules, overrides, brightness
+        affected_sfp.update(self._replace_zones(zones))
+        affected_sfp.update(port for port in self._sfp_zones if sfp[port].brightness != self.sfp[port].brightness)
+        self.rules, self.overrides, self.brightness = rules, overrides, brightness
         self.sfp, self.sfp_sync = sfp, sfp_sync
         for port in affected_sfp:
             self._sfp_revisions[port] += 1
@@ -1342,6 +1384,9 @@ class Engine:
                 rendered = []
             rendered = (rendered + [BLACK] * len(zone.ports))[: len(zone.ports)]
             for port, color in zip(zone.ports, rendered, strict=True):
+                if port in self._sfp_zones:
+                    self._sfp_zone_colors[port] = color
+                    continue
                 colors[port - 1] = color
                 sources[port - 1] = {"kind": "zone", "id": zone.id, "name": zone.name}
                 if self._synchronized(zone.effect) and self.switch.native_breathing:
@@ -1602,6 +1647,7 @@ class Engine:
             if self._stopping:
                 return
             changed = self._dirty.is_set()
+            revision = self.revision
             self._dirty.clear()
             self._sync_sfp_rules()
 
@@ -1624,7 +1670,7 @@ class Engine:
                         self._lost(exc)
                         break
 
-            copper_due = changed or started >= next_copper_tick
+            copper_due = changed or self.revision != revision or started >= next_copper_tick
             if copper_due:
                 self.last_colors, self.last_outputs = self.compose()
                 next_copper_tick = started + 1.0 / self.fps

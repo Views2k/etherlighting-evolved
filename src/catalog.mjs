@@ -1127,6 +1127,12 @@ export const CATALOG = [
         "brightness_param": "brightness_offline_color"
       },
       {
+        "key": "include_uplinks",
+        "label": "Include uplink traffic",
+        "type": "bool",
+        "default": false
+      },
+      {
         "key": "custom_uplink",
         "label": "Customize uplink",
         "type": "bool",
@@ -2837,6 +2843,12 @@ export const CATALOG = [
         "unit": "ports"
       },
       {
+        "key": "include_uplinks",
+        "label": "Include uplink traffic",
+        "type": "bool",
+        "default": false
+      },
+      {
         "key": "max_mbps",
         "label": "Full scale",
         "type": "float",
@@ -2933,6 +2945,12 @@ export const CATALOG = [
         "default": "#0b1523",
         "random_param": "random_idle_color",
         "brightness_param": "brightness_idle_color"
+      },
+      {
+        "key": "include_uplinks",
+        "label": "Include uplink traffic",
+        "type": "bool",
+        "default": false
       },
       {
         "key": "minimum_mbps",

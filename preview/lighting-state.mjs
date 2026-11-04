@@ -1,4 +1,4 @@
-import {effectDrafts} from './effect-draft.mjs';
+import {effectDrafts,portEffect} from './effect-draft.mjs';
 import {matchingRule, matchingSfpRule} from '../src/rules.mjs';
 import {EFFECTS} from '../src/effects.mjs';
 import {editableSfpLight,effectiveSfpLight} from './sfp-sync.mjs';
@@ -25,7 +25,7 @@ export function sceneAutomationMatches(scene, state, portIds, date = hostSchedul
     const port = light || state.ports?.find(port => port.port === id);
     if (!port || !light && Object.hasOwn(scene.overrides || {}, id)) continue;
     const rule = light
-      ? matchingSfpRule(rules,{...light,mode:sync.mode === 'ethernet' ? 'color' : effectiveSfpLight(projected,id).mode},date)
+      ? matchingSfpRule(rules,{...light,mode:scene.zones?.some(zone=>zone.ports.includes(id)) || sync.mode === 'ethernet' ? 'color' : effectiveSfpLight(projected,id).mode},date)
       : matchingRule(rules,{id,facts:port.facts || {}},date);
     if (rule) matches.push({port:id,rule});
   }
@@ -38,14 +38,16 @@ export function controlSource(state, id, effects = [], date = hostScheduleDate(s
   if (!sfp && (state.overrides?.[id] || port.override || port.source?.kind === 'override')) return {kind:'color', label:'Fixed color'};
   const sync = state.sfp_sync || {mode:'independent',source_port:1};
   const shared = sfp ? effectiveSfpLight(state,id) : null;
-  if (sfp && sync.mode === 'independent' && port.mode === 'off') return {kind:'off', label:'Off'};
-  if (sfp && sync.mode === 'together' && shared.mode === 'off') return {kind:'off',label:'SFP lights off'};
+  const grouped = sfp && portEffect(state,{},id);
+  if (!grouped && sfp && sync.mode === 'independent' && port.mode === 'off') return {kind:'off', label:'Off'};
+  if (!grouped && sfp && sync.mode === 'together' && shared.mode === 'off') return {kind:'off',label:'SFP lights off'};
   const reportedRule = sfp ? port.rule : port.source?.kind === 'rule' ? port.source : null;
   const reported = sfp ? Object.hasOwn(port, 'rule') : Boolean(port.source);
-  const rulePort = sfp && sync.mode !== 'independent' ? {...port,mode:sync.mode === 'ethernet' ? 'color' : shared.mode} : port;
+  const rulePort = grouped ? {...port,mode:'color'} : sfp && sync.mode !== 'independent' ? {...port,mode:sync.mode === 'ethernet' ? 'color' : shared.mode} : port;
   const rule = reportedRule ? state.rules?.find(item => item.id === reportedRule.id) || reportedRule
     : reported ? null : sfp ? matchingSfpRule(state.rules || [], rulePort, date) : matchingRule(state.rules || [], {id,facts:port.facts || {}}, date);
   if (rule) return {kind:'rule', label:rule.name, rule};
+  if (grouped) return {kind:'effect',label:effects.find(item=>item.id===grouped.id)?.name || 'Effect',effect:grouped};
   if (sfp && sync.mode === 'ethernet') return {kind:'sync',label:`Following port ${sync.source_port}`};
   if (sfp && sync.mode === 'together') {
     if (shared.mode === 'off') return {kind:'off',label:'SFP lights off'};
@@ -114,7 +116,7 @@ function validateSfp(settings) {
 }
 
 export function lightingOperations(state, draft) {
-  fields(draft,['brightness','effect','effects','returnToEffect','colors','sfp','sfp_sync','mode'],'Choose valid lighting changes.');
+  fields(draft,['brightness','effect','effects','returnToEffect','colors','sfp','sfp_sync','sfpDetached','mode'],'Choose valid lighting changes.');
   const operations = [];
   const add = (key, label, path, method, body) => operations.push({key,label,path,method,body});
   const copperPorts = values => {
@@ -129,10 +131,20 @@ export function lightingOperations(state, draft) {
   if (Object.hasOwn(draft,'effects') && (!Array.isArray(draft.effects) || draft.effects.length > 64)) throw new Error('Choose valid effect previews.');
   if (Object.hasOwn(draft,'effect')) validateEffect(draft.effect);
   let effectZones = copy(state.zones || []);
+  const topology = lightingPorts(state), available = new Set([...topology.copper,...topology.sfp]);
+  if (Object.hasOwn(draft,'sfpDetached')) {
+    if (!Array.isArray(draft.sfpDetached) || draft.sfpDetached.some(port=>!topology.sfp.includes(port))) throw new Error('Choose an available SFP port.');
+    const detached = new Set(draft.sfpDetached);
+    if (effectZones.some(zone=>zone.ports.some(port=>detached.has(port)))) {
+      effectZones = effectZones.map(zone=>({...zone,ports:zone.ports.filter(port=>!detached.has(port))})).filter(zone=>zone.ports.length);
+      add('group','Return to SFP lighting','/api/zones','PUT',{zones:copy(effectZones)});
+    }
+  }
   for (const effectDraft of effectDrafts(draft)) {
     validateEffect(effectDraft);
-    const ports = copperPorts(effectDraft.ports), target = new Set(ports), effect = {id:effectDraft.id,params:copy(effectDraft.params || {})};
-    if (!ports.length) throw new Error('Select at least one Ethernet port.');
+    if (!Array.isArray(effectDraft.ports) || effectDraft.ports.some(port=>!available.has(port))) throw new Error('Choose available lighting ports for this effect.');
+    const ports = [...new Set(effectDraft.ports)].sort((a,b)=>a-b), target = new Set(ports), effect = {id:effectDraft.id,params:copy(effectDraft.params || {})};
+    if (!ports.length) throw new Error('Select at least one port.');
     const exact = effectZones?.find(zone => zone.ports.length === ports.length && zone.ports.every(port => target.has(port)));
     let id = exact?.id;
     if (!id) {

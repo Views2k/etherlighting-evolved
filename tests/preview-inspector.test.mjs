@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {fixedColorSettings,fixedColorBrightness,equalSetting,sfpSettings} from '../preview/lighting-state.mjs';
 import {sfpEditTargets,sfpSync,normalizeSfpBrightness,editableSfpLight} from '../preview/sfp-sync.mjs';
+import {portEffect,leaveSfpEffect} from '../preview/effect-draft.mjs';
 import {manualDisplayRgb} from '../preview/port-display.mjs';
 import {sfpPreviewColor} from '../preview/effect-gallery.mjs';
 import {sceneFingerprint} from '../preview/secondary-model.mjs';
@@ -20,7 +21,7 @@ function fixture({selected=[1],master=100,overrides={1:{color:'#ff0000',brightne
   const messages=[],displayed=[];
   const context={state:{brightness:master,num_ports:1,ports:[{port:1,color:'#ff0000'}],sfp:[{port:9,mode:'color',effect:'steady',color:'#ffffff',brightness:100,color_brightness:100}],sfp_sync:{mode:'independent',source_port:1},zones:[{id:'all',name:'All',ports:[1],effect}],overrides},
     selected:new Set(selected),draft:{},draftBaseline:null,editor:'color',effects:[{id:'static',name:'Static',params:[]}],copiedAppearance:null,
-    activeColorPopover:undefined,inspectorSignature:'',page:'Lighting',busy:0,edits:new Set(),
+    portEffect,leaveSfpEffect,activeColorPopover:undefined,inspectorSignature:'',page:'Lighting',busy:0,edits:new Set(),
     document:{querySelector:key=>key==='#inspector'?host:null,activeElement:{}},
     copperSelection:()=>[...context.selected].filter(id=>id===1),sfpSelection:()=>[...context.selected].filter(id=>id===9),
     currentEffect:()=>effect,hasMixedEffects:()=>false,effectSpec:()=>({id:'static',params:[]}),defaultConfig:()=>({params:{}}),
@@ -34,6 +35,8 @@ function fixture({selected=[1],master=100,overrides={1:{color:'#ff0000',brightne
     number:(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function effectSelection()', 'function selectionEffects()'),context);
+  vm.runInContext(extract('function groupedSfpSelection()', 'function hasMixedEffects()'),context);
   vm.runInContext(extract('function copperInspectorKey()', 'function renderInspector()'),context);
   vm.runInContext(extract('function renderInspectorContent()', 'function setMixedColor('),context);
   vm.runInContext(extract('function renderSfp(host)', 'function reconcileEditor('),context);

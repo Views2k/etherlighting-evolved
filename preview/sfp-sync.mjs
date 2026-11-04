@@ -1,4 +1,4 @@
-import {effectDrafts} from './effect-draft.mjs';
+import {effectDrafts,portEffect} from './effect-draft.mjs';
 
 export function sfpSync(state = {}, draft = {}) {
   return {mode:'independent',source_port:1,...state.sfp_sync,...draft.sfp_sync};
@@ -79,11 +79,14 @@ export function sfpCandidateSettings(state, port, effect, draft = {}) {
 
 export function sfpDraftPorts(state, draft = {}) {
   const sync=sfpSync(state,draft),ids=sfpIds(state),changed=Object.keys(draft.sfp || {}).map(Number).filter(port=>ids.includes(port));
-  if(draft.sfp_sync) return ids;
-  if(sync.mode==='together') return changed.includes(ids[0])?ids:[];
+  const detached=(draft.sfpDetached || []).filter(id=>ids.includes(id));
+  const synced=ids.filter(port=>!portEffect(state,draft,port)||changed.includes(port));
+  if(draft.sfp_sync) return synced;
+  if(sync.mode==='together'&&changed.includes(ids[0]))return synced;
   if(sync.mode==='ethernet') {
     const source=sync.source_port;
-    return draft.colors?.[source]||effectDrafts(draft).some(effect=>effect.ports?.includes(source))||draft.returnToEffect?.includes(source)?ids:[];
+    if(draft.colors?.[source]||effectDrafts(draft).some(effect=>effect.ports?.includes(source))||draft.returnToEffect?.includes(source))return synced;
   }
-  return changed;
+  const changedPorts=sync.mode==='independent'?changed:changed.filter(id=>state.zones?.some(zone=>zone.ports.includes(id)));
+  return [...new Set([...changedPorts,...detached])];
 }

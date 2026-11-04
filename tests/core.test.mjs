@@ -7,7 +7,8 @@ import { CATALOG } from '../src/catalog.mjs';
 import { conditionMatches,matchingRule,RULE_RATE_LIMITS,ruleRate,renderLook } from '../src/rules.mjs';
 import { createState,persistState,loadState,snapshot,applySnapshot,STORAGE_KEY,persistView,restoreView,VIEW_STORAGE_KEY } from '../src/state.mjs';
 import { Backend,LatestQueue,EffectTransaction,applyZoneEffect } from '../src/api.mjs';
-import { assignGroup,removeGroup } from '../src/groups.mjs';
+import { groupEditor } from '../src/group-views.mjs';
+import { assignGroup,removeGroup,replaceGroups } from '../src/groups.mjs';
 import { ruleEditor,readRuleLook } from '../src/rule-editor.mjs';
 
 test('color entry accepts shorthand, rejects malformed values, and round-trips RGB',() => {
@@ -444,4 +445,32 @@ test('groups partition ports without dropping ports or changing unrelated effect
   assert.equal(zones[0].effect.id,'gradient');assert.equal(zones[0].name,'Other ports');
   const restored = removeGroup(zones,'desk');assert.deepEqual(restored[0].ports,[1,2,3,4,5,6,7,8]);
   assert.throws(() => removeGroup(restored,restored[0].id));
+});
+
+test('standalone group rename preserves enrolled SFP on save and reload',()=>{
+  const state=createState();
+  state.mode='live';
+  const group={id:'desk',name:'Desk',ports:[1,9],effect:defaultConfig('activity_glow')};
+  const html=groupEditor(state,group);
+  const selected=[...html.matchAll(/name="ports" type="checkbox" value="(\d+)" checked/g)].map(match=>Number(match[1]));
+  assert.deepEqual(selected,[1,9]);
+  const copper=state.ports.map(port=>port.id),sfp=state.sfp.map(light=>light.port);
+  state.zones=assignGroup([group],{...group,name:'Rack',ports:selected},copper,sfp);
+  assert.deepEqual(state.zones.find(zone=>zone.id==='desk').ports,[1,9]);
+  assert.ok(!state.zones.some(zone=>zone.ports.includes(10)));
+  assert.throws(()=>assignGroup(state.zones,{...group,ports:[11]},copper,sfp),/valid ports/);
+  const values=new Map(),storage={getItem:key=>values.get(key),setItem:(key,value)=>values.set(key,value)};
+  persistState(state,storage);
+  assert.deepEqual(loadState(storage).zones.find(zone=>zone.id==='desk').ports,[1,9]);
+});
+
+test('an optical-only switch starts without the demo group when selecting its first effect',()=>{
+  const state=createState();
+  replaceGroups(state,[]);
+  assert.equal(state.activeZone,'');
+  const selected={id:'fiber',name:'Fiber',ports:[2],effect:defaultConfig('activity_glow')};
+  replaceGroups(state,assignGroup(state.zones,selected,[],[1,2,3]));
+  assert.equal(state.activeZone,'fiber');
+  assert.deepEqual(state.zones,[selected]);
+  assert.equal(state.config.id,'activity_glow');
 });

@@ -2,14 +2,58 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {effectDrafts,effectDraftForPort,stageEffectDraft} from '../preview/effect-draft.mjs';
+import {effectDrafts,effectDraftForPort,stageEffectDraft,leaveSfpEffect,portEffect} from '../preview/effect-draft.mjs';
 import {lightingOperations,lightingSnapshot} from '../preview/lighting-state.mjs';
+import {defaultConfig,effectColor,previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim} from '../preview/effect-renderer.mjs';
+import {matchingRule,matchingSfpRule,renderLook} from '../src/rules.mjs';
+import {sfpSync,sfpDraftPorts} from '../preview/sfp-sync.mjs';
 import {sceneFingerprint} from '../preview/secondary-model.mjs';
 
 const config=(id,ports,params={},extra={})=>({id,ports,params,...extra});
 const ports=()=>Array.from({length:8},(_,index)=>({port:index+1,color:'#FFFFFF'}));
 const scene=()=>({brightness:100,mode:'running',zones:[{id:'all',name:'All Ethernet ports',ports:[1,2,3,4,5,6,7,8],effect:{id:'static',params:{color:'#FFFFFF'}}}],
   rules:[],overrides:{2:{color:'#FF0000',brightness:60},6:{color:'#00FF00',brightness:80}},sfp:{},sfp_sync:{mode:'independent',source_port:1}});
+
+test('a mixed activity group and return to SFP lighting round trip without changing saved optical settings',()=>{
+  const original=scene();original.sfp={9:{mode:'off',color:'#ff0000'},10:{mode:'color',effect:'pulse',period:6}};
+  original.sfp_sync={mode:'together',source_port:2};
+  const runtime=saved=>({...saved,ports:ports(),sfp:Object.entries(saved.sfp).map(([port,light])=>({...light,port:Number(port)}))});
+  const staged=stageEffectDraft({},config('activity_glow',[2,10],{},{clearOverrides:true}),'activity');
+  const joined=lightingSnapshot(original,runtime(original),staged);
+  assert.deepEqual(joined.zones.find(zone=>zone.id==='activity').ports,[2,10]);
+  assert.deepEqual(joined.sfp,original.sfp);assert.deepEqual(joined.sfp_sync,original.sfp_sync);
+  assert.equal(joined.overrides[2],undefined);assert.deepEqual(joined.overrides[6],original.overrides[6]);
+  const detach=leaveSfpEffect({},[10]);assert.equal(portEffect(runtime(joined),detach,10),undefined);
+  const left=lightingSnapshot(joined,runtime(joined),detach);
+  assert.deepEqual(left.zones.find(zone=>zone.id==='activity').ports,[2]);
+  assert.deepEqual(left.sfp,original.sfp);assert.deepEqual(left.sfp_sync,original.sfp_sync);
+  const optical=stageEffectDraft({},config('gradient',[9]),'optical');
+  const opticalOnly=lightingSnapshot(left,runtime(left),optical);
+  const removed=lightingSnapshot(opticalOnly,runtime(opticalOnly),leaveSfpEffect({},[9]));
+  assert.deepEqual(removed,left);
+  const restored=stageEffectDraft(detach,config('activity_glow',[2,10]),'activity');
+  assert.deepEqual(lightingSnapshot(joined,runtime(joined),restored),joined);
+  assert.throws(()=>lightingSnapshot(joined,runtime(joined),{sfpDetached:[2]}),/available SFP port/);
+  assert.throws(()=>lightingSnapshot(joined,runtime(joined),{effect:config('static',[11])}),/available lighting ports/);
+});
+
+test('port map previews an optical member’s own traffic and brightness independently of Follow Ethernet',async()=>{
+  const app=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
+  const context={state:{brightness:100,ports:[{port:1,facts:{link:true,traffic:0}}],
+    sfp:[{port:10,link:true,mode:'off',brightness:40,facts:{link:true,uplink:true,traffic:1000}}],
+    sfp_sync:{mode:'ethernet',source_port:1},rules:[],zones:[]},
+    draft:{effect:config('activity_glow',[1,10],{idle_color:'#000000',active_color:'#ffffff',include_uplinks:true})},
+    number:Number,hostScheduleDate:()=>new Date(),effectDraftForPort,effectDrafts,portEffect,
+    compareApplied:false,previewClocks:new Map(),previewStates:new Map(),defaultConfig,effectColor,
+    previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim,matchingRule,matchingSfpRule,renderLook,sfpSync,sfpDraftPorts};
+  vm.createContext(context);vm.runInContext(app.slice(app.indexOf('function previewDraft('),app.indexOf('function speedLegend(')),context);
+  context.previewDraft(0);
+  const shown=context.previewDraft(5);
+  assert.equal(Math.max(...shown[1]),0);
+  assert.ok(shown[10].every(channel=>channel>101&&channel<=102));
+  context.state.rules=[{id:'alert',enabled:true,ports:[10],conditions:[],look:{style:'solid',color:'#ff0000',brightness:50}}];
+  assert.deepEqual([...context.previewDraft(6)[10]],[51,0,0]);
+});
 
 test('different effect scopes remain staged together without changing earlier parameters or other edits',()=>{
   const original={brightness:65,sfp:{9:{mode:'color',color:'#FF00FF'}},colors:{8:{color:'#112233',brightness:25}}};

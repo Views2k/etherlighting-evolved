@@ -164,11 +164,29 @@ def test_engine_preserves_uplink_mapping_in_reordered_subset_groups(effect_id):
     assert engine.compose(t=7)[0][6] == Color(0xab, 0xcd, 0xef)
 
 
+@pytest.mark.parametrize("effect_id", ["traffic", "traffic_trails", "activity_glow"])
+def test_opted_in_uplink_uses_its_own_rate(effect_id):
+    params = {"include_uplinks": True}
+    observed = create_effect(effect_id, 2, params)
+    reference = create_effect(effect_id, 2, params)
+    idle = create_effect(effect_id, 2, params)
+    uplink = context([1e9, 1e7], uplinks=(1,))
+    device = context([1e9, 1e7])
+    quiet = context([0, 1e7], uplinks=(1,))
+    for t in (0, 0.25, 1, 3):
+        result = observed.render(t, uplink)
+        assert result == reference.render(t, device)
+        dark = idle.render(t, quiet)
+    assert result[0] != dark[0]
+    assert observed.params_json()["include_uplinks"] is True
+
+
 def test_activity_api_and_saved_scene_preserve_speed_colors_and_independent_brightness(config):
     with TestClient(create_app(config, autoconnect=False), base_url="http://127.0.0.1") as client:
         assert client.post("/api/session/login", json={"host": "demo"}).status_code == 200
         values = {"active_color": "#20e090", "idle_color": "#140b22", "brightness_active_color": 65,
-                  "brightness_idle_color": 10, "random_idle_color": True, "speed": 2.5, "minimum_mbps": 25}
+                  "brightness_idle_color": 10, "random_idle_color": True, "speed": 2.5, "minimum_mbps": 25,
+                  "include_uplinks": True}
         applied = client.put("/api/effect", json={"id": "activity_glow", "params": values})
         assert applied.status_code == 200
         saved = applied.json()["zones"][0]["effect"]

@@ -88,3 +88,9 @@ test('pending writes block duplicate actions and canLeave waits for completion',
   await gate.run(() => { throw new Error('Failed'); }); assert.equal(errors.length,1);
   gate.close(); await gate.run(() => writes++); assert.equal(writes,1); assert.equal(await gate.settle(),false);
 });
+
+test('saved optical group effects take precedence over the saved Follow Ethernet description',()=>{
+  const saved={version:3,topology:{version:1,copper_ports:[1],sfp_ports:[9,10]},sfp_sync:{mode:'ethernet',source_port:1},
+    zones:[{ports:[1,10],effect:{id:'activity_glow'}}],sfp:{9:{mode:'off'},10:{mode:'off'}}};
+  assert.deepEqual(profileSfpSummary(saved),[{port:9,label:'Following port 1'},{port:10,label:'Activity Glow'}]);
+});

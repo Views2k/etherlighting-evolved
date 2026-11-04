@@ -504,6 +504,7 @@ class TrafficMeter(Effect):
         Param("busy_color", "Busy", "color", "#ff3b30"),
         Param("smoothing", "Smoothing", "float", 0.6, min=0.0, max=0.95, step=0.05),
         Param("offline_color", "No link", "color", "#000000"),
+        Param("include_uplinks", "Include uplink traffic", "bool", False),
         Param("custom_uplink", "Customize uplink", "bool", False),
         Param("uplink_color", "Uplink", "color", "#ffffff"),
     )
@@ -537,7 +538,7 @@ class TrafficMeter(Effect):
                 self._level[i] = 0.0
                 colors.append(palette["uplink_color"])
                 continue
-            bps = 0.0 if link.uplink else ctx.traffic_bps.get(i + 1, 0.0)
+            bps = ctx.traffic_bps.get(i + 1, 0.0) if self.p["include_uplinks"] or not link.uplink else 0.0
             full_scale = (link.speed_mbps if link.speed_mbps > 0 else 1000) * 1e6
             load = 0.0 if bps <= 1e3 else math.log10(bps / 1e3) / math.log10(max(full_scale / 1e3, 10.0))
             load = min(1.0, max(0.0, load))

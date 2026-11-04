@@ -26,6 +26,24 @@ test('a device retains its full activity level with a busy uplink beside it',() 
   assert.ok(state.level > .99);
 });
 
+test('opted-in uplinks use their measured traffic in all three previews',() => {
+  const facts = [{link:true,uplink:true,traffic:1000},{link:true,traffic:20},{link:false,traffic:9000}];
+  assert.equal(activityPeak(facts,true),1000);
+  for (const id of ['traffic','traffic_trails','activity_glow']) {
+    const config = defaultConfig(id);
+    config.params.include_uplinks = true;
+    const render = (port,animationState,t) => effectColor(config,0,2,t,{...port,peakTraffic:1000,animationState});
+    const optical = {}, device = {}, quiet = {};
+    let active, idle;
+    for (const t of [0,.25,1,3]) {
+      active = render(facts[0],optical,t);
+      assert.equal(active,render({...facts[0],uplink:false},device,t),id);
+      idle = render({...facts[0],traffic:0},quiet,t);
+    }
+    assert.notEqual(active,idle,id);
+  }
+});
+
 test('illustrative activity previews rank ports and change over time',() => {
   const config = defaultConfig('activity_glow'),states = Array.from({length:8},() => ({}));
   const frames = [0,.25,1,4,8].map(time => {

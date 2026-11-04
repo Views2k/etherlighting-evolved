@@ -1,3 +1,5 @@
+import {EFFECTS} from './effect-renderer.mjs';
+import {sceneTopology} from './port-topology.mjs';
 import {effectiveSfpLight,sfpSync} from './sfp-sync.mjs';
 
 const clone = value => structuredClone(value);
@@ -33,9 +35,11 @@ export function matchingProfile(profiles, state) {
 }
 
 export function profileSfpSummary(scene) {
-  const ports=(Array.isArray(scene.sfp)?scene.sfp.map(light=>light.port):Object.keys(scene.sfp||{}).map(Number)).sort((a,b)=>a-b);
+  const ports=sceneTopology(scene)?.sfp ?? (Array.isArray(scene.sfp)?scene.sfp.map(light=>light.port):Object.keys(scene.sfp||{}).map(Number)).sort((a,b)=>a-b);
   const sync=sfpSync(scene),names={pulse:'Gentle pulse',color_cycle:'Color cycle',two_color:'Two-color fade',steady:'Steady color'};
   return ports.map(port=>{
+    const zone=scene.zones?.find(zone=>zone.ports?.includes(port));
+    if(zone?.effect) return {port,label:zone.effect.name || EFFECTS.find(effect=>effect.id===zone.effect.id)?.name || 'Group effect'};
     if(sync.mode==='ethernet')return {port,label:`Following port ${sync.source_port}`};
     const light=effectiveSfpLight(scene,port);
     const label=light.mode==='off'?'Off':light.mode==='unmanaged'?'Link status':names[light.effect]||'Steady color';

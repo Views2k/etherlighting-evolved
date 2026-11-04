@@ -1,6 +1,6 @@
 import {defaultConfig, effectColor, resolvedColorParams, previewPhase, previewColorPhase, activityPeak, dim} from './effect-renderer.mjs';
 import {matchingRule, matchingSfpRule, renderLook} from '../src/rules.mjs';
-import {effectiveSfpLight, sfpSync, sfpNativeAvailable} from './sfp-sync.mjs';
+import {effectiveSfpLight, sfpLight, sfpSync, sfpNativeAvailable} from './sfp-sync.mjs';
 import {sfpPreviewColor} from './effect-gallery.mjs';
 import {portDisplayRgb} from './port-display.mjs';
 import {ColorFrames, smoothColor, rgbCss} from './port-animation.mjs';
@@ -33,7 +33,11 @@ export function profileLayoutNotice(scene, state) {
 
 export function profileColors(scene, state, time, animation = new Map(), date = hostScheduleDate(state)) {
   const colors = {}, master = scene.brightness ?? 100, ports = profilePorts(scene,state);
-  const composed = new Map(ports.copper.map(id => [id,{color:[0,0,0],brightness:master}]));
+  const copper = new Map((state.ports || []).map(port => [port.port,port]));
+  const optical = new Map((state.sfp || []).map(port => [port.port,port]));
+  const opticalIds = new Set(ports.sfp);
+  const zoneColors = new Map();
+  const composed = new Map();
   for (const zone of Array.isArray(scene.zones) ? scene.zones : []) {
     if (!Array.isArray(zone?.ports) || !zone.effect?.id) continue;
     const defaults=defaultConfig(zone.effect.id), config={...defaults,...zone.effect,params:{...defaults.params,...zone.effect.params}};
@@ -41,33 +45,37 @@ export function profileColors(scene, state, time, animation = new Map(), date = 
     if (!animation.has(key)) animation.set(key,{motion:{},colors:{},ports:new Map()});
     const clock=animation.get(key), phase=previewPhase(clock.motion,config,time), colorPhase=previewColorPhase(clock.colors,config,time);
     const resolvedParams=resolvedColorParams(config,time,colorPhase);
-    const facts=zone.ports.map(id => state.ports?.find(port => port.port===id)?.facts || {}), peakTraffic=activityPeak(facts);
+    const facts=zone.ports.map(id => (opticalIds.has(id) ? optical : copper).get(id)?.facts || {}), peakTraffic=activityPeak(facts,config.params.include_uplinks);
     zone.ports.forEach((id,index) => {
-      if (!composed.has(id)) return;
       if (!clock.ports.has(id)) clock.ports.set(id,{});
       const hour=date.getHours()+date.getMinutes()/60+date.getSeconds()/3600;
-      composed.get(id).color=config.id==='daylight'&&!Number.isFinite(hour)?[0,0,0]:effectColor(config,index,zone.ports.length,time,{...facts[index],phase,colorPhase,resolvedParams,peakTraffic,animationState:clock.ports.get(id),hour});
+      zoneColors.set(id,config.id==='daylight'&&!Number.isFinite(hour)?[0,0,0]:effectColor(config,index,zone.ports.length,time,{...facts[index],phase,colorPhase,resolvedParams,peakTraffic,animationState:clock.ports.get(id),hour}));
     });
   }
-  for (const [id, output] of composed) {
-    const facts=state.ports?.find(port => port.port===id)?.facts || {};
+  for (const id of ports.copper) {
+    const output={color:zoneColors.get(id) ?? [0,0,0],brightness:master};
+    const facts=copper.get(id)?.facts || {};
     const rule=matchingRule(scene.rules || [],{id,facts},date);
     if (rule) {output.color=renderLook(rule.look,output.color,time);output.brightness=rule.look.brightness ?? output.brightness;}
     const override=scene.overrides?.[id];
     if (override) {output.color=override.color;output.brightness=override.brightness ?? output.brightness;}
+    composed.set(id,output);
     colors[id]=dim(output.color,percent(output.brightness));
   }
   const sync=sfpSync(scene);
   for (const id of ports.sfp) {
-    const settings=effectiveSfpLight(scene,id), telemetry=state.sfp?.find(port => port.port===id) || {};
-    const follows=sync.mode==='ethernet',source=composed.get(sync.source_port);
-    const light={...telemetry,...settings,mode:follows?'color':settings.mode};
+    const member=zoneColors.has(id);
+    const settings=member ? sfpLight(scene,id) : effectiveSfpLight(scene,id);
+    const telemetry=optical.get(id) || {};
+    const follows=!member && sync.mode==='ethernet',source=composed.get(sync.source_port);
+    const light={...telemetry,...settings,mode:member || follows ? 'color' : settings.mode};
     const rule=matchingSfpRule(scene.rules || [],light,date);
     const brightness=rule?.look.brightness ?? (follows ? source?.brightness ?? master : master);
-    if (rule && rule.look.style!=='effect') {
-      colors[id]=dim(renderLook(rule.look,source?.color || [0,0,0],time),percent(brightness)*(follows?1:percent(light.brightness??100)));
-    } else if (follows) colors[id]=dim(source?.color || [0,0,0],percent(brightness));
-    else colors[id]=light.mode==='color'
+    if (member || follows || (rule && rule.look.style!=='effect')) {
+      const base=member ? zoneColors.get(id) : source?.color || [0,0,0];
+      const color=rule ? renderLook(rule.look,base,time) : base;
+      colors[id]=dim(color,percent(brightness)*(follows ? 1 : percent(light.brightness)));
+    } else colors[id]=light.mode==='color'
       ? sfpPreviewColor(light,light.effect || 'steady',time,brightness,state.output?.gamma,sfpNativeAvailable(state))
       : light.mode==='off' ? [0,0,0] : portDisplayRgb(telemetry,state.output?.gamma);
   }

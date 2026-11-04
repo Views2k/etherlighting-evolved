@@ -310,6 +310,28 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         except (TransportError, ValueError) as exc:
             raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
 
+    async def confirm_sfp_output(e, expected_sfp: dict[int, int]):
+        for port in sorted(expected_sfp):
+            if e._sfp_revisions[port] != expected_sfp[port]:
+                raise HTTPException(409, detail={
+                    "code": "output_unconfirmed",
+                    "message": "SFP settings changed during confirmation. Review the current setup.",
+                })
+            await await_output(e.wait_for_sfp, port)
+        if any(e._sfp_revisions[p] != expected_sfp[p] for p in expected_sfp):
+            raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
+                                            "SFP settings changed during confirmation. Review the current setup."})
+        if e.mode == "running" and any(e._sfp_acknowledged[p] != expected_sfp[p] for p in expected_sfp):
+            raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
+                                            "Lighting settings were saved, but SFP output is still pending."})
+
+    async def apply_port_change(e, fn, *args, **kwargs):
+        previous = dict(e._sfp_revisions)
+        apply(fn, *args, **kwargs)
+        await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in e.switch.sfp_ports
+                                     if e._sfp_revisions[port] != previous[port]})
+        return e.state()
+
     def simulator() -> SimulatedTransport:
         transport = engine().switch.transport
         if not isinstance(transport, SimulatedTransport):
@@ -432,29 +454,27 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @api.put("/zones")
     async def set_zones(body: ZonesRequest):
         e = engine()
-        apply(e.set_zones, body.zones)
-        return e.state()
+        return await apply_port_change(e, e.set_zones, body.zones)
 
     @api.put("/effect")
     async def set_effect_everywhere(body: EffectRequest):
         """One effect on every port (replaces all zones)."""
         e = engine()
-        apply(e.set_zones, [{"id": "all", "name": "All ports", "ports": list(range(1, e.num_ports + 1)),
-                             "effect": {"id": body.id, "params": body.params}}],
-              clear_overrides=body.clear_overrides)
-        return e.state()
+        ports = sorted(set(range(1, e.num_ports + 1)) | {p for zone in e.zones for p in zone.ports})
+        return await apply_port_change(e, e.set_zones, [{"id": "all", "name": "All ports", "ports": ports,
+                                                         "effect": {"id": body.id, "params": body.params}}],
+                                       clear_overrides=body.clear_overrides)
 
     @api.put("/zones/{zone_id}/effect")
     async def set_zone_effect(zone_id: str, body: EffectRequest):
         e = engine()
-        apply(e.set_effect, body.id, body.params, zone=zone_id, clear_overrides=body.clear_overrides)
-        return e.state()
+        return await apply_port_change(e, e.set_effect, body.id, body.params, zone=zone_id,
+                                       clear_overrides=body.clear_overrides)
 
     @api.patch("/zones/{zone_id}/params")
     async def set_zone_params(zone_id: str, body: ParamsRequest):
         e = engine()
-        apply(e.update_params, body.params, zone=zone_id)
-        return e.state()
+        return await apply_port_change(e, e.update_params, body.params, zone=zone_id)
 
     # Rules
 
@@ -495,19 +515,12 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @api.put("/sfp/sync")
     async def set_sfp_sync(settings: dict[str, Any] = Body(...)):
         e = engine()
-        apply(e.set_sfp_sync, settings)
-        await await_output(e.wait_for_sfp_sync)
-        return controller.state(e.state())
+        return controller.state(await apply_port_change(e, e.set_sfp_sync, settings))
 
     @api.put("/sfp/{port}")
     async def set_sfp(port: int, settings: dict[str, Any] = Body(...)):
         e = engine()
-        apply(e.set_sfp, port, settings)
-        if e.sfp_sync.mode == "together" and port == 9:
-            await await_output(e.wait_for_sfp_sync)
-        else:
-            await await_output(e.wait_for_sfp, port)
-        return e.state()
+        return await apply_port_change(e, e.set_sfp, port, settings)
 
     @api.put("/ports")
     async def set_ports(body: BulkPorts):
@@ -595,21 +608,8 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
                 "code": "invalid", "message": "The lighting setup has invalid settings.",
             }) from exc
         accepted = scene_envelope(e.snapshot())
-        expected_sfp = {port: e._sfp_revisions[port] for port in affected_sfp}
         if body.confirm_output:
-            for port in sorted(affected_sfp):
-                if e._sfp_revisions[port] != expected_sfp[port]:
-                    raise HTTPException(409, detail={
-                        "code": "output_unconfirmed",
-                        "message": "SFP settings changed during confirmation. Review the current setup.",
-                    })
-                await await_output(e.wait_for_sfp, port)
-            if any(e._sfp_revisions[p] != expected_sfp[p] for p in affected_sfp):
-                raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
-                                                "SFP settings changed during confirmation. Review the current setup."})
-            if e.mode == "running" and any(e._sfp_acknowledged[p] != expected_sfp[p] for p in affected_sfp):
-                raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
-                                                "Lighting settings were saved, but SFP output is still pending."})
+            await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in affected_sfp})
         return accepted
 
     # Presets

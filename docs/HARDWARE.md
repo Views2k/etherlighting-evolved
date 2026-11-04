@@ -37,7 +37,9 @@ cleanup adapter. Detection of a device or a similarly named command does not gra
 
 ## Port controls and saved profiles
 
-Copper ports use their group effect, matching rules, or an individual color. Optical indicators have
+Copper ports use their group effect, matching rules, or an individual color. Qualified optical indicators
+can join these effect groups or form their own. Each member uses its group position and its own port telemetry.
+Outside a group, optical indicators have
 independent Steady, Gentle pulse, Color cycle, Two-color fade, Off, and Link status controls. Together uses
 the first indicator's settings; Follow Ethernet uses a selected copper port's composed color.
 
