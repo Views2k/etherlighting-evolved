@@ -122,6 +122,15 @@ const controllerMessages = {
 };
 
 export function controllerError(error, fallback = 'The controller connection could not be confirmed. Check the address and login, then try again.') {
+  if (error?.code === 'controller_error') {
+    const detail = error.details || error.detail || error;
+    const steps = {login:'sign-in', sites:'site discovery', devices:'switch discovery', clients:'client discovery'};
+    if (typeof detail.operation === 'string' && Object.hasOwn(steps, detail.operation)) {
+      const status = Number.isInteger(detail.upstream_status) && detail.upstream_status >= 400 && detail.upstream_status <= 599
+        ? ` (HTTP ${detail.upstream_status})` : '';
+      return `UniFi Network could not complete ${steps[detail.operation]}${status}. Try connecting again.`;
+    }
+  }
   const message = typeof error?.code === 'string' && Object.hasOwn(controllerMessages, error.code) ? controllerMessages[error.code] : null;
   return message || (error?.name === 'TimeoutError' || error?.code === 'timeout' ? 'UniFi Network did not respond in time. Check the controller and try again.' : fallback);
 }
@@ -998,7 +1007,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   cleanup.update = (value, unavailable = false) => {
     if (!active || pending) return;
     const presentation = controllerConnectionStatus(value, unavailable);
-    const key = JSON.stringify([presentation, value?.configured, value?.controller_kind, value?.auth_method, value?.console_id, value?.supported_auth_methods, value?.capabilities, value?.pending_site_choice, value?.site, value?.sites, value?.switch_name, value?.mapped_ports, value?.error?.code, value?.preferences_supported, value?.auto_reconnect, value?.can_save_login, value?.saved_login_available, value?.saved_login_matches_connection, value?.reconnect_state]);
+    const key = JSON.stringify([presentation, value?.configured, value?.controller_kind, value?.auth_method, value?.console_id, value?.supported_auth_methods, value?.capabilities, value?.pending_site_choice, value?.site, value?.sites, value?.switch_name, value?.mapped_ports, value?.error?.code, value?.error?.operation, value?.error?.upstream_status, value?.preferences_supported, value?.auto_reconnect, value?.can_save_login, value?.saved_login_available, value?.saved_login_matches_connection, value?.reconnect_state]);
     if (key === liveStatusKey) return;
     liveStatusKey = key;
     showConnectionStatus(state, presentation);

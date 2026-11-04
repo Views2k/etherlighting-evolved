@@ -286,7 +286,9 @@ def test_exact_pin_allows_auth_and_scoped_cookie(monkeypatch):
     monkeypatch.setattr(client, "_connection", lambda **_: connection)
     client.login()
     assert client.cookies == {"sid": "ok"}
-    assert json.loads(connection.calls[0][2]) == {"username": "user", "password": "secret", "remember": False}
+    assert json.loads(connection.calls[0][2]) == {
+        "username": "user", "password": "secret", "remember": False, "strict": True,
+    }
     client.get("/api/self/sites")
     assert connection.calls[-1][3]["Cookie"] == "sid=ok"
 
@@ -317,6 +319,37 @@ def test_responses_fail_closed_and_never_echo_body(monkeypatch, response, code):
     assert error.value.code == code
     assert "private" not in str(error.value)
     assert connection.closed
+
+
+def test_expired_json_session_renews_once_and_recovers(monkeypatch):
+    client = ControllerClient("https://controller.test", "user", "secret")
+    client.authenticated = True
+    client.cookies["sid"] = "expired"
+    expired = FakeResponse(data=b'{"meta":{"rc":"error","msg":"api.err.LoginRequired"}}')
+    responses = [expired, FakeResponse(headers=[("Set-Cookie", "sid=new; Secure")]), response([])]
+    wire = queued_connections(monkeypatch, client, responses)
+    assert client.get("/api/self/sites")["data"] == []
+    assert [item.calls[0][0] for item in wire] == ["GET", "POST", "GET"]
+    assert "Cookie" not in wire[1].calls[0][3]
+    assert wire[2].calls[0][3]["Cookie"] == "sid=new"
+
+
+def test_self_hosted_login_rejection_is_an_account_error(monkeypatch):
+    client = ControllerClient("https://controller.test", "user", "secret")
+    rejected = FakeResponse(status=400, data=b'{"meta":{"rc":"error","msg":"api.err.Invalid"}}')
+    queued_connections(monkeypatch, client, [rejected])
+    with pytest.raises(ControllerError) as error:
+        client.login()
+    assert error.value.code == "authentication_failed" and not client.authenticated
+
+
+def test_service_error_preserves_only_stage_and_http_status(monkeypatch):
+    client = ControllerClient("https://controller.test", "user", "secret")
+    queued_connections(monkeypatch, client, [FakeResponse(status=503, data=b"private details")])
+    with pytest.raises(ControllerError) as error:
+        client.request("GET", "/api/s/private/stat/device")
+    assert error.value.details == {"upstream_status": 503, "operation": "devices"}
+    assert "private" not in json.dumps(error.value.detail())
 
 
 def challenge(status=400):

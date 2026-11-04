@@ -204,6 +204,15 @@ class ControllerClient:
                     cookie["UBIC_2FA"] = token
                     self._remember_cookie(cookie.output(header="").strip())
                 raise self._verification_error() if verifying else self._two_factor_error()
+            if isinstance(meta, dict) and meta.get("rc") == "error":
+                reason = meta.get("msg")
+                if not is_login and reason == "api.err.LoginRequired":
+                    self.authenticated = False
+                    raise ControllerError("authentication_failed", "The controller session has expired.", 401)
+                if (is_login and self.kind == "self_hosted" and not verifying and response.status == 400
+                        and reason == "api.err.Invalid"):
+                    raise ControllerError(
+                        "authentication_failed", "Check the local controller account and password.", 401)
             self._check_status(response.status, verifying=verifying)
             os_login = is_login and self.kind == "unifi_os"
             valid_result = ((isinstance(meta, dict) and meta.get("rc") == "ok")
@@ -223,7 +232,11 @@ class ControllerClient:
                 raise ControllerError("invalid_response", "The controller did not establish a login session.", 502)
             self._remember_csrf(response)
             return result
-        except ControllerError:
+        except ControllerError as exc:
+            if exc.code == "controller_error":
+                exc.details["operation"] = {"login": "login", "sites": "sites", "device": "devices", "sta": "clients"}[
+                    path.rsplit("/", 1)[-1]
+                ]
             raise
         except (OSError, http.client.HTTPException) as exc:
             raise ControllerError("unreachable", "Could not reach the controller over HTTPS.", 503) from exc
@@ -251,7 +264,8 @@ class ControllerClient:
         if status == 404:
             raise ControllerError("unsupported_controller", "Check the controller type and its direct HTTPS address.")
         if status != 200:
-            raise ControllerError("controller_error", "The controller could not complete the request.", 502)
+            raise ControllerError("controller_error", "The controller could not complete the request.", 502,
+                                  upstream_status=status)
 
     def _remember_response_cookies(self, response) -> None:
         for key, value in response.getheaders():
@@ -296,6 +310,8 @@ class ControllerClient:
             self.csrf_token = None
         payload = {"username": self.username, "password": self.password,
                    "rememberMe" if self.kind == "unifi_os" else "remember": False}
+        if self.kind == "self_hosted":
+            payload["strict"] = True
         if verification_code and self.kind == "unifi_os":
             raise ControllerError("controller_local_account_required",
                                   "Use a local UniFi account with Network access.", 401)
