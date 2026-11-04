@@ -111,6 +111,58 @@ async function checkFaceplate(width, height) {
   }
   return {headerHeight: header.height, canvasHeight: canvas.height, overflowY: geometry.overflowY, portsInRow: ports.length};
 }
+async function checkPhoneFooter(width, height) {
+  await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: true});
+  await send('Emulation.setSafeAreaInsetsOverride', {insets: {top: 59, bottom: 34}});
+  await send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+  // Model a phone whose percentage-height containing block is shorter than its visible viewport.
+  await evaluate("document.body.style.height = 'calc(100dvh - 59px)'");
+  const sizes = [];
+  try {
+    for (const pending of [false, true]) {
+      if (pending) await evaluate(`(() => {
+        const slider = document.querySelector('#master');
+        slider.value = Number(slider.value) === 90 ? 89 : 90;
+        slider.dispatchEvent(new Event('input', {bubbles: true}));
+      })()`);
+      await frame();
+      const layout = await evaluate(`(() => {
+        const status = document.querySelector('.statusbar'), dock = document.querySelector('.output-dock');
+        const statusText = document.querySelector('#connection'), controller = document.querySelector('#controller-connection');
+        const text = statusText.textContent, hidden = controller.hidden, controllerText = controller.textContent;
+        try {
+          statusText.textContent = 'Switch connected';
+          controller.hidden = false;
+          controller.textContent = 'Controller not connected';
+          const bounds = element => element.getBoundingClientRect();
+          const selectors = ['#master', '#open-map-key', ...(${pending} ? ['#compare-draft', '#cancel-draft', '#apply-draft'] : [])];
+          return {viewport: visualViewport.height, status: bounds(status).toJSON(), dock: bounds(dock).toJSON(),
+            draft: !document.querySelector('#draft-actions').hidden,
+            controls: selectors.map(selector => ({selector, ...bounds(document.querySelector(selector)).toJSON()}))};
+        } finally {
+          statusText.textContent = text; controller.hidden = hidden; controller.textContent = controllerText;
+        }
+      })()`);
+      assert.equal(layout.draft, pending);
+      assert.ok(Math.abs(layout.viewport - layout.status.bottom - 34) <= 1, 'Reserve the bottom safe area exactly once');
+      assert.ok(layout.dock.height <= (pending ? 115 : 46), 'Phone dock fits the brightness and draft controls');
+      const wrapsStatus = width < 390 || (pending && width < 430);
+      assert.ok(layout.status.height <= (wrapsStatus ? 42 : 24), 'Both connection labels fit the compact status bar');
+      assert.ok(layout.dock.bottom <= layout.status.top + 1, 'The dock clears the connection status');
+      for (const control of layout.controls) {
+        assert.ok(control.height >= 44 && control.width >= 44, 'Footer controls retain touch targets');
+        assert.ok(control.left >= 0 && control.right <= width + 1 && control.bottom <= layout.status.top + 1,
+          `${control.selector} must fit the ${width}px footer`);
+      }
+      sizes.push({pending, dock: layout.dock.height, status: layout.status.height, bottomInset: layout.viewport - layout.status.bottom});
+    }
+  } finally {
+    await evaluate("if (!document.querySelector('#draft-actions').hidden) document.querySelector('#cancel-draft').click(); document.body.style.removeProperty('height')");
+    await send('Emulation.setSafeAreaInsetsOverride', {insets: {}});
+    await send('Emulation.setEmulatedMedia', {features: []});
+  }
+  return {width, height, sizes};
+}
 async function tap(selector) {
   await evaluate(`new Promise((resolve,reject)=>{const start=performance.now();let last='',since=start;function check(time){const r=document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();if(!r)return reject(new Error('Touch target disappeared'));const value=[r.x,r.y,r.width,r.height,document.querySelector('#inspector')?.scrollTop].join(',');if(value!==last){last=value;since=time;}if(time-since>=180)return resolve();if(time-start>4000)return reject(new Error('Touch target kept moving'));requestAnimationFrame(check);}requestAnimationFrame(check);})`);
   const r = await bounds(selector);
@@ -319,6 +371,10 @@ try {
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), `${page} overflows rack viewport`);
       await screenshot(`rack-${width}-${page.toLowerCase()}`);
     }
+  }
+  report.phone_footer = [];
+  for (const [width, height] of [[320, 640], [390, 844], [430, 932]]) {
+    report.phone_footer.push(await checkPhoneFooter(width, height));
   }
   await send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: false});
   await evaluate(`document.querySelector('[data-select="ethernet"]').click()`);
