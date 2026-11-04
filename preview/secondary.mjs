@@ -445,9 +445,9 @@ export async function renderAutomation(host, {request, state, onChange, getState
     const swatch = node('button','swatch-button'); swatch.type = 'button'; swatch.setAttribute('aria-label','Rule color');
     const showColor = value => { color.value = hex.value = value; swatch.style.background = value; };
     showColor(color.value);
-    swatch.addEventListener('click', () => {
+    swatch.addEventListener('click', event => {
       closePicker?.();
-      closePicker = openColorPicker(swatch,{color:color.value,onChange:value => { showColor(value); dirty = true; updateSummary(); },onClose:() => { closePicker = null; },onError:message => status(message,true)});
+      closePicker = openColorPicker(swatch,{pointerType:event.pointerType,color:color.value,onChange:value => { showColor(value); dirty = true; updateSummary(); },onClose:() => { closePicker = null; },onError:message => status(message,true)});
     });
     hex.addEventListener('input', () => { if (/^#[a-f\d]{6}$/i.test(hex.value)) { color.value = hex.value; swatch.style.background = hex.value; } }); colorRow.append(swatch,color,hex);
     const originalRate = look.rate ?? .25;

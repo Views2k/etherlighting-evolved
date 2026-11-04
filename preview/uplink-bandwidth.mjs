@@ -31,14 +31,14 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
   const heading=element('div','bandwidth-heading'), title=element('h2','','Uplink bandwidth'), status=element('span','bandwidth-status','Waiting for samples');
   status.setAttribute('role','status');heading.append(title,status);
   const readings=element('dl','bandwidth-readings');
-  const fields=['Upload','Download'].map((label,index)=>{
-    const item=element('div',`bandwidth-reading ${index?'download':'upload'}`), term=element('dt','');
-    const arrow=element('span','bandwidth-direction',index?'↓':'↑');arrow.setAttribute('aria-hidden','true');
+  const fields=[['Download','↓',2],['Upload','↑',1]].map(([label,direction,historyColumn])=>{
+    const item=element('div',`bandwidth-reading ${label.toLowerCase()}`), term=element('dt','');
+    const arrow=element('span','bandwidth-direction',direction);arrow.setAttribute('aria-hidden','true');
     term.append(arrow,element('span','',label));
     const description=element('dd',''), value=element('span','bandwidth-value','—'), unit=element('span','bandwidth-unit','');
     const peak=element('dd','bandwidth-peak');
     description.append(value,unit);item.append(term,description,peak);readings.append(item);
-    return {label,description,value,unit,peak};
+    return {label,description,value,unit,peak,historyColumn};
   });
   const chart=element('div','bandwidth-chart');chart.hidden=true;
   chart.setAttribute('aria-hidden','true');
@@ -53,13 +53,13 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
   function showHistory(history) {
     const samples=Array.isArray(history)?history.filter(point=>Array.isArray(point)&&point.length===3
       &&Number.isFinite(point[0])&&point[0]<=0&&point[0]>-60000&&finiteRate(point[1])&&finiteRate(point[2])):[];
-    const peaks=fields.map((field,index)=>Math.max(0,...samples.map(p=>p[index+1])));
+    const peaks=fields.map(field=>Math.max(0,...samples.map(p=>p[field.historyColumn])));
     const scale=Math.max(1,...peaks);
     for(const [index,field] of fields.entries()){
       const peak=formatBandwidth(peaks[index]);
       field.peak.textContent=samples.length?`Peak ${peak.value} ${peak.unit}`:'';
       field.peak.title='Highest measured interval in the last minute';
-      lines[index].setAttribute('points',samples.map(p=>`${240+p[0]/250},${34-32*p[index+1]/scale}`).join(' '));
+      lines[index].setAttribute('points',samples.map(p=>`${240+p[0]/250},${34-32*p[field.historyColumn]/scale}`).join(' '));
     }
     chart.hidden=samples.length<2;
   }
@@ -100,7 +100,7 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     status.textContent=`${Number(seconds.toFixed(1))} s average · Updates every 5 s`;
     section.title=`${reading.ports.length===1?'Port':'Ports'} ${reading.ports.join(', ')}. Upload leaves the switch; download enters it.`;
     const next=JSON.stringify([reading.sequence,reading.ports,reading.upload,reading.download]);
-    const target=[reading.upload,reading.download];
+    const target=[reading.download,reading.upload];
     if(next!==signature||settle){
       signature=next;cancel();showHistory(record.history);
       fields.forEach((field,index)=>{const formatted=formatBandwidth(target[index]);field.description.setAttribute('aria-label',`${field.label}: ${formatted.value} ${formatted.unit}`);});
