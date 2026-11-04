@@ -1300,14 +1300,20 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .app-shell { height: 100dvh; }
   .statusbar { min-height: 22px; padding: 1px 10px; gap: 0 8px; }
   .status-connections { gap: 0 10px; }
+  .app-shell:has(.studio) > .statusbar:not(:has(#status.error, .connection-state:is(.error, .waiting):not([hidden]))),
+  .output-dock:has(#draft-actions[hidden]), .output-dock > .brightness-controls { display: none; }
+  .rack-workspace-dialog .brightness-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; padding-block: 8px; border-bottom: 1px solid var(--line); }
+  .rack-workspace-dialog .output-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 8px; min-width: 0; }
+  .rack-workspace-dialog #master-value { grid-area: 1 / 2; }
+  .rack-workspace-dialog #master { grid-area: 2 / 1 / 3 / -1; width: 100%; min-width: 44px; height: 44px; }
+  .rack-workspace-dialog #open-map-key { min-height: 44px; }
+  .rack-workspace-dialog .ownership-preview { grid-column: 1 / -1; }
+  .rack-workspace-dialog .statusbar { margin-top: 12px; padding: 8px 0 0; background: transparent; }
+  .app-shell:has(#draft-actions:not([hidden])) > .toast { top: calc(env(safe-area-inset-top, 0px) + 8px); bottom: auto; }
+  .toast:not(.error) { pointer-events: none; }
   .output-dock { padding: 0 10px; }
-  .output-dock .brightness-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 6px; width: 100%; }
-  .output-dock .output-control { display: grid; grid-template-columns: auto minmax(44px, 1fr) auto; gap: 6px; min-width: 0; width: auto; }
-  .output-dock #master { width: 100%; min-width: 44px; height: 44px; }
-  .output-dock #open-map-key { min-height: 44px; padding-inline: 6px; }
-  .output-dock .ownership-preview { grid-column: 1 / -1; }
-  .output-dock #draft-actions { gap: 0 4px; padding: 0; border-top: 1px solid var(--line); }
-  .output-dock #draft-actions > span:first-child { margin: 0; padding-top: 2px; font-size: 12px; line-height: 1.3; }
+  .output-dock #draft-actions { gap: 0 4px; padding: 0; }
+  .workspace:not(:has(.awaiting-confirmation)) #draft-actions > [data-draft-label] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .output-dock #draft-actions .button { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 4px; white-space: normal; }
 }
 @media (display-mode: standalone) and (max-width: 700px) and (orientation: portrait) {
