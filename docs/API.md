@@ -579,7 +579,14 @@ transition returns HTTP 409. Clients should preserve pending state until the mat
 
 Indicators start in `unmanaged`. Settings save with scenes and restore after restart; older scenes
 without `sfp` restore unmanaged indicators. Copper group effects, rules, and manual-color clearing leave SFP
-settings intact. Global release drains output, ends native Breathing, and releases owned SFP indicators.
+settings intact. An optical indicator can opt into a regular effect through explicit membership in
+`zones[].ports`. Its `effect_zone` is the group ID while enrolled or null otherwise. While enrolled,
+`effective_settings` is null. The group uses the indicator's own position and telemetry. Matching explicit
+SFP rules still take priority, and its own SFP brightness scales the result. Its saved indicator mode,
+colors, native effects and synchronization settings resume when the port leaves the group.
+`PUT /api/sfp/{port}` accepts a brightness-only edit while the port belongs to an effect group. To change
+its indicator appearance, remove the port from the group first or stage both changes in one scene.
+Global release drains output, ends native Breathing, and releases owned SFP indicators.
 An unsupported or unidentified model reports an empty `sfp` array and rejects SFP writes.
 
 ### SFP synchronization
@@ -606,17 +613,19 @@ Unknown fields and invalid values return HTTP 400 without changing the scene.
 Explicitly targeted SFP rules retain priority over synchronized output. In together mode, the leader's explicit Off
 setting retains the existing Off policy for its group. In ethernet mode, dormant Off settings do not
 suppress the source or its targeted SFP rules. Each SFP state entry has `effective_settings`: its active SFP
-settings for independent/together mode, or `null` when following a copper port. Top-level per-indicator fields
+settings for independent/together mode, or `null` when following a copper port or running a group effect. Top-level per-indicator fields
 remain the saved independent settings. Synchronization preserves the existing writer, pacing, CPU backoff,
 ownership, and release behavior.
 
 ### Synchronized Breathing
 
 `breathing.playback` selects `custom` or `synchronized`. Existing scenes default to Custom. Synchronized
-playback requires `switch.native_breathing` and uses a fixed primary color with its independent brightness.
+playback uses a fixed primary color with its independent brightness. Copper members require
+`switch.native_breathing` and use the native selector. SFP members use the regular effect frame and
+their existing per-indicator writer.
 `pace` is 1 (about 3.08 seconds), 2 (2 seconds), or 3 (1 second). All synchronized groups share that pace;
 changing it updates every synchronized group. Custom settings remain saved when changing playback.
-Manual colors and matching rules take priority. Unsupported devices reject new synchronized requests.
+Manual copper colors and matching rules take priority.
 
 ## Effect configuration
 
@@ -662,9 +671,9 @@ Every explicit color also names a `brightness_param`. Its numeric companion iden
 randomization and before effect blending. Master brightness and output gamma still apply to the composed frame.
 Both independent color brightness and randomization are retained in saved scenes.
 
-Traffic effects use zero traffic for detected uplinks while retaining ordinary idle and link-state appearance.
-Activity Glow (`activity_glow`) compares known-online device rates within its group, excluding uplinks from
-the peak. `minimum_mbps` sets the minimum scale, `speed` adjusts the attack and release, and `active_color` and
+Live Traffic, Traffic Trails and Activity Glow accept `include_uplinks` (default false). Enable it to
+include the measured rates of selected uplinks. Live Traffic's explicit custom uplink color still wins when
+enabled. Activity Glow (`activity_glow`) compares known-online rates within its group. `minimum_mbps` sets the minimum scale, `speed` adjusts the attack and release, and `active_color` and
 `idle_color` set its endpoints. Unknown, offline or invalid-rate ports contribute zero traffic.
 
 Every explicit color setting includes a `random_param` naming its independent randomization toggle, such as
@@ -687,18 +696,19 @@ remain independent. Scenes and presets retain all these settings.
 
 ## Zones
 
-A zone is a group of ports running one effect. By default there is one zone containing every port.
+A zone is a group of ports running one effect. The default zone contains the copper ports. An explicit
+zone can contain copper ports, qualified SFP indicators, or both.
 
 | | |
 |---|---|
 | `GET /api/zones` | The zones, as in the state |
-| `PUT /api/effect` | `{"id": "rainbow", "params": {...}}`: one effect on every port (replaces all zones) |
+| `PUT /api/effect` | `{"id": "rainbow", "params": {...}}`: one effect on all copper ports and previously enrolled SFP indicators (replaces all zones) |
 | `PUT /api/zones` | `{"zones": [{"name": "Desk", "ports": [1,2,3,4], "effect": {"id": "fire", "params": {}}}, ...]}` |
 | `PUT /api/zones/{id}/effect` | `{"id": "comet", "params": {...}}`: change one zone's effect |
 | `PATCH /api/zones/{id}/params` | `{"params": {"speed": 1.25}}`: change some settings and keep the rest |
 
-A port can be in only one zone. Ports that aren't in a zone stay off unless a rule or manual color sets them. Zone
-ids are made from the name (`"Desk"` becomes `"desk"`) unless an id is given.
+A port can be in only one zone. Copper ports outside a zone stay off unless a rule or manual color sets them.
+SFP indicators outside a zone use their indicator settings. Zone IDs are made from the name (`"Desk"` becomes `"desk"`) unless an id is given.
 
 Both effect-setting routes accept `"clear_overrides": true`. The effect is validated and applied together with
 removal of manual colors on its target ports. Other groups keep their manual colors. Omit the flag to retain
@@ -746,8 +756,8 @@ A rule:
 An explicit SFP rule uses that indicator's link, anomaly, spanning-tree and other available port facts.
 The first matching rule takes priority over its saved color or effect. A rule temporarily takes over
 Link status while its condition matches, then restores Link status when cleared, disabled or deleted.
-Independent Off and together mode's shared Off remain off. `effect` preserves the current Color effect or
-followed copper color; it leaves independent Link status under switch control. In independent/together mode,
+Outside regular effect groups, Independent Off and together mode's shared Off remain off. `effect` preserves the current Color effect or
+followed copper color, or the enrolled port's group effect. It leaves independent Link status under switch control. In independent/together mode,
 the effective SFP brightness still multiplies the chosen rule or master brightness. Ethernet mode uses the
 source's composed brightness unless the SFP rule overrides it. SFP state includes `rule`
 (`id` and `name`, or `null`), `preview`, and `facts` for the UI; scenes store rule settings and base SFP

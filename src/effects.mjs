@@ -191,8 +191,12 @@ export function createEffectRenderer(colorMath = hexColorMath) {
   function previewColorPhase(clock,config,time) {
     return phaseAt(clock,1 / (config.params.color_transition || 8),time);
   }
-  function activityPeak(facts) {
-    return facts.reduce((peak,port) => port.link === true && port.uplink !== true && Number.isFinite(port.traffic) && port.traffic >= 0 ? Math.max(peak,port.traffic) : peak,0);
+  function activityRate(port, includeUplinks) {
+    return port.link === true && (includeUplinks || port.uplink !== true) && Number.isFinite(port.traffic)
+      ? Math.max(0, port.traffic) : 0;
+  }
+  function activityPeak(facts, includeUplinks = false) {
+    return facts.reduce((peak,port) => Math.max(peak,activityRate(port,includeUplinks)),0);
   }
   function dataPreviewFacts(count,time) {
     return Array.from({length:count},(_,index) => ({link:true,uplink:false,
@@ -314,7 +318,7 @@ export function createEffectRenderer(colorMath = hexColorMath) {
         return [mix(p.color_a,p.color_b,wave(travel * .19 + j * .43)),weight];
       }));
       case 'traffic_trails': {
-        const state = facts.animationState,target = facts.uplink === true ? 0 : clamp((facts.traffic || 0) / p.max_mbps);
+        const state = facts.animationState,target = facts.uplink === true && !p.include_uplinks ? 0 : clamp((facts.traffic || 0) / p.max_mbps);
         const dt = state?.last === undefined ? 0 : Math.max(0,time - state.last);
         const online = facts.link !== false;
         let load = state?.load || 0,color;
@@ -342,7 +346,7 @@ export function createEffectRenderer(colorMath = hexColorMath) {
         return color;
       }
       case 'traffic': {
-        const mbps = facts.uplink === true ? 0 : facts.traffic || 0,bps = mbps * 1e6;
+        const mbps = facts.uplink === true && !p.include_uplinks ? 0 : facts.traffic || 0,bps = mbps * 1e6;
         const capacity = Number.isFinite(facts.speed) && facts.speed > 0 ? facts.speed : 1000;
         const load = bps <= 1e3 ? 0 : Math.log10(bps / 1e3) / Math.log10(Math.max(capacity * 1e3,10));
         const state = facts.animationState || {},dt = state.last === undefined ? .25 : Math.max(0,time - state.last);
@@ -358,7 +362,7 @@ export function createEffectRenderer(colorMath = hexColorMath) {
         const previous = state.target || 0,speed = state.speed ?? p.speed;
         let level = state.level || 0;
         level += (previous - level) * (1 - Math.exp(-dt / ((previous > level ? .25 : 1.2) / speed)));
-        const rate = facts.link === true && facts.uplink !== true && Number.isFinite(facts.traffic) && facts.traffic >= 0 ? facts.traffic : 0;
+        const rate = activityRate(facts,p.include_uplinks);
         state.target = clamp(rate / Math.max(p.minimum_mbps,facts.peakTraffic ?? rate));
         state.last = time;state.speed = p.speed;
         state.level = level;

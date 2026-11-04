@@ -20,6 +20,7 @@ public sealed class GroupsDialog : Window
     private readonly List<GroupRow> groups = new();
     private readonly Dictionary<int, ComboBox> assignments = new();
     private readonly Button save;
+    private int copperPortCount;
     private bool ready;
     private bool dirty;
     private bool saving;
@@ -64,9 +65,11 @@ public sealed class GroupsDialog : Window
             var zones = state?["zones"] as JsonArray ?? new();
             groups.Clear(); groupsPanel.Children.Clear(); portsPanel.Children.Clear(); assignments.Clear();
             foreach (var zone in zones.OfType<JsonObject>()) AddGroupRow((JsonObject)zone.DeepClone());
-            int count = ViewUi.Int(state, "num_ports", 8);
+            copperPortCount = ViewUi.Int(state, "num_ports");
+            var opticalPorts = (state?["sfp"] as JsonArray ?? new()).OfType<JsonObject>()
+                .Select(light => ViewUi.Int(light, "port")).Where(port => port > copperPortCount).ToHashSet();
             portsPanel.Children.Add(ViewUi.Text("Port assignments", 14));
-            for (int port = 1; port <= count; port++)
+            foreach (int port in Enumerable.Range(1, copperPortCount).Concat(opticalPorts.OrderBy(port => port)))
             {
                 var selected = groups.FirstOrDefault(g => (g.Original["ports"] as JsonArray)?.Any(p => p!.GetValue<int>() == port) == true);
                 var box = new ComboBox();
@@ -74,9 +77,10 @@ public sealed class GroupsDialog : Window
                 box.SelectionChanged += (_, _) => { if (ready) dirty = true; };
                 assignments.Add(port, box);
                 var row = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
-                var label = ViewUi.Text($"Port {port}", 13); label.Width = 66;
+                string portLabel = opticalPorts.Contains(port) ? $"SFP {port}" : $"Port {port}";
+                var label = ViewUi.Text(portLabel, 13); label.Width = 66;
                 DockPanel.SetDock(label, Dock.Left); row.Children.Add(label); row.Children.Add(box); portsPanel.Children.Add(row);
-                System.Windows.Automation.AutomationProperties.SetName(box, $"Group for port {port}");
+                System.Windows.Automation.AutomationProperties.SetName(box, $"Group for {portLabel}");
             }
             ready = true; dirty = false; save.IsEnabled = true;
         }
@@ -140,7 +144,7 @@ public sealed class GroupsDialog : Window
                 var zone = (JsonObject)group.Original.DeepClone();
                 zone["name"] = name; zone["ports"] = new JsonArray(ports.Select(p => JsonValue.Create(p)).ToArray()); zones.Add(zone);
             }
-            if (zones.Count == 0) throw new InvalidOperationException("Create at least one group.");
+            if (zones.Count == 0 && copperPortCount > 0) throw new InvalidOperationException("Create at least one group.");
             saving = true;
             await client.SendAsync(HttpMethod.Put, "/api/zones", new JsonObject { ["zones"] = zones });
             saving = false; dirty = false; DialogResult = true;
@@ -158,12 +162,15 @@ public sealed class GroupsDialog : Window
         string title = "Verification group";
         ViewUi.Click(this, "+ Add group");
         groups[^1].Name.Text = title;
-        var assignment = assignments[8];
-        assignment.SelectedItem = assignment.Items.OfType<ComboBoxItem>().First(x => ReferenceEquals(x.Tag, groups[^1]));
+        foreach (int port in new[] { 8, 9 })
+        {
+            var assignment = assignments[port];
+            assignment.SelectedItem = assignment.Items.OfType<ComboBoxItem>().First(x => ReferenceEquals(x.Tag, groups[^1]));
+        }
         ViewUi.Click(this, "Save groups");
         await ViewUi.WaitAsync(() => DialogResult == true);
         var saved = (await client.GetAsync("/api/zones") as JsonArray)!;
-        if (!saved.OfType<JsonObject>().Any(g => ViewUi.Str(g, "name") == title && g["ports"]?.ToJsonString() == "[8]"))
+        if (!saved.OfType<JsonObject>().Any(g => ViewUi.Str(g, "name") == title && g["ports"]?.ToJsonString() == "[8,9]"))
             throw new InvalidOperationException("Group assignment did not persist.");
         await client.SendAsync(HttpMethod.Put, "/api/zones", new JsonObject { ["zones"] = original });
     }

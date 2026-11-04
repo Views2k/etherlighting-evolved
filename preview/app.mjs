@@ -8,7 +8,7 @@ import { workspaceStorageKey, switchConnectionStatus, controllerConnectionStatus
 import { renderAutomation, renderProfiles, renderSettings, renderHelp } from './secondary.mjs';
 import { lightingOperations, lightingSnapshot, controlSource, sceneAutomationMatches, equalSetting, sfpSettings, fixedColorSettings, fixedColorBrightness } from './lighting-state.mjs';
 import {openColorPicker} from './color-picker.mjs';
-import {effectDrafts,effectDraftForPort,stageEffectDraft} from './effect-draft.mjs';
+import {effectDrafts,effectDraftForPort,stageEffectDraft,leaveSfpEffect,portEffect} from './effect-draft.mjs';
 import {createRouteHistory} from './route-history.mjs';
 import { renderEffectGallery, sfpPreviewColor } from './effect-gallery.mjs';
 import { sfpSync, effectiveSfpLight, editableSfpLight, normalizeSfpBrightness, sfpEditTargets, sfpDurationRange, sfpEffectChange, sfpCandidateSettings, sfpNativeAvailable, sfpDraftPorts } from './sfp-sync.mjs';
@@ -182,7 +182,7 @@ function draftSummary(){
   for(const effect of effectDrafts(draft)){const name=effectSpec(effect.id)?.name||'Effect';if(!changes.includes(name))changes.push(name);}
   if(Object.keys(draft.colors||{}).length)changes.push('Fixed colors');
   if(draft.returnToEffect?.length)changes.push('Follow group effect');
-  if(Object.keys(draft.sfp||{}).length)changes.push('SFP lighting');
+  if(Object.keys(draft.sfp||{}).length||draft.sfpDetached?.length)changes.push('SFP lighting');
   if(draft.sfp_sync)changes.push('SFP synchronization');
   const effectPorts=effectDrafts(draft).flatMap(effect=>effect.ports);
   const targets=[...new Set([...(effectPorts||[]),...Object.keys(draft.colors||{}).map(Number),...(draft.returnToEffect||[]),...sfpDraftPorts(state,draft)])].sort((a,b)=>a-b);
@@ -251,14 +251,17 @@ function selectionName(ports = [...selected].sort((a,b) => a-b)) {
 }
 function zoneFor(port) { return state.zones?.find(zone => zone.ports.includes(port)); }
 function effectSignature(effect) { return effect ? JSON.stringify([effect.id,Object.entries(effect.params||{}).sort(([a],[b])=>a.localeCompare(b))]) : ''; }
-function selectionEffects() { return copperSelection().map(port=>effectSignature(effectDraftForPort(draft,port)||zoneFor(port)?.effect)); }
+function effectSelection() { return [...copperSelection(),...sfpSelection()]; }
+function selectionEffects() { return effectSelection().map(port=>effectSignature(portEffect(state,draft,port))); }
+function groupedSfpSelection() { return sfpSelection().filter(port=>portEffect(state,draft,port)); }
+function useSfpInspector() { return sfpSelection().length&&!copperSelection().length&&!groupedSfpSelection().length; }
 function hasMixedEffects() { return new Set(selectionEffects()).size>1; }
-function currentEffect() { return hasMixedEffects() ? undefined : effectDraftForPort(draft,copperSelection()[0]) || zoneFor(copperSelection()[0])?.effect; }
+function currentEffect() { return hasMixedEffects() ? undefined : portEffect(state,draft,effectSelection()[0]); }
 function effectSpec(id) { return effects.find(effect => effect.id === id); }
 
 async function chooseEffect(config) {
-  const ports = config.ports || copperSelection();
-  if (!ports.length) { notify('Select Ethernet ports to apply an effect.'); return; }
+  const ports = config.ports || effectSelection();
+  if (!ports.length) { notify('Select ports to apply an effect.'); return; }
   selected=new Set(ports);
   stageEffect({...clone(config),ports,clearOverrides:true});editor='effect';inspectorSignature='';
   await navigate('Lighting',{keepDraft:true});
@@ -275,7 +278,7 @@ function focusEditor(reveal=false){
 }
 function focusLightingControls(){if(page==='Lighting'&&!document.querySelector('dialog[open]'))focusEditor();}
 function stageEffect(config){
-  draft=stageEffectDraft(draft,config,`group-${crypto.randomUUID()}`);
+  draft=stageEffectDraft(draft,config,`group-${crypto.randomUUID()}`,state.ports.map(port=>port.port));
   queueEdit('effect');
 }
 
@@ -307,7 +310,7 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
   view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter');
   if (page === 'Lighting') renderStudio();
   else if(page==='Effects'){
-    secondaryCleanup=renderEffectGallery(view,{effects,state,simulated:session.simulated,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft,galleryState,onChoose:chooseEffect,onChooseSfp:async({effect,ports})=>{selected=new Set(ports);if(sfpSync(state,draft).mode==='ethernet')draft.sfp_sync={...sfpSync(state,draft),mode:'together'};draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft))draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(sfpCandidateSettings(state,port,effect,draft)),mode:'color'});queueEdit('sfp');await navigate('Lighting',{keepDraft:true});focusEditor(true);},onChangeSelection:async()=>{await navigate('Lighting');document.querySelector('#select-all')?.focus();}});
+    secondaryCleanup=renderEffectGallery(view,{effects,state,simulated:session.simulated,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft,galleryState,onChoose:chooseEffect,onChooseSfp:async({effect,ports})=>{selected=new Set(ports);draft=leaveSfpEffect(draft,groupedSfpSelection());if(sfpSync(state,draft).mode==='ethernet')draft.sfp_sync={...sfpSync(state,draft),mode:'together'};draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft))draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(sfpCandidateSettings(state,port,effect,draft)),mode:'color'});queueEdit('sfp');await navigate('Lighting',{keepDraft:true});focusEditor(true);},onChangeSelection:async()=>{await navigate('Lighting');document.querySelector('#select-all')?.focus();}});
   }else {
     view.innerHTML = '';
     const renderer = {Automation: renderAutomation, Profiles: renderProfiles, Settings: renderSettings,Help:renderHelp}[page];
@@ -460,16 +463,19 @@ function previewDraft(time){
     const key=config.id+':'+ports.join(',');if(!previewClocks.has(key))previewClocks.set(key,{motion:{},color:{}});
     const clocks=previewClocks.get(key),phase=previewPhase(clocks.motion,normalized,time), colorPhase=previewColorPhase(clocks.color,normalized,time);
     const resolvedParams=resolvedColorParams(normalized,time,colorPhase);
-    const peakTraffic=activityPeak(ports.map(port=>state.ports?.find(p=>p.port===port)?.facts||{}));
+    const telemetry=ports.map(id=>state.ports?.find(p=>p.port===id)||state.sfp?.find(p=>p.port===id));
+    const peakTraffic=activityPeak(telemetry.map(port=>port?.facts||{}),normalized.params.include_uplinks);
     ports.forEach((port,index)=>{
       if(!targets.has(port))return;
       if(state.overrides?.[port]&&!draft.returnToEffect?.includes(port)&&!effectDraftForPort(draft,port)?.clearOverrides){const live=state.ports.find(p=>p.port===port);result[port]=masterDisplayRgb(live,master*100,number(state.brightness,100),state.rules,state.output?.gamma,date);return;}
-      if(normalized.id==='daylight'&&!Number.isFinite(hour)){result[port]??=portDisplayRgb(state.ports.find(p=>p.port===port)||{},state.output?.gamma);return;}
-    const facts=state.ports?.find(p=>p.port===port)?.facts||{};
-      const rule=matchingRule(state.rules||[],{id:port,facts},date);
+      const live=telemetry[index]||{}, optical=state.sfp?.find(light=>light.port===port);
+      if(normalized.id==='daylight'&&!Number.isFinite(hour)){result[port]??=portDisplayRgb(live,state.output?.gamma);return;}
+      const facts=live.facts||{};
+      const rule=optical?matchingSfpRule(state.rules||[],{...optical,mode:'color'},date):matchingRule(state.rules||[],{id:port,facts},date);
       if(!previewStates.has(port))previewStates.set(port,{});
       const color=effectColor(normalized,index,ports.length,time,{...facts,hour,phase,colorPhase,resolvedParams,peakTraffic,animationState:previewStates.get(port)});
-      result[port]=dim(rule?renderLook(rule.look,color,time):color,(rule?.look.brightness??master*100)/100);
+      const level=(rule?.look.brightness??master*100)/100, opticalLevel=optical?(draft.sfp?.[port]?.brightness??optical.brightness??100)/100:1;
+      result[port]=dim(rule?renderLook(rule.look,color,time):color,level*opticalLevel);
     });
   };
   const returned=new Set(draft.returnToEffect||[]),zones=new Set();
@@ -477,7 +483,12 @@ function previewDraft(time){
   for(const effect of effectDrafts(draft))render(effect,effect.ports);
   for(const [port,color] of Object.entries(draft.colors||{}))result[port]=manualDisplayRgb(color.color,color.brightness,master*100);
   const sync=sfpSync(state,draft),sfpPorts=sfpDraftPorts(state,draft);
+  for(const zone of draft.brightness!==undefined||sfpPorts.length?state.zones||[]:[]){
+    const targets=new Set(zone.ports.filter(id=>(draft.brightness!==undefined||sfpPorts.includes(id))&&state.sfp?.some(port=>port.port===id)&&!draft.sfpDetached?.includes(id)&&!effectDraftForPort(draft,id)));
+    if(targets.size)render(zone.effect,zone.ports,targets);
+  }
   for(const port of sfpPorts){
+    if(portEffect(state,draft,port))continue;
     const light=effectiveSfpLight(state,port,draft);
     const rule=matchingSfpRule(state.rules||[],{...light,mode:sync.mode==='ethernet'?'color':light.mode},date);
     if(rule){result[port]=portDisplayRgb(state.sfp.find(p=>p.port===port),state.output?.gamma);continue;}
@@ -566,7 +577,8 @@ function updateLive() {
       const tile=document.querySelector(`[data-port="${port.port}"]`);if(!tile)continue;
       const staged=draft.sfp?.[port.port],sync=sfpSync(state,draft),linked=isSfpPort(port.port)&&sync.mode!=='independent';
       const effective=linked?effectiveSfpLight(state,port.port,draft):{...port,...staged};
-      const unknown=linked?sync.mode==='together'&&effective.mode==='unmanaged'&&!matchingSfpRule(state.rules||[],effective,date):staged?(staged.mode??port.mode)==='unmanaged'&&!matchingSfpRule(state.rules||[],{...port,...staged},date):port.display_rgb===null&&port.mode!=='off';
+      const grouped=isSfpPort(port.port)&&Boolean(portEffect(state,compareApplied?{}:draft,port.port));
+      const unknown=grouped?false:linked?sync.mode==='together'&&effective.mode==='unmanaged'&&!matchingSfpRule(state.rules||[],effective,date):staged?(staged.mode??port.mode)==='unmanaged'&&!matchingSfpRule(state.rules||[],{...port,...staged},date):port.display_rgb===null&&port.mode!=='off';
       tile.querySelector('.port-led')?.classList.toggle('is-unknown',unknown);
       tile.querySelector('.port-led')?.setAttribute('title',unknown?'Link-managed color has not been reported':'');
       const link=linkStatus(port),sfp=isSfpPort(port.port);
@@ -718,28 +730,36 @@ function renderInspector() {
 function renderInspectorContent() {
   activeColorPopover?.();const host=document.querySelector('#inspector');if(!host)return;
   if(!selected.size){host.innerHTML='<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">Select a port on the map, or choose All ports.</p></div></header>';return;}
-  if(sfpSelection().length&&!copperSelection().length){renderSfp(host);return;}
+  if(useSfpInspector()){renderSfp(host);return;}
   const both=Boolean(sfpSelection().length),current=currentEffect(),mixed=hasMixedEffects(),spec=effectSpec(current?.id),values={...defaultConfig(current?.id||'static').params,...current?.params};
-  if(both)editor='color';
+  const opticalOnly=both&&!copperSelection().length;
+  if(opticalOnly)editor='effect';
   inspectorSignature=copperInspectorKey();
   host.innerHTML=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${escape(selectionName())}</p></div></header><div class="control-source"></div><div class="inspector-mode-row"><div class="editor-tabs" role="group" aria-label="Edit mode"><button class="button ${editor==='color'?'selected':''}" data-editor="color" aria-pressed="${editor==='color'}">Fixed color</button><button class="button ${editor==='effect'?'selected':''}" data-editor="effect" aria-pressed="${editor==='effect'}">Effect</button></div><div class="effect-choice-slot"></div></div><div class="inspector-sections" id="parameter-grid"></div><div class="inspector-actions"><button class="button quiet" id="copy-appearance" ${selected.size!==1?'disabled':''}>Copy appearance</button><button class="button quiet" id="paste-appearance" ${!copiedAppearance?'disabled':''}>Paste appearance</button></div>`;
-  host.querySelectorAll('[data-editor]').forEach(button=>button.onclick=()=>{if(button.dataset.editor==='effect'&&both){run(()=>navigate('Effects'));return;}editor=button.dataset.editor;preserveInspectorFocus(renderInspector,`[data-editor="${editor}"]`);});
-  if(both)host.querySelector('[data-editor="effect"]').textContent='Browse effects';
+  host.querySelectorAll('[data-editor]').forEach(button=>button.onclick=()=>{editor=button.dataset.editor;preserveInspectorFocus(renderInspector,`[data-editor="${editor}"]`);});
+  if(opticalOnly)host.querySelector('.editor-tabs').hidden=true;
+  const groupedOptical=groupedSfpSelection();
+  if(groupedOptical.length){
+    const restore=document.createElement('button');restore.type='button';restore.className='button quiet';restore.textContent='Return to SFP lighting';
+    restore.onclick=()=>{draft=leaveSfpEffect(draft,groupedOptical);queueEdit('sfp');renderInspector();};
+    host.querySelector('.inspector-actions').prepend(restore);
+  }
   const copyButton=host.querySelector('#copy-appearance');
   if(selected.size===1&&!currentEffect()&&!draft.colors?.[[...selected][0]]&&!state.overrides?.[[...selected][0]]){copyButton.disabled=true;copyButton.title='Choose a color or effect for this port first.';}
-  copyButton.onclick=()=>{const id=[...selected][0],p=[...state.ports,...state.sfp].find(p=>p.port===id),manual=draft.colors?.[id]||(!draft.returnToEffect?.includes(id)&&!effectDraftForPort(draft,id)?.clearOverrides?state.overrides?.[id]:null);copiedAppearance=isSfpPort(id)?{type:'sfp',settings:sfpSettings({...p,...draft.sfp?.[id]})}:manual?{type:'color',settings:clone(manual)}:{type:'effect',settings:clone(currentEffect())};host.querySelector('#paste-appearance').disabled=false;notify('Appearance copied');};
+  copyButton.onclick=()=>{const id=[...selected][0],p=[...state.ports,...state.sfp].find(p=>p.port===id),manual=draft.colors?.[id]||(!draft.returnToEffect?.includes(id)&&!effectDraftForPort(draft,id)?.clearOverrides?state.overrides?.[id]:null);copiedAppearance=isSfpPort(id)&&!portEffect(state,draft,id)?{type:'sfp',settings:sfpSettings({...p,...draft.sfp?.[id]})}:manual?{type:'color',settings:clone(manual)}:{type:'effect',settings:clone(currentEffect())};host.querySelector('#paste-appearance').disabled=false;notify('Appearance copied');};
   host.querySelector('#paste-appearance').onclick=()=>{
     if(copiedAppearance.type==='effect'){
-      if(!copperSelection().length){notify('Select Ethernet ports for this effect.');return;}
-      stageEffect({...clone(copiedAppearance.settings),ports:copperSelection(),clearOverrides:true});editor='effect';
+      stageEffect({...clone(copiedAppearance.settings),ports:effectSelection(),clearOverrides:true});editor='effect';
     }else if(copiedAppearance.type==='sfp'){
       if(!sfpSelection().length){notify('Select SFP ports for these settings.');return;}
       if(sfpSync(state,draft).mode==='ethernet'){notify('Select Independent or Together in SFP controls before pasting this appearance.');return;}
+      draft=leaveSfpEffect(draft,groupedOptical);
       draft.sfp??={};for(const id of sfpEditTargets(state,sfpSelection(),draft))draft.sfp[id]=normalizeSfpBrightness(clone(copiedAppearance.settings));queueEdit('sfp');
     }else{
       const sfpTargets=sfpSync(state,draft).mode==='ethernet'?[]:sfpEditTargets(state,sfpSelection(),draft);
       let sfpColor;try{if(sfpTargets.length)sfpColor=sfpColorFromAppearance(copiedAppearance.settings);}catch(error){notify(error.message,true);return;}
       draft.colors??={};for(const id of copperSelection())draft.colors[id]=clone(copiedAppearance.settings);
+      if(sfpTargets.length)draft=leaveSfpEffect(draft,groupedOptical);
       draft.sfp??={};for(const id of sfpTargets)draft.sfp[id]=clone(sfpColor);
       editor='color';queueEdit('colors');
     }
@@ -761,6 +781,7 @@ function renderInspectorContent() {
         queueEdit('colors');return;
       }
       for(const id of copperSelection()){const original=draft.colors[id]??state.overrides?.[id]??settings[[...selected].indexOf(id)];draft.colors[id]={...original,[changed]:changed==='color'?value:brightness};}
+      if(!followingSfp&&groupedOptical.length)draft=leaveSfpEffect(draft,groupedOptical);
       for(const id of followingSfp?[]:sfpEditTargets(state,sfpSelection(),draft))draft.sfp[id]={...sfpSettings(editableSfpLight(state,id,draft)),mode:'color',effect:'steady',[changed==='brightness'?'color_brightness':changed]:changed==='color'?value:brightness};
       queueEdit('colors');
     });
@@ -769,9 +790,9 @@ function renderInspectorContent() {
   }
   const description=EFFECTS.find(effect=>effect.id===spec?.id)?.description||spec?.description;
   host.querySelector('.effect-choice-slot').innerHTML=`<div class="effect-summary effect-choice"><button class="button" id="browse-effects" aria-label="Choose effect: ${mixed?'Multiple effects':escape(spec?.name||'None')}" title="${escape(description||'Browse lighting effects')}">${mixed?'Multiple effects':escape(spec?.name||'Choose effect')} ${icon('chevron')}</button></div>`;
-  host.querySelector('#browse-effects').onclick=()=>run(()=>navigate('Effects'));
+  host.querySelector('#browse-effects').onclick=()=>{galleryState.type='ethernet';run(()=>navigate('Effects'));};
   if(!spec)return;
-  const ports=copperSelection(),source={id:current.id,params:clone(values)};
+  const ports=effectSelection(),source={id:current.id,params:clone(values)};
   const editParams=change=>{for(const [left,right] of spec.exclusive_params||[]){if(change[left]===true)change[right]=false;if(change[right]===true)change[left]=false;}Object.assign(source.params,change);stageEffect({...clone(source),ports});};
   const visible=spec.params.filter(p=>!p.randomizes&&!p.dims).filter(p=>{
     if(spec.id==='traffic'&&p.key==='uplink_color')return values.custom_uplink===true;
@@ -814,7 +835,8 @@ function sfpSyncControls(sync) {
   if(!state.sfp_sync)return '';
   const modes=[['independent','Independent'],['together','Together']];
   if(state.ports?.length)modes.push(['ethernet','Follow Ethernet port']);
-  const group=(state.sfp||[]).length===2?'both SFP lights':`all ${(state.sfp||[]).length} SFP lights`;
+  const targets=(state.sfp||[]).filter(light=>!portEffect(state,draft,light.port));
+  const group=targets.length===(state.sfp||[]).length?(targets.length===2?'both SFP lights':`all ${targets.length} SFP lights`):`SFP ${portRanges(targets.map(light=>light.port))}`;
   const mode=`<div class="parameter parameter-inline"><label for="sfp-sync">Mode</label><select id="sfp-sync">${modes.map(([value,text])=>`<option value="${value}" ${value===sync.mode?'selected':''}>${text}</option>`).join('')}</select></div>`;
   const source=sync.mode==='ethernet'?`<div class="parameter parameter-inline"><label for="sfp-source">Follow port</label><select id="sfp-source">${(state.ports||[]).map(port=>`<option value="${port.port}" ${port.port===sync.source_port?'selected':''}>Port ${port.port}${port.name?' · '+escape(port.name):''}</option>`).join('')}</select></div><p class="help-text">The SFP lights track this port’s color and brightness with smooth fades. SFP automations can override the shared lighting.</p>`:sync.mode==='together'?`<p class="help-text">Use these controls to set ${group}. Independent returns each indicator to its separate controls.</p>`:'';
   return controlSection('Synchronization',mode+source,'link','sfp-sync-controls');
@@ -825,7 +847,7 @@ function bindSfpSync(host){
   host.querySelector('#sfp-sync').onchange=event=>{
     const mode=event.target.value;
     draft.sfp_sync={...sync,mode};
-    if(mode!=='independent')selected=new Set((state.sfp||[]).map(port=>port.port));
+    if(mode!=='independent')selected=new Set((state.sfp||[]).map(port=>port.port).filter(id=>!portEffect(state,draft,id)));
     document.querySelectorAll('[data-port]').forEach(tile=>{const active=selected.has(Number(tile.dataset.port));tile.classList.toggle('selected',active);tile.setAttribute('aria-pressed',String(active));});
     queueEdit('sfp-sync');updateGroups();preserveInspectorFocus(renderInspector,'#sfp-sync');
   };
@@ -833,17 +855,19 @@ function bindSfpSync(host){
 }
 function renderSfp(host){
   const sync=sfpSync(state,draft),ports=sfpSelection(),lights=ports.map(id=>editableSfpLight(state,id,draft)),current=lights[0];
-  const targets=sync.mode==='ethernet'?(state.sfp||[]).map(port=>port.port):ports;
+  const targets=sync.mode==='ethernet'?(state.sfp||[]).map(port=>port.port).filter(id=>!portEffect(state,draft,id)):ports;
   const header=`<header class="inspector-header"><div><h2>Port controls</h2><p class="muted">${targets.length>4?`SFP ports ${portRanges(targets)}`:targets.map(id=>`SFP ${id}`).join(', ')}</p></div></header><div class="control-source"></div>`;
+  const browse='<button class="button quiet" id="sfp-gallery">Browse port effects</button>';
+  const openGallery=()=>{galleryState.type='ethernet';run(()=>navigate('Effects'));};
   if(sync.mode==='ethernet'){
-    host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}</div>`;
-    bindSfpSync(host);inspectorSignature=sfpInspectorKey();updateDraftBar();return;
+    host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}${browse}</div>`;
+    host.querySelector('#sfp-gallery').onclick=openGallery;bindSfpSync(host);inspectorSignature=sfpInspectorKey();updateDraftBar();return;
   }
   const same=key=>equalSetting(lights.map(light=>light[key])),mode=same('mode')?current.mode:'mixed',effect=same('effect')?current.effect:'mixed';
   const modeControl=`<div class="parameter parameter-inline"><label for="sfp-mode">Lighting</label><select id="sfp-mode">${mode==='mixed'?'<option value="mixed" disabled selected>Mixed</option>':''}${[['unmanaged','Link status'],['color','Custom lighting'],['off','Off']].map(([id,name])=>`<option value="${id}" ${id===mode?'selected':''}>${name}</option>`).join('')}</select></div>`;
   let appearance=modeControl, motion='';
   if(mode==='color'){
-    appearance+=`<div class="parameter parameter-inline"><label for="sfp-effect">Effect</label><select id="sfp-effect">${effect==='mixed'?'<option value="mixed" disabled selected>Mixed</option>':''}${[['steady','Steady'],['pulse','Gentle pulse'],['two_color','Two-color fade'],['color_cycle','Color cycle']].map(([id,name])=>`<option value="${id}" ${id===effect?'selected':''}>${name}</option>`).join('')}</select></div><button class="button quiet" id="sfp-gallery">Browse effects</button>`;
+    appearance+=`<div class="parameter parameter-inline"><label for="sfp-effect">Effect</label><select id="sfp-effect">${effect==='mixed'?'<option value="mixed" disabled selected>Mixed</option>':''}${[['steady','Steady'],['pulse','Gentle pulse'],['two_color','Two-color fade'],['color_cycle','Color cycle']].map(([id,name])=>`<option value="${id}" ${id===effect?'selected':''}>${name}</option>`).join('')}</select></div>`;
     if(effect!=='color_cycle')appearance+=colorControl('color','Primary color',current.color,current.color_brightness??100,null,false,true);
     if(effect==='two_color')appearance+=colorControl('secondary_color','Secondary color',current.secondary_color,current.secondary_brightness??100,null,false,true);
     if(effect==='color_cycle')appearance+=paramControl({key:'color_brightness',label:'Color level',type:'int',min:0,max:100,step:1,unit:'%'},current.color_brightness??100,null,false,true);
@@ -852,26 +876,26 @@ function renderSfp(host){
       motion=paramControl({key:'period',label:'Cycle duration',type:'float',min:range.min,max:range.max,step:range.step,unit:'s',description:range.savedCustom?`Saved duration: ${current.period} s. Moving the slider selects a new duration.`:undefined},range.value);
     }
   }else appearance+=`<p class="help-text">${mode==='unmanaged'?'The indicator follows the port’s link status. Its color appears here when reported.':mode==='off'?'The selected lights are turned off.':'Choose a lighting mode for the selected SFP ports.'}</p>`;
-  host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}${controlSection('Appearance',appearance,'blend','primary-appearance')}${motion?controlSection('Motion',motion,'clock'):''}</div>`;
+  host.innerHTML=`${header}<div class="inspector-sections">${sfpSyncControls(sync)}${controlSection('Appearance',appearance+browse,'blend','primary-appearance')}${motion?controlSection('Motion',motion,'clock'):''}</div>`;
   bindSfpSync(host);
   const set=change=>{draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft)){const light=editableSfpLight(state,port,draft);draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(light),...(typeof change==='function'?change(light):change)});}queueEdit('sfp');};
   host.querySelector('#sfp-mode').onchange=event=>{set({mode:event.target.value});preserveInspectorFocus(renderInspector,'#sfp-mode');};
   const chooser=host.querySelector('#sfp-effect');if(chooser)chooser.onchange=event=>{set(light=>sfpEffectChange(light,event.target.value,sfpNativeAvailable(state)));preserveInspectorFocus(renderInspector,'#sfp-effect');};
-  host.querySelector('#sfp-gallery')?.addEventListener('click',()=>run(()=>navigate('Effects')));
+  host.querySelector('#sfp-gallery')?.addEventListener('click',openGallery);
   bindColors(host,(key,value,brightness,changed)=>{if(changed==='resetColor'){for(const port of sfpEditTargets(state,ports,draft)){if(draft.sfp?.[port])draft.sfp[port][key]=lights.find(light=>light.port===port)?.[key]??current[key];}queueEdit('sfp');return;}set(changed==='color'?{[key]:value}:{[key==='color'?'color_brightness':'secondary_brightness']:brightness});});
   host.querySelectorAll('[data-hex]').forEach(input=>{if(!same(input.dataset.hex)){input.value='';input.placeholder='#409EFF';input.dataset.allowEmpty='true';setMixedColor(host.querySelector(`[data-color="${CSS.escape(input.dataset.hex)}"]`),true);}});
   host.querySelectorAll('[data-param]').forEach(input=>{if(!same(input.dataset.param))input.closest('.parameter').querySelector('output').textContent='Mixed';input.oninput=()=>{const key=input.dataset.param;input.closest('.parameter').querySelector('output').textContent=input.value+(key==='period'?' s':'%');set({[key]:Number(input.value)});};});
   host.querySelectorAll('[data-brightness]').forEach(input=>{if(!same(input.dataset.brightness==='color'?'color_brightness':'secondary_brightness'))input.closest('.parameter').querySelector('output').textContent='Mixed';});
-  host.insertAdjacentHTML('beforeend',`<div class="inspector-actions"><button class="button quiet" id="copy-sfp" ${ports.length!==1?'disabled':''}>Copy appearance</button><button class="button quiet" id="paste-sfp" ${!copiedAppearance||copiedAppearance.type==='effect'?'disabled':''}>Paste appearance</button></div>`);
+  host.insertAdjacentHTML('beforeend',`<div class="inspector-actions"><button class="button quiet" id="copy-sfp" ${ports.length!==1?'disabled':''}>Copy appearance</button><button class="button quiet" id="paste-sfp" ${!copiedAppearance?'disabled':''}>Paste appearance</button></div>`);
   host.querySelector('#copy-sfp').onclick=()=>{copiedAppearance={type:'sfp',settings:sfpSettings(current)};host.querySelector('#paste-sfp').disabled=false;notify('Appearance copied');};
-  host.querySelector('#paste-sfp').onclick=()=>{try{set(copiedAppearance.type==='sfp'?clone(copiedAppearance.settings):sfpColorFromAppearance(copiedAppearance.settings));renderInspector();}catch(error){notify(error.message,true);}};
+  host.querySelector('#paste-sfp').onclick=()=>{if(copiedAppearance.type==='effect'){stageEffect({...clone(copiedAppearance.settings),ports,clearOverrides:true});editor='effect';renderInspector();return;}try{set(copiedAppearance.type==='sfp'?clone(copiedAppearance.settings):sfpColorFromAppearance(copiedAppearance.settings));renderInspector();}catch(error){notify(error.message,true);}};
   inspectorSignature=sfpInspectorKey();updateRangeProgress();updateDraftBar();
 }
 
 function reconcileEditor(force = false) {
   if(page!=='Lighting'||!document.querySelector('#inspector'))return;
   if(busy||edits.size||activeColorPopover||document.querySelector('#inspector')?.contains(document.activeElement))return;
-  const signature=sfpSelection().length&&!copperSelection().length?sfpInspectorKey():copperInspectorKey();
+  const signature=useSfpInspector()?sfpInspectorKey():copperInspectorKey();
   if(force||signature!==inspectorSignature){renderInspector();}
 }
 
@@ -898,7 +922,7 @@ async function openGroups() {
   if(!await confirmDraft())return;
   const send=workspaceRequest(),workspace=session.workspace_id,before=await send('/api/scene');
   const dialog=document.createElement('dialog');dialog.className='dialog group-dialog';dialog.setAttribute('aria-label','Port groups');
-  dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port groups</h2><button class="button icon-button" value="cancel" aria-label="Close">×</button></header><p class="muted">Each Ethernet port belongs to one group. Select ports on the canvas, then create a group for them.</p><h3>Existing groups</h3><div class="group-list">${(state.zones||[]).map(zone=>`<div class="row"><label class="field"><span>Group name</span><input data-group-name="${escape(zone.id)}" value="${escape(zone.name)}" maxlength="${GROUP_NAME_LIMIT}" required></label><span class="muted">Ports ${escape(portRanges(zone.ports))}</span></div>`).join('')}</div><h3>New group</h3><div class="field"><label for="new-group-name">Group for ${escape(selectionName())}</label><input id="new-group-name" placeholder="Group name" maxlength="${GROUP_NAME_LIMIT}" ${!copperSelection().length?'disabled':''}></div><label class="field"><span>Group effect</span><select id="new-group-effect" ${!copperSelection().length?'disabled':''}><option value="" ${hasMixedEffects()?'':'selected'}>${hasMixedEffects()?'Choose an effect':'Keep selected effect'}</option>${effects.map(effect=>`<option value="${escape(effect.id)}">${escape(effect.name)}</option>`).join('')}</select></label><p class="help-text">Creating a group moves these selected Ethernet ports from their current groups. The chosen effect starts when you save.</p><p class="inline-error" id="group-error" role="alert"></p><footer class="dialog-footer"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" id="save-groups" type="button">Save groups</button></footer></form>`;
+  dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port groups</h2><button class="button icon-button" value="cancel" aria-label="Close">×</button></header><p class="muted">Select Ethernet or SFP ports on the map to create a group.</p><h3>Existing groups</h3><div class="group-list">${(state.zones||[]).map(zone=>`<div class="row"><label class="field"><span>Group name</span><input data-group-name="${escape(zone.id)}" value="${escape(zone.name)}" maxlength="${GROUP_NAME_LIMIT}" required></label><span class="muted">Ports ${escape(portRanges(zone.ports))}</span></div>`).join('')}</div><h3>New group</h3><div class="field"><label for="new-group-name">Group for ${escape(selectionName())}</label><input id="new-group-name" placeholder="Group name" maxlength="${GROUP_NAME_LIMIT}" ${!effectSelection().length?'disabled':''}></div><label class="field"><span>Group effect</span><select id="new-group-effect" ${!effectSelection().length?'disabled':''}><option value="" ${hasMixedEffects()?'':'selected'}>${hasMixedEffects()?'Choose an effect':'Keep selected effect'}</option>${effects.map(effect=>`<option value="${escape(effect.id)}">${escape(effect.name)}</option>`).join('')}</select></label><p class="help-text">Creating a group moves the selected ports into it. The chosen effect starts when you save.</p><p class="inline-error" id="group-error" role="alert"></p><footer class="dialog-footer"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" id="save-groups" type="button">Save groups</button></footer></form>`;
   document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
   let saving=false;
   dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
@@ -910,7 +934,7 @@ async function openGroups() {
     try{
       const names=[...dialog.querySelectorAll('[data-group-name]')],freshInput=dialog.querySelector('#new-group-name');
       for(const input of [...names,...(freshInput.value.trim()?[freshInput]:[])]){const error=groupNameError(input.value);if(error){input.focus();throw new Error(error);}}
-      const fresh=freshInput.value.trim(),ports=copperSelection();
+      const fresh=freshInput.value.trim(),ports=effectSelection();
       const chosenEffect=dialog.querySelector('#new-group-effect').value;if(fresh&&ports.length&&hasMixedEffects()&&!chosenEffect)throw new Error('Choose the effect for the new group.');
       saving=true;dialog.setAttribute('aria-busy','true');const controls=[...dialog.querySelectorAll('input,select,button')];for(const control of controls){control.dataset.groupDisabled=String(control.disabled);control.disabled=true;}
       await serialize(async()=>{

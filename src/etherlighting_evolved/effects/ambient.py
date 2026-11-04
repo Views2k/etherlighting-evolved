@@ -386,6 +386,7 @@ class TrafficTrails(Effect):
         Param("offline_color", "No link", "color", "#000000"),
         Param("speed", "Speed", "float", 0.2, min=0.03, max=2.0, step=0.01, unit="cycles/s"),
         Param("width", "Trail width", "float", 2.0, min=1.25, max=8.0, step=0.25, unit="ports"),
+        Param("include_uplinks", "Include uplink traffic", "bool", False),
         Param("max_mbps", "Full scale", "float", 1000.0, min=1.0, max=10000.0, step=1.0, unit="Mbps"),
     )
 
@@ -411,7 +412,9 @@ class TrafficTrails(Effect):
                 self._load[i] = 0.0
                 color = c["offline_color"]
             else:
-                rate = 0.0 if link is not None and link.uplink else ctx.traffic_bps.get(i + 1, 0.0)
+                rate = ctx.traffic_bps.get(i + 1, 0.0)
+                if link is not None and link.uplink and not self.p["include_uplinks"]:
+                    rate = 0.0
                 target = min(1.0, max(0.0, rate / (self.p["max_mbps"] * 1e6)))
                 tau = 0.35 if target > self._load[i] else 1.4
                 self._load[i] += (target - self._load[i]) * (1 - math.exp(-dt / tau))
@@ -440,6 +443,7 @@ class ActivityGlow(Effect):
     params = (
         Param("active_color", "Active color", "color", "#72e0bd"),
         Param("idle_color", "Idle color", "color", "#0b1523"),
+        Param("include_uplinks", "Include uplink traffic", "bool", False),
         Param("minimum_mbps", "Full glow threshold", "float", 1.0, min=0.1, max=10000.0, step=0.1, unit="Mbps",
               description="The busiest device reaches full glow at this rate. "
                           "Above it, other ports scale relative to that device."),
@@ -468,7 +472,7 @@ class ActivityGlow(Effect):
         rates = [0.0] * self.num_ports
         for i in range(self.num_ports):
             link = ctx.links.get(i + 1)
-            if link is not None and link.link_up and not link.uplink:
+            if link is not None and link.link_up and (self.p["include_uplinks"] or not link.uplink):
                 rate = ctx.traffic_bps.get(i + 1, 0.0)
                 if isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0:
                     rates[i] = rate

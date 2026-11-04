@@ -90,3 +90,57 @@ test('optical-only saved profiles never invent copper ports or overwrite an opti
   assert.deepEqual(profilePorts(saved,{}),{copper:[],sfp:[]});
   assert.match(profileLayoutNotice(saved,{}),/Review/);
 });
+
+test('saved mixed effects retain socket position and individual brightness',()=>{
+  const saved=scene('gradient',{color_a:'#ff0000',color_b:'#0000ff',speed:0});
+  saved.version=3;
+  saved.topology={version:1,copper_ports:[1,2],sfp_ports:[9,10]};
+  saved.brightness=80;
+  saved.sfp_sync={mode:'together'};
+  saved.sfp[9].brightness=25;
+  saved.sfp[10].brightness=50;
+  saved.zones[0].ports=[1,9,10];
+  const colors=profileColors(saved,{},0);
+  assert.deepEqual(colors[1],[204,0,0]);
+  assert.deepEqual(colors[9],[25.5,0,25.5]);
+  assert.deepEqual(colors[10],[0,0,102]);
+  assert.deepEqual(colors[2],[0,0,0]);
+});
+
+test('saved optical-only Activity Glow uses individual optical traffic and targeted rules',()=>{
+  const saved=scene('activity_glow',{active_color:'#ffffff',idle_color:'#000000'});
+  saved.version=3;
+  saved.topology={version:1,copper_ports:[],sfp_ports:[9,10]};
+  saved.zones[0].ports=[9,10];
+  const state={sfp:[
+    {port:9,link:false,facts:{link:false,traffic:1000}},
+    {port:10,link:true,facts:{link:true,speed:1000,traffic:40}}
+  ]};
+  const animation=new Map();
+  profileColors(saved,state,0,animation);
+  const colors=profileColors(saved,state,1,animation);
+  assert.deepEqual(colors[9],[0,0,0]);
+  assert.ok(colors[10][0]>245);
+  saved.brightness=0;saved.sfp[10].brightness=50;
+  saved.rules=[{enabled:true,ports:[10],conditions:[{field:'link',op:'is',value:true}],look:{style:'solid',color:'#ff0000',brightness:80}}];
+  assert.deepEqual(profileColors(saved,state,2,animation)[10],[102,0,0]);
+});
+
+test('saved Activity Glow scales copper and SFP together when uplink traffic is included',()=>{
+  const saved=scene('activity_glow',{active_color:'#ffffff',idle_color:'#000000'});
+  saved.version=3;
+  saved.topology={version:1,copper_ports:[1],sfp_ports:[9,10]};
+  saved.zones[0].ports=[1,10];
+  const state={ports:[{port:1,facts:{link:true,uplink:false,traffic:10}}],
+    sfp:[{port:10,link:true,facts:{link:true,uplink:true,traffic:100}}]};
+  const frames=new Map();
+  profileColors(saved,state,0,frames);
+  const excluded=profileColors(saved,state,2,frames);
+  assert.ok(excluded[1][0]>250);
+  assert.deepEqual(excluded[10],[0,0,0]);
+  saved.zones[0].effect.params.include_uplinks=true;
+  profileColors(saved,state,3,frames);
+  const included=profileColors(saved,state,5,frames);
+  assert.ok(included[1][0]>24 && included[1][0]<26);
+  assert.ok(included[10][0]>250);
+});

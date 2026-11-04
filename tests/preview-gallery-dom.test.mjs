@@ -67,12 +67,29 @@ test('selecting one Ethernet port still shows exactly one bar in every preview',
   }
 });
 
-test('an optical-only switch opens the SFP gallery with no phantom copper selection', context => {
+test('an optical-only switch offers port effects and its native SFP lighting for the selected indicators', context => {
   const dom=rendererDom(context),sfp=Array.from({length:32},(_,i)=>({port:i+1,mode:'color',effect:'pulse'}));
-  const cleanup=renderEffectGallery(dom.host,{effects,state:{num_ports:0,ports:[],sfp,zones:[]},selectedPorts:sfp.map(port=>port.port)});
+  let regular,native;
+  const ids=sfp.map(port=>port.port),cleanup=renderEffectGallery(dom.host,{effects,state:{num_ports:0,ports:[],sfp,zones:[]},selectedPorts:ids,onChoose:value=>regular=value,onChooseSfp:value=>native=value});
   dom.after(cleanup);
+  assert.deepEqual(dom.byClass(dom.host,'effect-card').map(card=>card.dataset.effect),effects.map(effect=>effect.id));
+  dom.byClass(dom.host,'effect-card-open')[0].click();assert.deepEqual(regular.ports,ids);
+  dom.findAll(dom.host,button=>button.dataset.type==='sfp')[0].click();
   const cards=dom.byClass(dom.host,'effect-card');
+  dom.byClass(dom.host,'effect-card-open')[0].click();assert.deepEqual(native.ports,ids);
   assert.equal(cards.length,4);
-  assert.ok(cards.some(card=>card.dataset.effect==='pulse'));
+  assert.deepEqual(cards.map(card=>card.dataset.effect),['steady','pulse','two_color','color_cycle']);
   for (const preview of dom.byClass(dom.host,'effect-preview')) assert.equal(preview.children.length,32);
+});
+
+test('Include SFP lights adds optical targets only on request and respects individual selections', context=>{
+  const dom=rendererDom(context),state={...stateFor(2),sfp:[{port:9},{port:10}]},calls=[];
+  const cleanup=renderEffectGallery(dom.host,{effects:[CATALOG.find(e=>e.id==='activity_glow')],state,selectedPorts:[2],onChoose:value=>calls.push(value)});
+  dom.after(cleanup);
+  const choose=()=>dom.byClass(dom.host,'effect-card-open')[0].click();
+  const input=dom.findAll(dom.host,node=>node.type==='checkbox')[0];
+  choose();assert.deepEqual(calls.at(-1).ports,[2]);
+  input.checked=true;input.listeners.get('change')();choose();assert.deepEqual(calls.at(-1).ports,[2,9,10]);
+  cleanup.update({selectedPorts:[2,10]});choose();assert.deepEqual(calls.at(-1).ports,[2,10]);
+  input.checked=false;input.listeners.get('change')();choose();assert.deepEqual(calls.at(-1).ports,[2]);
 });

@@ -17,7 +17,8 @@ test('optical-only drafts allow shared SFP settings and reject imaginary Etherne
   for(const mode of ['independent','together']) assert.equal(lightingOperations(state,{sfp_sync:{mode}})[0].body.mode,mode);
   assert.throws(()=>lightingOperations(state,{sfp_sync:{mode:'ethernet'}}),/Ethernet port/);
   assert.throws(()=>lightingOperations(state,{colors:{1:{color:'#FFFFFF'}}}),/Ethernet ports/);
-  assert.throws(()=>lightingOperations(state,{effect:{id:'static',ports:[1],params:{}}}),/Ethernet ports/);
+  const [group]=lightingOperations(state,{effect:{id:'static',ports:[1],params:{}}});
+  assert.deepEqual(group.body.zones[0].ports,[1]);
   assert.equal(lightingOperations(state,{sfp:{2:{color:'#FFFFFF'}}})[0].path,'/api/sfp/2');
 });
 
@@ -84,7 +85,9 @@ test('mixed Ethernet/SFP draft coalesces partial SFP changes without copying one
 
 test('planning rejects crossed or unknown port scopes and never treats an invalid mode as release',()=>{
   const state=base();
-  for(const ports of [[],[1,9],[0],[1.5],['1']])assert.throws(()=>lightingOperations(state,{effect:{id:'static',ports,params:{}}}),/Ethernet port/);
+  for(const ports of [[],[1,11],[0],[1.5],['1']])assert.throws(()=>lightingOperations(state,{effect:{id:'static',ports,params:{}}}),/port/);
+  const [mixed]=lightingOperations(state,{effect:{id:'static',ports:[1,9],params:{}}});
+  assert.deepEqual(mixed.body.zones.at(-1).ports,[1,9]);
   assert.throws(()=>lightingOperations(state,{colors:{9:{color:'#FFFFFF'}}}),/Ethernet ports/);
   assert.throws(()=>lightingOperations(state,{returnToEffect:[9]}),/Ethernet ports/);
   assert.throws(()=>lightingOperations(state,{sfp:{11:{mode:'color'}}}),/available SFP/);

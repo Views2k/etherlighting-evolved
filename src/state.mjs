@@ -164,15 +164,16 @@ export function loadState(storage) {
     const data = JSON.parse(storage.getItem(STORAGE_KEY));
     if (!data || data.version !== 2) return state;
     state.config = sanitizeConfig(data.config);
+    if (Array.isArray(data.sfp)) state.sfp = demoSfp(data.sfp);
     if (Array.isArray(data.zones) && data.zones.length) {
+      const eligible = new Set([...state.ports.map(port => port.id),...state.sfp.map(light => light.port)]);
       const assigned = new Set();
-      state.zones = data.zones.filter(z => typeof z.id === 'string' && typeof z.name === 'string' && Array.isArray(z.ports)).map(z => ({id:z.id,name:z.name.slice(0,40),effect:sanitizeConfig(z.effect),ports:z.ports.filter(p => {if (!Number.isInteger(p) || p < 1 || p > 8 || assigned.has(p)) return false;assigned.add(p);return true;})})).filter(z => z.ports.length);
+      state.zones = data.zones.filter(z => typeof z.id === 'string' && typeof z.name === 'string' && Array.isArray(z.ports)).map(z => ({id:z.id,name:z.name.slice(0,40),effect:sanitizeConfig(z.effect),ports:z.ports.filter(p => {if (!eligible.has(p) || assigned.has(p)) return false;assigned.add(p);return true;})})).filter(z => z.ports.length);
       const unassigned = state.ports.map(p => p.id).filter(p => !assigned.has(p));
       if (unassigned.length) state.zones.push({id:'remaining',name:'Other ports',ports:unassigned,effect:defaultConfig()});
       state.activeZone = state.zones[0].id;state.config = structuredClone(state.zones[0].effect);
     }
     state.brightness = Number.isFinite(data.brightness) ? clamp(data.brightness,0,100) : 80;
-    if (Array.isArray(data.sfp)) state.sfp = demoSfp(data.sfp);
     if (Array.isArray(data.ports) && data.ports.length === 8) state.ports.forEach((p,i) => {
       const o = data.ports[i]?.override;
       if (normalizeHex(o?.color)) p.override = {color:normalizeHex(o.color),brightness:Number.isFinite(o.brightness) ? clamp(o.brightness,0,100) : null};

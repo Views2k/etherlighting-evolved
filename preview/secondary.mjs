@@ -824,7 +824,7 @@ export function renderHelp(host, {state = {}} = {}) {
       'Save favorite colors in the picker for quick access. Named palettes keep a set of colors together for reuse.'
     ]],
     ['Choose an effect', [
-      'Effects displays an animated gallery using your selected colors. Choose an Ethernet or SFP effect to preview it on compatible selected ports.',
+      'Port effects run on the selected Ethernet and SFP ports. When only Ethernet ports are selected, turn on Include SFP lights to add the switch’s SFP indicators.',
       'Favorite effects are easy to find again. Recent effects keep the effects you have chosen close at hand.',
       'Speed controls how quickly an effect moves or completes a cycle. Color controls set its primary and secondary colors.',
       'Random color options vary the colors you enable. Leave the primary color fixed and randomize the background for a multicolor Marquee.',
@@ -833,12 +833,12 @@ export function renderHelp(host, {state = {}} = {}) {
     ['Understand the port map', [
       'The illuminated socket shows the lighting color. The link-speed legend explains the dot beneath each port.',
       'The uplink symbol identifies the port connecting to the rest of your network. PoE symbols and watts describe power supplied by a port.',
-      'SFP lights have their own color and animation controls. Link status lets the switch manage the indicator.'
+      'Choose SFP lighting in Effects for the indicator’s own color and animation controls. Link status lets the switch manage the indicator.'
     ]],
     ['Sync SFP lights', [
       `Select an SFP port, then choose a sync mode in Port controls. Together shares one effect, color palette, and timing across ${sfpScope}.`,
       ...(copper.length ? [`Follow Ethernet port tracks a chosen Ethernet port’s color and brightness across ${sfpScope}. Targeted SFP automations can override it.`] : []),
-      'Independent returns each indicator to its separate controls. Review the preview, then choose Apply changes. Sync settings are included in saved profiles.'
+      'Choose Return to SFP lighting to remove a selected indicator from its port effect and restore its saved SFP settings. Apply changes confirms the preview.'
     ]],
     ['Create an automation', [
       'Create a rule, choose when it should match, select the ports, then choose what they should show.',

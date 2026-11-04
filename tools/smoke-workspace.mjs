@@ -320,6 +320,43 @@ try {
       await screenshot(`rack-${width}-${page.toLowerCase()}`);
     }
   }
+  await send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: false});
+  await evaluate(`document.querySelector('[data-select="ethernet"]').click()`);
+  await evaluate(`document.querySelector('[data-page="Effects"]').click()`);
+  const includeSfp = '.gallery-target input[type="checkbox"]';
+  await until(() => evaluate(`!!document.querySelector('${includeSfp}')`), 'SFP effect option');
+  assert.equal(await evaluate(`document.querySelector('${includeSfp}').checked`), false);
+  await evaluate(`document.querySelector('${includeSfp}').click(); document.querySelector('[data-category=Activity]').click()`);
+  const activityCard = '[data-effect="activity_glow"] .effect-card-open';
+  await until(() => evaluate(`document.querySelector('${activityCard}')?.getClientRects().length`), 'Activity Glow');
+  assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth + 1'));
+  await screenshot('phone-sfp-activity');
+  await send('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 1, mobile: false});
+  const readScene = async () => (await (await fetch(url + 'api/scene')).json()).scene;
+  const original = await readScene();
+  await evaluate(`document.querySelector('${activityCard}').click()`);
+  await until(() => evaluate('!!document.querySelector("[data-param=include_uplinks]")'), 'uplink traffic option');
+  await evaluate('document.querySelector("[data-param=include_uplinks]").click()');
+  assert.deepEqual(await readScene(), original, 'Effect selection and uplink edits stay in preview until Apply');
+  await evaluate('document.querySelector("#apply-draft").click()');
+  const assigned = await until(async () => (await readScene()).zones.find(zone =>
+    zone.effect.id === 'activity_glow' && zone.effect.params.include_uplinks && zone.ports.length === 10), 'mixed activity group');
+  assert.deepEqual(assigned.ports, [1,2,3,4,5,6,7,8,9,10]);
+  await until(() => evaluate('document.querySelector("#draft-actions").hidden && !document.querySelector("#undo-last").disabled'), 'Apply confirmed in workspace');
+  await send('Page.reload', {ignoreCache: true});
+  await until(() => evaluate('document.querySelectorAll(".port-socket-rim").length === 10'), 'reloaded lighting');
+  await evaluate(`document.querySelector('[data-port="9"]').click()`);
+  const restore = `[...document.querySelectorAll('#inspector button')].find(button => button.textContent === 'Return to SFP lighting')`;
+  await until(() => evaluate(`!!(${restore})`), 'restore SFP control');
+  await evaluate(`(${restore}).click(); document.querySelector('#apply-draft').click()`);
+  const restored = await until(async () => {
+    const scene = await readScene();
+    return scene.zones.every(zone => !zone.ports.includes(9)) && scene;
+  }, 'individual SFP removal');
+  assert.deepEqual(restored.zones.find(zone => zone.id === assigned.id).ports,[1,2,3,4,5,6,7,8,10]);
+  assert.deepEqual(restored.sfp, original.sfp);
+  assert.deepEqual(restored.sfp_sync, original.sfp_sync);
+  report.sfp_activity = {included: assigned.ports, restored: 9};
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

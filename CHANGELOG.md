@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Regular effects can run on selected SFP lights, on their own or alongside Ethernet ports. Return to SFP lighting restores the saved indicator settings.
+- Activity Glow, Traffic Trails, and Live Traffic can include measured uplink traffic.
+
 ## 0.4.19
 
 - Switch health displays the three temperature channels reported by the Pro XG 8 PoE.

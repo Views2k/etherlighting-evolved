@@ -7,7 +7,7 @@ import { makeRule,matchingRule,renderLook,fieldByKey,ruleRate } from './rules.mj
 import { Backend,LatestQueue,EffectTransaction,SessionRestore,friendlyError,applyZoneEffect } from './api.mjs';
 import { esc,button,loginView,shellView,studioView,effectsView,rulesView,scenesView,activityView,settingsView,aboutContent,sourceForPort,outputSummary,paramText,presentParam,sfpLightingView,sfpPreview,sfpActiveRule,SFP_SPEED } from './views.mjs';
 import { ruleEditor,readRuleForm,initialCondition } from './rule-editor.mjs';
-import { assignGroup,removeGroup } from './groups.mjs';
+import { assignGroup,removeGroup,replaceGroups } from './groups.mjs';
 import { groupsView,groupEditor } from './group-views.mjs';
 import { initWindowChrome } from './window-chrome.mjs';
 
@@ -73,7 +73,7 @@ function setConnectionLost(value) {
 }
 function applyRemote(remote,ports) {
   if (backend.effects) setEffectCatalog(backend.effects);
-  if (remote.zones?.length) {state.zones = structuredClone(remote.zones);if (!state.zones.some(z => z.id === state.activeZone)) state.activeZone = state.zones[0].id;state.config = structuredClone(state.zones.find(z => z.id === state.activeZone).effect);}
+  if (Array.isArray(remote.zones)) replaceGroups(state,remote.zones);
   else if (remote.effect) state.config = {id:remote.effect.id,params:remote.effect.params};
   state.brightness = remote.brightness;state.rules = remote.rules || [];
   state.switch = {native_breathing:remote.switch?.native_breathing === true};
@@ -298,7 +298,7 @@ function setColor(value,{keepHue = false} = {}) {
   send('/ports','PUT',{ports});syncColorControls();updatePortCounts();paintFrame();
 }
 function updateParam(key,value) {
-  if (effectTransaction.pending || recovery.pending) return;
+  if (effectTransaction.pending || recovery.pending || !state.activeZone) return;
   state.config.params = paramsAfterChange(state.config,key,value,state.zones);
   const zoneId = state.activeZone || 'all';
   const zone = state.zones.find(z => z.id === zoneId);if (zone) zone.effect = structuredClone(state.config);
@@ -329,9 +329,8 @@ async function commitGroups(zones) {
     await queue.idle();
     try {applyRemote(await backend.request('/zones','PUT',{zones}));}
     catch (error) {toast(friendlyError(error));return false;}
-  } else state.zones = zones;
-  if (!state.zones.some(z => z.id === state.activeZone)) state.activeZone = state.zones[0].id;
-  state.config = structuredClone(state.zones.find(z => z.id === state.activeZone).effect);persist();return true;
+  } else replaceGroups(state,zones);
+  persist();return true;
 }
 function openNameDialog({title,value = '',action,id = ''}) {
   openDialog(`<div class="dialog-head"><h2>${title}</h2><button class="icon-button" data-action="close-dialog" aria-label="Close">${icon('close')}</button></div><p>Name this set of colors, effects, groups, and rules.</p><form id="scene-form" data-kind="${action}" data-id="${esc(id)}"><label class="field"><span>Scene name</span><input name="sceneName" type="text" value="${esc(value)}" placeholder="Evening lighting" maxlength="40" required autofocus></label><div id="scene-error" role="alert" hidden></div><div class="dialog-actions"><button class="button ghost" type="button" data-action="close-dialog">Cancel</button><button class="button primary" type="submit">Save scene ${icon('check')}</button></div></form>`);
@@ -406,7 +405,7 @@ document.addEventListener('submit',async event => {
     const data = new FormData(form),existing = state.zones.find(z => z.id === form.dataset.id);
     const group = {id:existing?.id || crypto.randomUUID().replaceAll('-','').slice(0,24),name:data.get('groupName').trim(),ports:data.getAll('ports').map(Number),effect:existing?.effect.id === data.get('effect') ? existing.effect : defaultConfig(data.get('effect'))};
     if (!group.name || !group.ports.length) {const error = form.querySelector('#group-error');error.textContent = 'Give your group a name and at least one port.';error.className = 'form-error';error.hidden = false;return;}
-    if (await commitGroups(assignGroup(state.zones,group,state.ports.map(p => p.id)))) {closeDialog();render();log('Port group saved',group.name,'server');toast('Group saved.');}
+    if (await commitGroups(assignGroup(state.zones,group,state.ports.map(p => p.id),state.sfp.map(light => light.port)))) {closeDialog();render();log('Port group saved',group.name,'server');toast('Group saved.');}
   }
   if (form.id === 'port-demo-form') {
     const data = new FormData(form),port = state.ports.find(p => p.id === Number(form.dataset.id));
@@ -458,6 +457,7 @@ document.addEventListener('click',async event => {
     }
     case 'effect': {
       const config = effectConfigForSelection(id,state),zone = state.zones.find(z => z.id === state.activeZone) || state.zones[0];
+      if (!zone) {toast('Create a port group to apply an effect.');break;}
       if (state.mode === 'live') {
         try {await effectTransaction.run(async () => {
           await queue.idle();

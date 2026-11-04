@@ -9,7 +9,8 @@ EE is an unofficial community project, not affiliated with, endorsed by, or spon
 - Set colors and brightness for individual ports or groups.
 - Preview animated effects using the selected colors and settings.
 - Color ports by link status, traffic, PoE usage, anomalies, or a schedule.
-- Configure optical indicators individually, together, or to follow Ethernet lighting on qualified hardware.
+- Select SFP lights for regular effects, including Activity Glow, Live Traffic, and Traffic Trails. In Effects, select **Include SFP lights** to add them to your Ethernet selection.
+- Configure SFP indicator lighting individually, together, or to follow an Ethernet port.
 - Save lighting profiles and apply them when needed.
 - View uplink upload and download rates, updated every five seconds.
 - Use Settings to connect UniFi Network, configure private access through Tailscale, or hand lighting control back to UniFi.
