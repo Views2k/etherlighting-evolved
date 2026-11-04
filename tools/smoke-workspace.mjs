@@ -161,7 +161,7 @@ try {
     const {formatBandwidth}=await import('/preview/uplink-bandwidth.mjs');
     const sample=(await (await fetch('/api/state')).json()).uplink_bandwidth;
     return [...document.querySelectorAll('.bandwidth-reading')].map((node,index)=>{
-      const rate=formatBandwidth(index?sample.download_bps:sample.upload_bps);
+      const rate=formatBandwidth(index?sample.upload_bps:sample.download_bps);
       return {display:node.querySelector('dd').textContent, expected:rate.value+rate.unit};
     });
     })()`);
@@ -176,7 +176,7 @@ try {
     const sample={status:'ready',ports:[5],upload_bps:1000000,download_bps:1000000,sample_period_ms:5000,sample_age_ms:0,sequence:1};
     panel.update({connected:true,uplink_bandwidth:sample});
     panel.update({connected:true,uplink_bandwidth:{...sample,upload_bps:100000000,sequence:2}});
-    await new Promise(resolve=>{const start=performance.now();function step(time){samples.push(host.querySelector('.bandwidth-value').textContent);if(time-start<750)requestAnimationFrame(step);else resolve();}requestAnimationFrame(step);});
+    await new Promise(resolve=>{const start=performance.now();function step(time){samples.push(host.querySelector('.upload .bandwidth-value').textContent);if(time-start<750)requestAnimationFrame(step);else resolve();}requestAnimationFrame(step);});
     panel.dispose();host.remove();
     return {unique:new Set(samples).size,last:samples.at(-1),reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};
   })()`);
@@ -200,6 +200,18 @@ try {
     if (width >= 1100 || width >= 1024 && height <= 500) layout.faceplate = await checkFaceplate(width, height);
     report.sizes.push(layout);
     if (width >= 1100 || width >= 900 && height <= 500) {
+      const initial = await bounds('.canvas-area');
+      const draftOpen=await evaluate('!document.querySelector("#draft-actions").hidden');
+      await evaluate('document.querySelector("#collapse-inspector").click()');
+      await frame();
+      const expanded=await bounds('.canvas-area');
+      assert.equal((await bounds('#inspector')).width,0);
+      assert.ok(expanded.width >= initial.width + 200 && expanded.width >= width-2,'Canvas uses the released inspector column');
+      assert.equal(await evaluate('document.activeElement.id'),'expand-inspector');
+      assert.equal(await evaluate('!document.querySelector("#draft-actions").hidden'),draftOpen);
+      await evaluate('document.querySelector("#expand-inspector").click()');
+      await frame();
+      assert.equal((await bounds('.canvas-area')).width,initial.width);
       const scrollLayout = await evaluate(`(() => {
         const outer=document.querySelector('.studio-content'), inspector=document.querySelector('#inspector');
         return {outerHeight:outer.clientHeight,outerScroll:outer.scrollHeight,inspectorHeight:inspector.clientHeight,
@@ -235,6 +247,24 @@ try {
     assert.ok(await evaluate('document.querySelector(".map-key").open && document.querySelector(".map-key").textContent.includes("25 GbE")'));
     await tap('.map-key .dialog-header button');
     assert.equal(await evaluate('document.activeElement.id'), 'open-map-key');
+    if(width===1280){
+      const swatch=await evaluate('document.querySelector("[data-color]")?.dataset.color');
+      assert.ok(swatch && swatch!=='manual','Test an effect parameter before testing fixed color');
+      const selector='[data-color="'+swatch+'"]';
+      await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`);
+      await tap(selector);
+      await until(()=>evaluate('!!document.querySelector("dialog.color-popover:modal")'),'touch color editor');
+      const outsideX=40,outsideY=100;
+      await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:outsideX,y:outsideY,id:1}]});
+      await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      await frame();
+      assert.ok(await evaluate('!!document.querySelector("dialog.color-popover:modal")'),'A missed touch leaves the editor open');
+      const original=await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`);
+      await tap('.color-sv');
+      await tap('.color-popup-footer button');
+      assert.notEqual(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value.toUpperCase()`),original.toUpperCase());
+      await evaluate('document.querySelector("#inspector").scrollTop=0');
+    }
     const before = await evaluate(`({canvas:document.querySelector('.canvas-area').scrollTop,inspector:document.querySelector('#inspector').scrollTop,port:document.querySelector('[data-port="1"]').getBoundingClientRect().top})`);
     const scrollX = inspector.x + inspector.width - 24, scrollY = inspector.y + inspector.height * .8;
     await send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{x:scrollX,y:scrollY,id:1}]});

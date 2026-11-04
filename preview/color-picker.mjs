@@ -2,15 +2,24 @@ import {hexToHsv,hsvToHex,hexToRgb,rgbToHex,normalizeHex} from '../src/color.mjs
 import {mountColorLibrary} from './color-library.mjs';
 import {bindPopoverDismissal} from './popover-interaction.mjs';
 
-export function openColorPicker(anchor, {color = anchor.value, onChange, onClose, onError = () => {}, onRangeChange = () => {}} = {}) {
+export function openColorPicker(anchor, {color = anchor.value, onChange, onClose, pointerType, onError = () => {}, onRangeChange = () => {}} = {}) {
   let [h,s,v]=hexToHsv(color),dismissal;
-  const popup=document.createElement('div'); popup.className='color-popover popover'; popup.setAttribute('role','dialog');popup.setAttribute('aria-label','Choose color');
+  const modal=pointerType==='touch'||pointerType==='pen'||window.matchMedia?.('(pointer: coarse), (min-width: 900px) and (max-height: 500px)')?.matches;
+  const popup=document.createElement(modal?'dialog':'div'); popup.className='color-popover popover'; popup.setAttribute('role','dialog');popup.setAttribute('aria-label','Choose color');
   popup.innerHTML=`<div class="color-sv" tabindex="0" role="slider" aria-label="Saturation and value. Arrow keys adjust color." aria-valuemin="0" aria-valuemax="100"><span class="color-sv-cursor"></span></div><label class="sr-only" for="popup-hue">Hue</label><input class="color-hue" id="popup-hue" type="range" min="0" max="359" step="1"><div class="color-rgb">${['R','G','B'].map((key,index)=>`<label>${key}<input type="number" min="0" max="255" step="1" data-rgb="${index}" aria-label="${['Red','Green','Blue'][index]}"></label>`).join('')}</div><div class="color-popup-footer"><label class="sr-only" for="popup-hex">Hex color</label><input id="popup-hex" class="hex-input" maxlength="7" spellcheck="false" aria-label="Hex color"><button class="button quiet" type="button">Done</button></div>`;
   document.body.append(popup);
   const library=document.createElement('div');library.className='color-library';popup.append(library);
+  if(modal){
+    const footer=popup.querySelector('.color-popup-footer');
+    const controls=document.createElement('div');controls.className='picker-scroll';
+    controls.append(...[...popup.children].filter(child=>child!==footer));
+    popup.prepend(controls);
+    popup.showModal();
+  }
   const colorLibrary=mountColorLibrary(library,{getColor:()=>hsvToHex(h,s,v),onChoose:color=>{[h,s,v]=hexToHsv(color);update();},onError});
   const sv=popup.querySelector('.color-sv'),cursor=popup.querySelector('.color-sv-cursor'),hue=popup.querySelector('.color-hue'),field=popup.querySelector('#popup-hex');
   const position=()=>{
+    if(modal)return;
     const rect=anchor.getBoundingClientRect(),size=popup.getBoundingClientRect();
     popup.style.position='fixed';popup.style.zIndex='1000';
     popup.style.left=Math.max(12,Math.min(rect.left,innerWidth-size.width-12))+'px';
@@ -27,7 +36,8 @@ export function openColorPicker(anchor, {color = anchor.value, onChange, onClose
     onRangeChange();colorLibrary?.update?.();
   };
   const close=(restore=false)=>{
-    dismissal?.();window.removeEventListener('resize',position);window.removeEventListener('scroll',reposition,true);resizeObserver.disconnect();colorLibrary?.();popup.remove();onClose?.();if(restore&&anchor.isConnected)anchor.focus();
+    if(!popup.isConnected)return;
+    dismissal?.();window.removeEventListener('resize',position);window.removeEventListener('scroll',reposition,true);resizeObserver.disconnect();colorLibrary?.();if(modal)popup.close();popup.remove();onClose?.();if(restore&&anchor.isConnected)anchor.focus();
   };
   const point=event=>{const rect=sv.getBoundingClientRect();s=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));v=1-Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height));update();};
   let activePointer=null;
@@ -48,7 +58,8 @@ export function openColorPicker(anchor, {color = anchor.value, onChange, onClose
   popup.querySelectorAll('[data-rgb]').forEach(input=>input.addEventListener('change',()=>{if(!input.checkValidity()){input.reportValidity();return;}const values=[...popup.querySelectorAll('[data-rgb]')].map(field=>Number(field.value));[h,s,v]=hexToHsv(rgbToHex(values));update();}));
   field.addEventListener('change',()=>{const color=normalizeHex(field.value);if(!color){field.setCustomValidity('Enter a hex color.');field.reportValidity();return;}field.setCustomValidity('');[h,s,v]=hexToHsv(color);update();field.value=color;});
   popup.querySelector('.color-popup-footer button').addEventListener('click',()=>{if(!field.checkValidity()){field.reportValidity();return;}close(true);});
-  dismissal=bindPopoverDismissal(popup,anchor,close);
+  if(modal)popup.addEventListener('cancel',event=>{event.preventDefault();close(true);});
+  else dismissal=bindPopoverDismissal(popup,anchor,close);
   window.addEventListener('resize',position);window.addEventListener('scroll',reposition,true);
   update(false);position();sv.focus();return close;
 }

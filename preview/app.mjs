@@ -14,6 +14,7 @@ import { renderEffectGallery, sfpPreviewColor } from './effect-gallery.mjs';
 import { sfpSync, effectiveSfpLight, editableSfpLight, normalizeSfpBrightness, sfpEditTargets, sfpDurationRange, sfpEffectChange, sfpCandidateSettings, sfpNativeAvailable, sfpDraftPorts } from './sfp-sync.mjs';
 import { createPortAnimator, portInk } from './port-animation.mjs';
 import {createPortGlow, enterInspector, confirmPorts} from './motion.mjs';
+import {getInspectorCollapsed,setInspectorCollapsed} from './preferences.mjs';
 import {mountUplinkBandwidth} from './uplink-bandwidth.mjs';
 import { portDisplayRgb, manualDisplayRgb, masterDisplayRgb } from './port-display.mjs';
 import { LINK_SPEEDS, GROUP_NAME_LIMIT, groupNameError, portLabel, portPower, isUplink, linkStatus, portScopeOptions, selectPort, selectionHint, switchTitle } from './port-map.mjs';
@@ -47,6 +48,7 @@ const galleryState = {};
 let appliedCount = 0, copiedAppearance = null, navigationVersion = 0;
 const previewClocks=new Map();
 let portGlow, uplinkBandwidth;
+let inspectorCollapsed=getInspectorCollapsed();
 const portAnimator=createPortAnimator(port=>document.querySelector(`[data-port="${port}"]`),globalThis,{onPaint:colors=>portGlow?.paint(colors)});
 const rememberedEffects=new Map(), previewStates=new Map();
 const telemetryNodes=new WeakMap(), rangeProgress=new WeakMap();
@@ -260,9 +262,17 @@ async function chooseEffect(config) {
   selected=new Set(ports);
   stageEffect({...clone(config),ports,clearOverrides:true});editor='effect';inspectorSignature='';
   await navigate('Lighting',{keepDraft:true});
-  focusEditor();
+  focusEditor(true);
 }
-function focusEditor(){const heading=document.querySelector('#inspector h2');if(heading){heading.tabIndex=-1;heading.focus();}}
+function focusEditor(reveal=false){
+  if(reveal){
+    const opener=['#expand-inspector','#open-port-controls'].map(id=>document.querySelector(id)).find(node=>node?.getClientRects().length);
+    opener?.click();
+  }
+  const heading=document.querySelector('#inspector h2');
+  if(heading?.getClientRects().length){heading.tabIndex=-1;heading.focus();}
+  else document.querySelector('#expand-inspector')?.focus({preventScroll:true});
+}
 function focusLightingControls(){if(page==='Lighting'&&!document.querySelector('dialog[open]'))focusEditor();}
 function stageEffect(config){
   draft=stageEffectDraft(draft,config,`group-${crypto.randomUUID()}`);
@@ -297,7 +307,7 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
   view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter');
   if (page === 'Lighting') renderStudio();
   else if(page==='Effects'){
-    secondaryCleanup=renderEffectGallery(view,{effects,state,simulated:session.simulated,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft,galleryState,onChoose:chooseEffect,onChooseSfp:async({effect,ports})=>{selected=new Set(ports);if(sfpSync(state,draft).mode==='ethernet')draft.sfp_sync={...sfpSync(state,draft),mode:'together'};draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft))draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(sfpCandidateSettings(state,port,effect,draft)),mode:'color'});queueEdit('sfp');await navigate('Lighting',{keepDraft:true});focusEditor();},onChangeSelection:async()=>{await navigate('Lighting');document.querySelector('#select-all')?.focus();}});
+    secondaryCleanup=renderEffectGallery(view,{effects,state,simulated:session.simulated,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft,galleryState,onChoose:chooseEffect,onChooseSfp:async({effect,ports})=>{selected=new Set(ports);if(sfpSync(state,draft).mode==='ethernet')draft.sfp_sync={...sfpSync(state,draft),mode:'together'};draft.sfp??={};for(const port of sfpEditTargets(state,ports,draft))draft.sfp[port]=normalizeSfpBrightness({...sfpSettings(sfpCandidateSettings(state,port,effect,draft)),mode:'color'});queueEdit('sfp');await navigate('Lighting',{keepDraft:true});focusEditor(true);},onChangeSelection:async()=>{await navigate('Lighting');document.querySelector('#select-all')?.focus();}});
   }else {
     view.innerHTML = '';
     const renderer = {Automation: renderAutomation, Profiles: renderProfiles, Settings: renderSettings,Help:renderHelp}[page];
@@ -308,13 +318,13 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
 }
 
 function renderStudio() {
-  view.innerHTML = `<div class="studio"><section class="workspace">
+  view.innerHTML = `<div class="studio"><section class="workspace" data-inspector-collapsed="${inspectorCollapsed}">
     <div class="workspace-toolbar"><div class="group-control"><label class="sr-only" for="group-select">Port group</label><select id="group-select"></select><button class="button quiet" id="manage-groups">Groups</button></div><span id="quick-profile"></span><button class="button quiet" id="save-scene">Profiles</button><button class="button quiet" id="undo-last" disabled>Undo last apply</button><button class="button quiet" id="toggle-output"></button></div>
     <div class="studio-content"><section class="canvas-area">
       <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint">
         <div class="faceplate-toolbar">
           <div class="canvas-heading"><div><h1><span id="switch-title">${escape(switchTitle(state))}</span> ${session.simulated?'<span class="demo-badge">Demo</span>':''}</h1><p class="muted" id="map-output-status">Select ports to preview and apply lighting.</p></div><div id="uplink-bandwidth"></div></div>
-          <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
+          <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button quiet" id="expand-inspector" aria-controls="inspector" aria-expanded="false">${icon('panel')} Port controls</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
         </div>
         <section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section>
         <div class="rack-meter-slot"></div>
@@ -360,6 +370,7 @@ function renderStudio() {
   document.querySelector('#open-map-key').onclick=()=>document.querySelector('.map-key').showModal();
   document.querySelector('#lighting-help').onclick=()=>{document.querySelector('.map-key').close();run(()=>navigate('Help'));};
   document.querySelector('#port-details').onclick=openPortDetails;
+  document.querySelector('#expand-inspector').onclick=()=>toggleInspector(false);
   document.querySelector('#open-port-controls').onclick=()=>{const studio=document.querySelector('.studio-content');studio.dataset.canvasScroll=String(studio.scrollTop);studio.classList.add('is-editing-ports');studio.scrollTop=0;document.querySelector('#back-to-ports')?.focus({preventScroll:true});};
   document.querySelector('#undo-last').onclick=()=>run(undoLastApply);
   document.querySelector('#toggle-output').onclick=()=>{if(draft.mode!==undefined){delete draft.mode;edits.delete('mode');compareApplied=false;saveUiState();portAnimator.setPreview(edits.size?previewDraft:null);updateDraftBar();updateLive();}else{draft.mode=state.mode==='running'?'released':'running';queueEdit('mode');}};
@@ -621,7 +632,7 @@ function controlSection(title, content, symbol = '', className = '') {
   return `<section class="control-section ${className}">${className.includes('primary-appearance')?'':`<h3 class="control-section-heading">${symbol?icon(symbol):''}<span>${escape(title)}</span></h3>`}<div class="parameter-grid control-section-body">${content}</div></section>`;
 }
 function colorControl(key, caption, value, brightness=100, randomKey, random=false, relative=false) {
-  return `<div class="parameter color-parameter" ${relative?'data-relative-level="true"':''}><label>${escape(caption)}</label><div class="color-control"><input class="color-swatch" type="color" data-color="${escape(key)}" value="${hex(value)}" aria-label="${escape(caption)}"><input class="hex-input" data-hex="${escape(key)}" value="${hex(value).toUpperCase()}" aria-label="${escape(caption)} hex color" maxlength="7" spellcheck="false"></div><div class="parameter-meta"><label for="brightness-${escape(key)}">${relative?'Color level':'Brightness'}</label><output>${number(brightness,100)}%</output></div><input id="brightness-${escape(key)}" data-brightness="${escape(key)}" type="range" min="0" max="100" step="1" value="${number(brightness,100)}" aria-label="${escape(caption)} ${relative?'color level':'brightness'}"><span class="help-text configured-level" ${relative&&number(draft.brightness??state.brightness,100)<100?'':'hidden'}>Configured peak: ${Math.round(number(brightness,100)*number(draft.brightness??state.brightness,100)/100)}%</span>${randomKey?`<label class="check-row"><input type="checkbox" data-random="${escape(randomKey)}" ${random?'checked':''}><span>Randomize</span></label>`:''}</div>`;
+  return `<div class="parameter color-parameter" ${relative?'data-relative-level="true"':''}><label>${escape(caption)}</label><div class="color-control"><button class="swatch-button color-swatch" type="button" data-color="${escape(key)}" value="${hex(value).toLowerCase()}" style="--color:${hex(value)}" aria-label="${escape(caption)}" aria-haspopup="dialog"></button><input class="hex-input" data-hex="${escape(key)}" value="${hex(value).toUpperCase()}" aria-label="${escape(caption)} hex color" maxlength="7" spellcheck="false"></div><div class="parameter-meta"><label for="brightness-${escape(key)}">${relative?'Color level':'Brightness'}</label><output>${number(brightness,100)}%</output></div><input id="brightness-${escape(key)}" data-brightness="${escape(key)}" type="range" min="0" max="100" step="1" value="${number(brightness,100)}" aria-label="${escape(caption)} ${relative?'color level':'brightness'}"><span class="help-text configured-level" ${relative&&number(draft.brightness??state.brightness,100)<100?'':'hidden'}>Configured peak: ${Math.round(number(brightness,100)*number(draft.brightness??state.brightness,100)/100)}%</span>${randomKey?`<label class="check-row"><input type="checkbox" data-random="${escape(randomKey)}" ${random?'checked':''}><span>Randomize</span></label>`:''}</div>`;
 }
 function paramControl(spec, value) {
   const attr=`data-param="${escape(spec.key)}"`;
@@ -681,12 +692,25 @@ function sfpColorFromAppearance(settings){
   return {mode:'color',effect:'steady',color:settings.color,brightness:100,
     color_brightness:settings.brightness==null?100:master===0?0:Math.round(brightness/master*100)};
 }
+function toggleInspector(collapsed){
+  activeColorPopover?.();
+  inspectorCollapsed=collapsed;
+  view.querySelector('.workspace').dataset.inspectorCollapsed=String(collapsed);
+  document.querySelector(collapsed?'#expand-inspector':'#collapse-inspector')?.focus({preventScroll:true});
+  try{setInspectorCollapsed(collapsed);}catch(error){notify(error.message,true);}
+}
 function renderInspector() {
   const host=document.querySelector('#inspector');if(!host)return;
   const scope=[...selected].sort((a,b)=>a-b).join(','),same=host.dataset.scope===scope,scroll=same?host.scrollTop:0,open=same&&host.querySelector('.more-settings')?.open;
   renderInspectorContent();host.dataset.scope=scope;
   const header=host.querySelector('.inspector-header');
-  if(header){const back=document.createElement('button');back.type='button';back.className='button quiet mobile-only';back.id='back-to-ports';back.textContent='Back to ports';back.onclick=()=>{const studio=document.querySelector('.studio-content');studio?.classList.remove('is-editing-ports');if(studio)studio.scrollTop=number(studio.dataset.canvasScroll);document.querySelector('#open-port-controls')?.focus({preventScroll:true});};header.prepend(back);}
+  if(header){const back=document.createElement('button');back.type='button';back.className='button quiet mobile-only';back.id='back-to-ports';back.textContent='Back to ports';back.onclick=()=>{const studio=document.querySelector('.studio-content');studio?.classList.remove('is-editing-ports');if(studio)studio.scrollTop=number(studio.dataset.canvasScroll);document.querySelector('#open-port-controls')?.focus({preventScroll:true});};header.prepend(back);
+    const collapse=document.createElement('button');
+    collapse.id='collapse-inspector';collapse.type='button';collapse.className='button quiet icon-button';
+    collapse.title='Hide port controls';collapse.setAttribute('aria-label',collapse.title);
+    collapse.setAttribute('aria-controls','inspector');collapse.setAttribute('aria-expanded','true');
+    collapse.innerHTML=icon('panel');collapse.onclick=()=>toggleInspector(true);header.append(collapse);
+  }
   const details=host.querySelector('.more-settings');if(details&&open)details.open=true;
   updateControlSource();host.scrollTop=scroll;
   enterInspector(host.querySelector('.inspector-sections')||host.querySelector('.sfp-controls'));
@@ -777,10 +801,11 @@ function bindColors(host,onEdit) {
     const error=document.createElement('p');error.className='inline-error color-error';error.id=`hex-error-${key}`;error.setAttribute('role','alert');field.setAttribute('aria-describedby',error.id);field.closest('.color-control').after(error);
     const apply=changed=>onEdit(key,input.value,Number(brightness.value),changed);
     const validate=valid=>{const message=valid?'':'Enter a six-digit hex color.';field.setCustomValidity(message);field.setAttribute('aria-invalid',String(!valid));error.textContent=message;};
-    input.addEventListener('input',()=>{setMixedColor(input,false);field.value=input.value.toUpperCase();validate(true);apply('color');});
+    input.addEventListener('click',event=>openColorPopover(input,event.pointerType));
+    input.addEventListener('input',()=>{input.style.setProperty('--color',input.value);setMixedColor(input,false);field.value=input.value.toUpperCase();validate(true);apply('color');});
     const emptyAllowed=()=>field.dataset.allowEmpty==='true'&&!field.value.trim();
     field.addEventListener('input',()=>{validate(emptyAllowed()||Boolean(normalizeHex(field.value)));updateDraftBar();});
-    field.addEventListener('change',()=>{const normalized=normalizeHex(field.value);validate(emptyAllowed()||Boolean(normalized));if(emptyAllowed()){setMixedColor(input,true);apply('resetColor');return;}if(!normalized)return;setMixedColor(input,false);input.value=normalized;field.value=normalized.toUpperCase();apply('color');});
+    field.addEventListener('change',()=>{const normalized=normalizeHex(field.value);validate(emptyAllowed()||Boolean(normalized));if(emptyAllowed()){setMixedColor(input,true);apply('resetColor');return;}if(!normalized)return;setMixedColor(input,false);input.value=normalized;input.style.setProperty('--color',normalized);field.value=normalized.toUpperCase();apply('color');});
     brightness.addEventListener('input',()=>{const parameter=brightness.closest('.parameter');parameter.querySelector('output').textContent=brightness.value+'%';const configured=parameter.querySelector('.configured-level');if(configured)configured.textContent=`Configured peak: ${Math.round(Number(brightness.value)*number(draft.brightness??state.brightness,100)/100)}%`;apply('brightness');});
   });updateRangeProgress();
 }
@@ -864,9 +889,9 @@ function updateRangeProgress() {
     input.style.setProperty('--range-progress',progress);rangeProgress.set(input,progress);
   });
 }
-function openColorPopover(anchor) {
+function openColorPopover(anchor,pointerType) {
   activeColorPopover?.();
-  activeColorPopover=openColorPicker(anchor,{onClose:()=>{activeColorPopover=undefined;},onError:message=>notify(message,true),onRangeChange:updateRangeProgress});
+  activeColorPopover=openColorPicker(anchor,{pointerType,onClose:()=>{activeColorPopover=undefined;},onError:message=>notify(message,true),onRangeChange:updateRangeProgress});
 }
 
 async function openGroups() {
@@ -926,8 +951,6 @@ function connectFrames() {
 }
 document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>run(()=>navigate(button.dataset.page))));
 document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))updateRangeProgress();});
-document.addEventListener('click',event=>{if(event.target.matches('input[type="color"][data-color]')&&!event.target.disabled){event.preventDefault();openColorPopover(event.target);}},true);
-document.addEventListener('keydown',event=>{if(event.target.matches('input[type="color"][data-color]')&&!event.target.disabled&&(event.key==='Enter'||event.key===' ')){event.preventDefault();openColorPopover(event.target);}},true);
 document.addEventListener('focusout',()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>reconcileEditor(),150);});
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){saveUiState();portAnimator.stop();return;}

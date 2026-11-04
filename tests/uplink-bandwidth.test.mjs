@@ -46,12 +46,12 @@ test('a speed test remains visible after the live sample returns to idle',()=>{
   const ui=fixture();
   ui.update(sample({upload_bps:500_000,download_bps:750_000,history:[
     [-10_000,1_000_000,1_500_000_000],[-5000,200_000_000,750_000],[0,500_000,750_000]]}));
-  assert.equal(ui.text(1),'0.75 Mbps');
-  assert.equal(ui.readings[1].children[2].textContent,'Peak 1500 Mbps');
-  assert.equal(ui.readings[0].children[2].textContent,'Peak 200.00 Mbps');
+  assert.equal(ui.text(0),'0.75 Mbps');
+  assert.equal(ui.readings[0].children[2].textContent,'Peak 1500 Mbps');
+  assert.equal(ui.readings[1].children[2].textContent,'Peak 200.00 Mbps');
   assert.equal(ui.section.children[2].hidden,false);
   ui.update(sample({status:'stale'}));
-  assert.equal(ui.readings[1].children[2].textContent,'');
+  assert.equal(ui.readings[0].children[2].textContent,'');
   assert.equal(ui.section.children[2].hidden,true);
   ui.panel.dispose();
 });
@@ -70,12 +70,13 @@ test('uplink data requires complete measured rates and fresh sample timing',()=>
 
 test('a first confirmed sample displays directly and keeps focus and DOM nodes intact',()=>{
   const ui=fixture(), focus=ui.doc.activeElement, original=[...ui.readings];
-  ui.update();assert.equal(ui.text(0),'25.00 Mbps');assert.equal(ui.text(1),'400.00 Mbps');
+  ui.update();assert.equal(ui.text(1),'25.00 Mbps');assert.equal(ui.text(0),'400.00 Mbps');
+  assert.deepEqual(ui.readings.map(item=>item.children[0].children[1].textContent),['Download','Upload']);
   assert.equal(ui.frames.size,0);assert.equal(ui.doc.activeElement,focus);
   assert.deepEqual(ui.section.children[1].children,original);
   assert.match(ui.section.title,/Port 5.*Upload leaves.*download enters/);
   assert.match(ui.section.children[0].children[1].textContent,/5 s average.*5 s/);
-  assert.equal(ui.readings[0].children[1].getAttribute('aria-label'),'Upload: 25.00 Mbps');
+  assert.equal(ui.readings[1].children[1].getAttribute('aria-label'),'Upload: 25.00 Mbps');
   ui.panel.dispose();
 });
 
@@ -83,11 +84,11 @@ test('new measurements ease monotonically to the confirmed target and then stop 
   const ui=fixture();ui.update(sample({upload_bps:10_000_000}));
   ui.update(sample({sequence:2,upload_bps:110_000_000,download_bps:100_000_000}));
   const observed=[];
-  for(let i=0;i<6;i++){ui.tick(100);observed.push(Number.parseFloat(ui.text(0)));}
+  for(let i=0;i<6;i++){ui.tick(100);observed.push(Number.parseFloat(ui.text(1)));}
   assert.ok(observed[0]>10&&observed[0]<110);
   assert.ok(observed.every((value,index)=>index===0||value>=observed[index-1]));
-  assert.equal(observed.at(-1),110);assert.equal(ui.text(1),'100.00 Mbps');assert.equal(ui.frames.size,0);
-  assert.equal(ui.readings[0].children[1].getAttribute('aria-label'),'Upload: 110.00 Mbps');
+  assert.equal(observed.at(-1),110);assert.equal(ui.text(0),'100.00 Mbps');assert.equal(ui.frames.size,0);
+  assert.equal(ui.readings[1].children[1].getAttribute('aria-label'),'Upload: 110.00 Mbps');
   ui.panel.dispose();
 });
 
@@ -95,27 +96,27 @@ test('repeated frame messages for one measurement do not restart its transition'
   const ui=fixture();ui.update(sample({upload_bps:10_000_000}));
   ui.update(sample({sequence:2,upload_bps:110_000_000}));
   for(let age=100;age<=600;age+=100){ui.tick(100);ui.update(sample({sequence:2,upload_bps:110_000_000,sample_age_ms:age}));}
-  assert.equal(ui.text(0),'110.00 Mbps');assert.equal(ui.frames.size,0);ui.panel.dispose();
+  assert.equal(ui.text(1),'110.00 Mbps');assert.equal(ui.frames.size,0);ui.panel.dispose();
 });
 
 test('waiting, missing, stale, and absent uplinks show a status instead of invented zeros',()=>{
   const ui=fixture();
   for(const [status,label] of [['waiting','Waiting for samples'],['unavailable','Unavailable'],['stale','Readings delayed'],['no_uplink','No uplink detected']]){
-    ui.update(sample({status}));assert.equal(ui.text(0),'—');assert.equal(ui.text(1),'—');
+    ui.update(sample({status}));assert.equal(ui.text(1),'—');assert.equal(ui.text(0),'—');
     assert.equal(ui.section.children[0].children[1].textContent,label);assert.equal(ui.frames.size,0);
   }
-  ui.update(sample({upload_bps:0,download_bps:0}));assert.equal(ui.text(0),'0.00 Mbps');ui.panel.dispose();
+  ui.update(sample({upload_bps:0,download_bps:0}));assert.equal(ui.text(1),'0.00 Mbps');ui.panel.dispose();
 });
 
 test('local freshness expires without another backend event and repeated local renders cannot renew it',()=>{
   const ui=fixture(), record=sample();ui.update(record);ui.tick(5000);ui.update(record);
   assert.equal(ui.section.dataset.status,'ready');ui.tick(5000);
-  assert.equal(ui.section.dataset.status,'stale');assert.equal(ui.text(0),'—');assert.equal(ui.timers.size,0);ui.panel.dispose();
+  assert.equal(ui.section.dataset.status,'stale');assert.equal(ui.text(1),'—');assert.equal(ui.timers.size,0);ui.panel.dispose();
 });
 
 test('websocket loss immediately clears retained rates even when the engine state said connected',()=>{
   const ui=fixture(), state={connected:true,uplink_bandwidth:sample()};ui.panel.update(state);
-  ui.panel.update(state,true);assert.equal(ui.section.dataset.status,'unavailable');assert.equal(ui.text(0),'—');
+  ui.panel.update(state,true);assert.equal(ui.section.dataset.status,'unavailable');assert.equal(ui.text(1),'—');
   assert.equal(ui.frames.size,0);assert.equal(ui.timers.size,0);ui.panel.dispose();
 });
 
@@ -123,14 +124,14 @@ test('hidden pages stop animation and settle to fresh confirmed data on return',
   const ui=fixture();ui.update();ui.update(sample({sequence:2,upload_bps:80_000_000}));ui.tick(100);
   ui.hide(true);assert.equal(ui.frames.size,0);assert.equal(ui.timers.size,0);
   ui.tick(400);ui.update(sample({sequence:2,upload_bps:80_000_000,sample_age_ms:500}));assert.equal(ui.frames.size,0);
-  ui.hide(false);assert.equal(ui.text(0),'80.00 Mbps');assert.equal(ui.frames.size,0);
-  ui.hide(true);ui.tick(10_000);ui.hide(false);assert.equal(ui.section.dataset.status,'stale');assert.equal(ui.text(0),'—');ui.panel.dispose();
+  ui.hide(false);assert.equal(ui.text(1),'80.00 Mbps');assert.equal(ui.frames.size,0);
+  ui.hide(true);ui.tick(10_000);ui.hide(false);assert.equal(ui.section.dataset.status,'stale');assert.equal(ui.text(1),'—');ui.panel.dispose();
 });
 
 test('reduced motion uses confirmed targets immediately and cancels an in-progress transition',()=>{
   const ui=fixture();ui.update();ui.update(sample({sequence:2,upload_bps:80_000_000}));ui.tick(100);
-  ui.reduced(true);assert.equal(ui.text(0),'80.00 Mbps');assert.equal(ui.frames.size,0);
-  ui.update(sample({sequence:3,upload_bps:90_000_000}));assert.equal(ui.text(0),'90.00 Mbps');assert.equal(ui.frames.size,0);ui.panel.dispose();
+  ui.reduced(true);assert.equal(ui.text(1),'80.00 Mbps');assert.equal(ui.frames.size,0);
+  ui.update(sample({sequence:3,upload_bps:90_000_000}));assert.equal(ui.text(1),'90.00 Mbps');assert.equal(ui.frames.size,0);ui.panel.dispose();
 });
 
 test('disposing a panel removes its timers, observers, and elements',()=>{

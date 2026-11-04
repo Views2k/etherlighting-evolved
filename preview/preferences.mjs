@@ -7,6 +7,7 @@ function normalize(value = {}) {
   if (!value || typeof value !== 'object') value = {};
   return {
     version: 1,
+    inspectorCollapsed: value.inspectorCollapsed === true,
     favoriteEffects: unique(value.favoriteEffects, effectId, 64),
     recentEffects: unique(value.recentEffects, effectId, 12),
     favoriteColors: unique((Array.isArray(value.favoriteColors) ? value.favoriteColors : []).map(color), Boolean, 24),
@@ -36,6 +37,8 @@ export function createPreferenceStore(storage) {
     })[key];
   };
   return {
+    getInspectorCollapsed: () => read().inspectorCollapsed,
+    setInspectorCollapsed: collapsed => write(current => ({...current, inspectorCollapsed: collapsed})),
     getFavoriteEffects: () => read().favoriteEffects,
     toggleFavoriteEffect: id => toggle('favoriteEffects', id, effectId),
     getRecentEffects: () => read().recentEffects,
@@ -67,6 +70,7 @@ const browserStorage = {
   },
 };
 export const {
+  getInspectorCollapsed, setInspectorCollapsed,
   getFavoriteEffects, toggleFavoriteEffect, getRecentEffects, recordRecentEffect,
   getFavoriteColors, toggleFavoriteColor, getPalettes, savePalette, deletePalette,
 } = createPreferenceStore(browserStorage);

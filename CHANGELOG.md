@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.18
+
+- Hide Port controls to expand the map. Reopen the panel to continue editing the same selection.
+- The touchscreen color editor keeps the color and hue controls open until Done. Apply changes sends the preview to the switch.
+- Uplink bandwidth shows Download first, followed by Upload.
+
 ## 0.4.17
 
 - The rack port inspector uses the full workspace height. The map key and brightness control share a row with the link legend.

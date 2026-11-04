@@ -4,7 +4,7 @@ Update this record when a tracked issue is fixed, disproved, or deferred. Record
 
 ## Current delivery
 
-Version 0.4.17 includes the rack traffic display and full-height port inspector described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
+Version 0.4.18 includes the touch color editor, collapsible port inspector, and download-first traffic display described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
 
 ## Remaining work
 
