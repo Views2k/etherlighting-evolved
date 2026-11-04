@@ -27,6 +27,7 @@ Each physical uplink is counted once, including optical uplinks. Virtual aggrega
 | `status` | `waiting`, `ready`, `stale`, `no_uplink`, or `unavailable` |
 | `ports` | Physical uplink port IDs included in the sample |
 | `upload_bps`, `download_bps` | Directional bits per second, or `null` when a reading is unavailable |
+| `history` | Measured intervals from the last minute as `[offset_ms, upload_bps, download_bps]`, relative to the newest sample. Clears when counters or uplink membership reset. |
 | `sample_period_ms`, `sample_age_ms` | Measurement duration and age in milliseconds |
 | `sequence` | Increases for each completed measurement |
 | `refresh_interval_ms` | Publication interval, currently `5000` |

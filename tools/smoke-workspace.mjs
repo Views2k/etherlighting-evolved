@@ -96,12 +96,16 @@ async function checkFaceplate(width, height) {
     if (index) assert.ok(port.left >= ports[index - 1].right - 1, 'Ports must share one row in physical order');
     assert.ok(Math.abs(sockets[index].top - sockets[0].top) <= 4, 'Socket rows must align');
   }
-  assert.ok(bandwidth.width > 0 && bandwidth.top >= canvas.top && bandwidth.bottom <= ports[0].top);
+  assert.ok(bandwidth.width > 0 && bandwidth.top >= canvas.top && bandwidth.bottom <= canvas.bottom + 1);
+  if (rack && height > 360) {
+    assert.ok(bandwidth.top >= Math.max(...ports.map(port=>port.bottom))-1, 'Rack traffic history sits below the ports');
+    assert.ok(bandwidth.bottom <= brightness.top + 1, 'Traffic and brightness stay visible together');
+  } else assert.ok(bandwidth.bottom <= ports[0].top);
   assert.ok(brightness.width >= 70 && brightness.bottom <= height && brightness.top >= header.bottom);
   assert.ok(apply.width > 0 && apply.bottom <= height && apply.left >= brightness.right, 'Draft and brightness stay accessible together');
   if (rack) {
     assert.ok(brightness.height >= 44 && apply.height >= 44);
-    assert.ok(bandwidth.right <= geometry.controls.left + 1 || bandwidth.bottom <= geometry.controls.top + 1,
+    assert.ok(bandwidth.right <= geometry.controls.left + 1 || bandwidth.bottom <= geometry.controls.top + 1 || bandwidth.top >= geometry.controls.bottom - 1,
       'Uplink readings must clear selection controls');
     assert.ok(geometry.namesScroll <= geometry.namesHeight + 1, 'Both client names must fit');
   }
@@ -188,7 +192,7 @@ try {
   await evaluate('document.querySelector("[data-effect=traffic] .effect-card-open").click()');
   await until(() => evaluate('!!document.querySelector("#inspector")'), 'long port controls');
   report.inspector_scroll = [];
-  for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 700], [1099, 700], [1024, 600], [390, 844], [1280, 400], [1024, 320], [1024, 400]]) {
+  for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 700], [1099, 700], [1024, 600], [390, 844], [1280, 400], [1272, 394], [1024, 320], [1024, 400]]) {
     await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
     await frame();
     const layout = await evaluate(`({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth})`);

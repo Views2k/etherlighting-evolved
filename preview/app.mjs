@@ -317,6 +317,7 @@ function renderStudio() {
           <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
         </div>
         <section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section>
+        <div class="rack-meter-slot"></div>
         <div class="canvas-footer"><div class="link-legend"><span class="current-speed-legend"></span><span class="uplink-label">${uplinkIcon()} Uplink</span><span>${poeIcon()} PoE</span></div><span id="selected-label" class="selection-count"></span></div>
       </div>
     </section><section class="inspector" id="inspector" aria-label="Port controls"></section></div>
@@ -331,7 +332,18 @@ function renderStudio() {
       <div class="brightness-controls"><div class="output-control"><label for="master">Default brightness</label><input id="master" aria-describedby="brightness-description" type="range" min="0" max="100" step="1" value="${number(draft.brightness??state.brightness,100)}"><output id="master-value">${number(draft.brightness??state.brightness,100)}%</output></div><button class="button quiet" id="open-map-key" aria-haspopup="dialog">Map key</button><span class="help-text ownership-preview" id="ownership-preview" hidden></span></div>
       <div class="draft-actions" id="draft-actions" hidden><span data-draft-label>Unsaved preview</span><button class="button quiet" id="compare-draft">Show applied</button><button class="button quiet" id="cancel-draft">Discard</button><button class="button primary" id="apply-draft">Apply changes</button></div>
     </div></section></div>`;
-  uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(document.querySelector('#uplink-bandwidth'));
+  const meterHost=view.querySelector('#uplink-bandwidth'), meterHome=meterHost.parentNode;
+  const legend=view.querySelector('.canvas-footer .link-legend'), legendHome=legend.parentNode;
+  const dock=view.querySelector('.output-dock'), meterSlot=view.querySelector('.rack-meter-slot');
+  const rack=matchMedia('(min-width: 900px) and (min-height: 361px) and (max-height: 500px)');
+  function placeInRack() {
+    (rack.matches?meterSlot:meterHome).append(meterHost);
+    if(rack.matches)dock.append(legend);else legendHome.prepend(legend);
+  }
+  placeInRack();
+  rack.addEventListener('change',placeInRack);
+  secondaryCleanup=()=>rack.removeEventListener('change',placeInRack);
+  uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(meterHost);
   renderPorts();updateGroups();renderInspector();updateLive();updateDraftBar();renderQuickProfiles();updateUndo();
   document.querySelector('#apply-draft').onclick=()=>run(flushEdits);
   document.querySelector('#cancel-draft').onclick=discardDraft;

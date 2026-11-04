@@ -12,6 +12,7 @@ from .links import PortLink
 class UplinkBandwidth:
     INTERVAL = 5.0
     STALE_AFTER = 10.0
+    HISTORY_SECONDS = 60.0
 
     def __init__(self, physical_ports: Iterable[int]) -> None:
         self._physical_ports = frozenset(physical_ports)
@@ -19,6 +20,7 @@ class UplinkBandwidth:
         self.reset("waiting")
 
     def reset(self, status: str = "unavailable") -> None:
+        self._recent: list[tuple[float, int, int]] = []
         self._status = status
         self._ports: tuple[int, ...] = ()
         self._baseline: tuple[float, dict[int, tuple[int, int]]] | None = None
@@ -64,6 +66,7 @@ class UplinkBandwidth:
                             for value, previous in zip(values, self._previous[port], strict=True))
                             for port, values in counters.items())
         if ports != self._ports or interrupted or reset_counter:
+            self._recent.clear()
             self._baseline = self._measurement = None
             self._sampled_at = None
             self._status = "waiting"
@@ -91,6 +94,11 @@ class UplinkBandwidth:
         self._measurement = {"upload_bps": transmitted * 8 / elapsed,
                              "download_bps": received * 8 / elapsed,
                              "sample_period_ms": elapsed * 1000}
+        self._recent = [sample for sample in self._recent if captured - sample[0] < self.HISTORY_SECONDS]
+        self._recent.append((captured, round(self._measurement["upload_bps"]),
+                             round(self._measurement["download_bps"])))
+        # Offsets are relative to this measurement, so all frames can reuse the same series.
+        self._measurement["history"] = [[round((t - captured) * 1000), up, down] for t, up, down in self._recent]
         self._baseline, self._sampled_at = self._latest, captured
         self._sequence += 1
         self._status = "ready"
@@ -108,6 +116,7 @@ class UplinkBandwidth:
         return {"status": status, "ports": list(self._ports) if connected else [],
                 "upload_bps": None if measurement is None else measurement["upload_bps"],
                 "download_bps": None if measurement is None else measurement["download_bps"],
+                "history": measurement["history"] if measurement else [],
                 "sample_period_ms": None if measurement is None else round(measurement["sample_period_ms"], 1),
                 "sample_age_ms": None if age is None or not connected else round(age * 1000, 1),
                 "sequence": self._sequence, "refresh_interval_ms": round(self.INTERVAL * 1000)}
