@@ -104,7 +104,7 @@ function notify(message, error = false) {
 }
 function setBusy(value) {
   busy += value; app.classList.toggle('is-saving', busy > 0);
-  document.querySelectorAll('.workspace input,.workspace select,.workspace button,.draft-dialog button').forEach(control=>{
+  document.querySelectorAll('.workspace input,.workspace select,.workspace button,.rack-workspace-dialog #master,.draft-dialog button').forEach(control=>{
     if(busy>0){if(!Object.hasOwn(control.dataset,'previousDisabled'))control.dataset.previousDisabled=String(control.disabled);control.disabled=true;}
     else if(Object.hasOwn(control.dataset,'previousDisabled')){control.disabled=control.dataset.previousDisabled==='true';delete control.dataset.previousDisabled;}
   });
@@ -327,7 +327,7 @@ function renderStudio() {
       <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint">
         <div class="faceplate-toolbar">
           <div class="canvas-heading"><div><h1><span id="switch-title">${escape(switchTitle(state))}</span> ${session.simulated?'<span class="demo-badge">Demo</span>':''}</h1><p class="muted" id="map-output-status">Select ports to preview and apply lighting.</p></div><div id="uplink-bandwidth"></div></div>
-          <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button quiet" id="expand-inspector" aria-controls="inspector" aria-expanded="false">${icon('panel')} Port controls</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle">Workspace</button></div>
+          <div class="selection-toolbar"><div class="selection-chips" role="group" aria-label="Select ports"><button class="button quiet" id="select-all">All ports</button><button class="button quiet" data-select="ethernet">Ethernet</button><button class="button quiet" data-select="sfp">SFP</button><button class="button quiet" id="select-none">None</button></div><button class="button quiet" id="select-multiple" aria-pressed="${multipleSelection}">Select multiple</button><button class="button quiet" id="port-details">Port details</button><button class="button quiet" id="expand-inspector" aria-controls="inspector" aria-expanded="false">${icon('panel')} Port controls</button><button class="button primary mobile-only" id="open-port-controls">Port controls</button><button class="button quiet rack-only" id="rack-workspace-toggle" aria-haspopup="dialog">Workspace</button></div>
         </div>
         <section class="port-group"><div class="port-group-heading"><h2>Ethernet</h2><span id="copper-range"></span></div><div class="port-bank copper-bank" id="copper-ports"></div></section><section class="port-group sfp-group"><div class="port-group-heading"><h2>SFP</h2><span id="sfp-range"></span></div><div class="port-bank sfp-bank" id="sfp-ports"></div></section>
         <div class="rack-meter-slot"></div>
@@ -385,13 +385,30 @@ function openWorkspaceTools() {
   if(!toolbar||toolbar.closest('dialog'))return;
   const dialog=document.createElement('dialog');dialog.className='dialog rack-workspace-dialog';dialog.setAttribute('aria-label','Workspace');
   dialog.innerHTML='<header class="dialog-header"><h2>Workspace</h2><button class="button quiet" type="button">Done</button></header>';
-  const place=document.createComment('Workspace tools');toolbar.before(place);dialog.append(toolbar);document.body.append(dialog);
+  const phone=matchMedia('(max-width: 700px)');
+  const layout=phone.matches?phone:matchMedia('(max-height: 500px) and (min-width: 900px)');
+  const sections=phone.matches
+    ? [document.querySelector('.brightness-controls'),toolbar,document.querySelector('.app-shell > .statusbar')]
+    : [toolbar];
+  const homes=sections.map(section=>{
+    const place=document.createComment('Workspace tools');
+    section.before(place);
+    dialog.append(section);
+    return place;
+  });
+  document.body.append(dialog);
   const close=()=>dialog.close();
   const action=event=>{if(event.target.closest('button'))close();};
-  const resized=()=>{if(!matchMedia('(max-width: 700px), (max-height: 500px) and (min-width: 900px)').matches)close();};
   dialog.querySelector('.dialog-header button').onclick=close;
-  toolbar.addEventListener('click',action,true);window.addEventListener('resize',resized);
-  dialog.addEventListener('close',()=>{toolbar.removeEventListener('click',action,true);window.removeEventListener('resize',resized);if(place.isConnected)place.replaceWith(toolbar);else toolbar.remove();dialog.remove();if(page==='Lighting')document.querySelector('#rack-workspace-toggle')?.focus({preventScroll:true});},{once:true});
+  toolbar.addEventListener('click',action,true);
+  layout.addEventListener('change',close);
+  dialog.addEventListener('close',()=>{
+    toolbar.removeEventListener('click',action,true);
+    layout.removeEventListener('change',close);
+    sections.forEach((section,index)=>homes[index].replaceWith(section));
+    dialog.remove();
+    if(page==='Lighting'&&!document.querySelector('dialog[open]'))document.querySelector('#rack-workspace-toggle')?.focus({preventScroll:true});
+  },{once:true});
   dialog.showModal();
 }
 function allPorts(){return [...(state.ports||[]),...(state.sfp||[])].map(p=>p.port);}
