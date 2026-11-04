@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import queue
 import secrets
@@ -13,10 +14,11 @@ import subprocess
 import sys
 import threading
 import urllib.request
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import PROJECT_NAME
+from . import PROJECT_NAME, __version__
 from .app_lock import AlreadyRunningError, AppInstanceLock
 from .desktop import (
     DesktopApp,
@@ -80,6 +82,22 @@ def workspace_window_geometry(screens) -> dict:
     return options
 
 
+class GatewayUnavailableError(RuntimeError):
+    """The gateway exited before it could confirm output cleanup."""
+
+
+def record_unconfirmed_exit(directory: Path) -> None:
+    """Keep a sanitized status without altering device ownership evidence."""
+    from .presets import write_json
+
+    entry = {"time": datetime.now(UTC).isoformat(), "stage": "desktop_exit",
+             "outcome": "cleanup_unconfirmed", "build": __version__}
+    try:
+        write_json(directory / "last-session.json", entry)
+    except OSError:
+        logging.getLogger(__name__).warning("Could not save the unconfirmed workspace shutdown status.")
+
+
 class Gateway:
     def __init__(self, root: Path, directory: Path, *, demo: bool, port: int):
         self.root, self.directory, self.demo, self.port = root, directory, demo, port
@@ -123,7 +141,7 @@ class Gateway:
         code = self.process.poll()
         if code is not None:
             if code != 0:
-                raise RuntimeError("The workspace stopped without confirming lighting cleanup.")
+                raise GatewayUnavailableError("The workspace stopped without confirming lighting cleanup.")
             return
         result = request_json(f"http://127.0.0.1:{self.port}/api/workspace/close", method="POST")
         if result.get("closed") is not True:
@@ -189,6 +207,11 @@ class WorkspaceDesktopApp(DesktopApp):
             self.quitting = True
             try:
                 self.server.stop()
+            except GatewayUnavailableError:
+                record_unconfirmed_exit(self.directory)
+                if self.tray:
+                    self.tray.notify("EE closed after the workspace stopped. Review Last session in Settings.",
+                                     PROJECT_NAME)
             except Exception:
                 self.quitting = False
                 if self.tray:

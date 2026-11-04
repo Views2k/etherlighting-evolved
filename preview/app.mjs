@@ -1,3 +1,8 @@
+import {sceneFromState,reviewSceneConflict} from './scene-review.mjs';
+import {createPortHistory,openFindPorts,openLivePortDetails} from './port-tools.mjs';
+import {openSavedLibrary,openSceneHistory} from './saved-library.mjs';
+import {profileLayoutNotice} from './profile-preview.mjs';
+import {previewDraftColors} from './draft-preview.mjs';
 import { request as apiRequest } from './api.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {portRanges} from './port-topology.mjs';
@@ -37,6 +42,7 @@ let workspaceOptions = {live:false}, workspaceReady = false, openingWorkspace = 
 let activeColorPopover;
 const edits = new Set();
 let draft = {}, profiles = {}, pendingPlan = null, lastApplied = null, compareApplied = false;
+let draftBaseScene=null;
 let draftBaseline=null, draftConfirmation=null, saveUiTimer, requestedRuleId;
 const request=(path,method,body)=>apiRequest(path,method,body,{workspace:session.workspace_id});
 const workspaceRequest=()=>{const workspace=session.workspace_id;return async(path,method='GET',body)=>{
@@ -53,6 +59,8 @@ const portAnimator=createPortAnimator(port=>document.querySelector(`[data-port="
 const rememberedEffects=new Map(), previewStates=new Map();
 const telemetryNodes=new WeakMap(), rangeProgress=new WeakMap();
 let telemetryPaintAt=0;
+const portHistory=createPortHistory();
+let livePortDetails;
 const currentSelectionHint=()=>selectionHint(navigator.userAgentData?.platform||navigator.platform,multipleSelection,
   navigator.maxTouchPoints>0||matchMedia('(pointer: coarse)').matches);
 
@@ -128,7 +136,7 @@ async function run(action) {
   }
 }
 function queueEdit(key) {
-  draftBaseline??=sceneFingerprint(state);
+  if(!draftBaseline){draftBaseScene=sceneFromState(state);draftBaseline=sceneFingerprint(state);}
   edits.add(key); compareApplied=false;clearTimeout(saveUiTimer);saveUiTimer=setTimeout(saveUiState,150);updateDraftBar();portAnimator.setPreview(previewDraft); updateLive();
 }
 async function flushEdits() {
@@ -141,8 +149,13 @@ async function flushEdits() {
       lightingOperations(state,draft);
       const before=await send('/api/scene');
       if(workspace!==session.workspace_id)throw new Error('The connected switch changed. Review its current setup.');
-      if(draftBaseline&&sceneFingerprint(before.scene)!==draftBaseline)throw new Error('The lighting setup changed while you were editing. Discard this preview and review the current setup before applying.');
-      const scene=lightingSnapshot(before.scene,state,draft);
+      let scene=lightingSnapshot(before.scene,state,draft);
+      if(draftBaseline&&sceneFingerprint(before.scene)!==draftBaseline){
+        if(!draftBaseScene)throw new Error('This saved preview needs a refresh. Discard it and review the current setup.');
+        const reviewed=await reviewSceneConflict(draftBaseScene,before.scene,lightingSnapshot(draftBaseScene,state,draft));
+        if(!reviewed)return;
+        scene=reviewed;
+      }
       pendingPlan=[];
       if(sceneFingerprint(scene)!==sceneFingerprint(before.scene))pendingPlan.push({key:'scene',before,scene});
       if(draft.mode!==undefined&&draft.mode!==state.mode)pendingPlan.push({key:'mode',mode:draft.mode});
@@ -162,21 +175,21 @@ async function flushEdits() {
       }
     }catch(error){
       if(workspace!==session.workspace_id)throw error;
-      if(!pendingPlan?.length){edits.clear();draft={};draftBaseline=null;pendingPlan=null;portAnimator.setPreview(null);}
+      if(!pendingPlan?.length){edits.clear();draft={};draftBaseline=null;draftBaseScene=null;pendingPlan=null;portAnimator.setPreview(null);}
       try{await refresh(false);}catch{}
       saveUiState();updateDraftBar();renderInspector();throw error;
     }
     for(const effect of effectDrafts(draft))rememberedEffects.set(effect.id,clone(effect));
     const controlChanged=draft.mode!==undefined;
     const changedPorts=draft.brightness!==undefined?allPorts():[...effectDrafts(draft).flatMap(effect=>effect.ports),...Object.keys(draft.colors||{}),...(draft.returnToEffect||[]),...sfpDraftPorts(state,draft)];
-    edits.clear();draft={};draftBaseline=null;pendingPlan=null;compareApplied=false;portAnimator.setPreview(null);saveUiState();
+    edits.clear();draft={};draftBaseline=null;draftBaseScene=null;pendingPlan=null;compareApplied=false;portAnimator.setPreview(null);saveUiState();
     try{await refresh(false);const covered=sceneAutomationMatches(history.after?.scene||history.before.scene,state,changedPorts).map(item=>item.port);notify(covered.length?`Setup saved. Automation matches ${covered.length===1?'port':'ports'} ${portRanges(covered)}.`:'Changes applied');if(!controlChanged)confirmPorts(changedPorts.filter(id=>!covered.includes(Number(id))));}
     catch{notify('Changes were applied. Status refresh is unavailable; reconnecting will refresh it.',true);}
     if(controlChanged)lastApplied=null;
   });
   updateDraftBar();renderInspector();updateUndo();focusLightingControls();
 }
-function discardDraft(){const partial=Boolean(pendingPlan);edits.clear();draft={};draftBaseline=null;pendingPlan=null;compareApplied=false;saveUiState();portAnimator.setPreview(null);updateDraftBar();renderInspector();updateLive();focusLightingControls();if(partial)notify('Preview discarded. Saved changes remain applied.');}
+function discardDraft(){const partial=Boolean(pendingPlan);edits.clear();draft={};draftBaseline=null;draftBaseScene=null;pendingPlan=null;compareApplied=false;saveUiState();portAnimator.setPreview(null);updateDraftBar();renderInspector();updateLive();focusLightingControls();if(partial)notify('Preview discarded. Saved changes remain applied.');}
 function draftSummary(){
   const changes=[];
   for(const effect of effectDrafts(draft)){const name=effectSpec(effect.id)?.name||'Effect';if(!changes.includes(name))changes.push(name);}
@@ -322,7 +335,7 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
 
 function renderStudio() {
   view.innerHTML = `<div class="studio"><section class="workspace" data-inspector-collapsed="${inspectorCollapsed}">
-    <div class="workspace-toolbar"><div class="group-control"><label class="sr-only" for="group-select">Port group</label><select id="group-select"></select><button class="button quiet" id="manage-groups">Groups</button></div><span id="quick-profile"></span><button class="button quiet" id="save-scene">Profiles</button><button class="button quiet" id="undo-last" disabled>Undo last apply</button><button class="button quiet" id="toggle-output"></button></div>
+    <div class="workspace-toolbar"><div class="group-control"><label class="sr-only" for="group-select">Port group</label><select id="group-select"></select><button class="button quiet" id="manage-groups">Groups</button></div><span id="quick-profile"></span><button class="button quiet" id="save-scene">Profiles</button><button class="button quiet" id="undo-last" disabled>Undo last apply</button><button class="button quiet" id="scene-history">History</button><button class="button quiet" id="saved-selections">Saved selections</button><button class="button quiet" id="find-port">Find port</button><button class="button quiet" id="toggle-output"></button></div>
     <div class="studio-content"><section class="canvas-area">
       <div class="port-map" role="group" aria-label="Switch ports" aria-describedby="selection-hint">
         <div class="faceplate-toolbar">
@@ -373,11 +386,21 @@ function renderStudio() {
   document.querySelector('#open-map-key').onclick=()=>document.querySelector('.map-key').showModal();
   document.querySelector('#lighting-help').onclick=()=>{document.querySelector('.map-key').close();run(()=>navigate('Help'));};
   document.querySelector('#port-details').onclick=openPortDetails;
+  document.querySelector('#find-port').onclick=()=>openFindPorts({getState:()=>state,onSelect:setSelection});
+  document.querySelector('#saved-selections').onclick=()=>run(()=>openSavedLibrary({kind:'selection',request:workspaceRequest(),getState:()=>state,getValue:()=>({ports:[...selected]}),onUse:value=>setSelection(value.ports)}));
+  document.querySelector('#scene-history').onclick=()=>run(async()=>{
+    if(!await confirmDraft())return;
+    const before=await request('/api/scene');
+    await openSceneHistory({request:workspaceRequest(),onRestore:async entry=>{
+      await request('/api/history/'+encodeURIComponent(entry.id)+'/restore','POST',{expected_revision:before.revision});
+      await refresh();notify('Lighting setup restored');
+    }});
+  });
   document.querySelector('#expand-inspector').onclick=()=>toggleInspector(false);
   document.querySelector('#open-port-controls').onclick=()=>{const studio=document.querySelector('.studio-content');studio.dataset.canvasScroll=String(studio.scrollTop);studio.classList.add('is-editing-ports');studio.scrollTop=0;document.querySelector('#back-to-ports')?.focus({preventScroll:true});};
   document.querySelector('#undo-last').onclick=()=>run(undoLastApply);
   document.querySelector('#toggle-output').onclick=()=>{if(draft.mode!==undefined){delete draft.mode;edits.delete('mode');compareApplied=false;saveUiState();portAnimator.setPreview(edits.size?previewDraft:null);updateDraftBar();updateLive();}else{draft.mode=state.mode==='running'?'released':'running';queueEdit('mode');}};
-  document.querySelector('#master').oninput=event=>{const value=Number(event.target.value);document.querySelector('#master-value').textContent=`${value}%`;if(value===state.brightness){delete draft.brightness;edits.delete('master');if(!edits.size)draftBaseline=null;saveUiState();updateDraftBar();portAnimator.setPreview(edits.size?previewDraft:null);updateLive();}else{draft.brightness=value;queueEdit('master');}};
+  document.querySelector('#master').oninput=event=>{const value=Number(event.target.value);document.querySelector('#master-value').textContent=`${value}%`;if(value===state.brightness){delete draft.brightness;edits.delete('master');if(!edits.size){draftBaseline=null;draftBaseScene=null;}saveUiState();updateDraftBar();portAnimator.setPreview(edits.size?previewDraft:null);updateLive();}else{draft.brightness=value;queueEdit('master');}};
   updateRangeProgress();
 }
 function openWorkspaceTools() {
@@ -425,99 +448,53 @@ async function undoLastApply(){
   focusLightingControls();
 }
 function openPortDetails(){
-  const ports=[...selected].sort((a,b)=>a-b).map(id=>[...state.ports,...state.sfp].find(port=>port.port===id)).filter(Boolean);
-  if(!ports.length)return;
-  const dialog=document.createElement('dialog');
-  dialog.className='dialog port-details';dialog.setAttribute('aria-label','Selected port details');
-  const sections=ports.map(port=>{
-    const link=linkStatus(port),source=controlSource(state,port.port,effects),power=portPower(port),name=portLabel(port,isSfpPort(port.port));
-    const clients=port.controller?.clients;
-    const clientNames=Array.isArray(clients)&&clients.length?`<dt>Associated clients</dt><dd><ul class="client-names">${clients.map(client=>`<li>${escape(client.name||'Unnamed device')}</li>`).join('')}</ul>${port.controller.clients_truncated?`<span class="muted">${number(port.controller.count)} clients total</span>`:''}</dd>`:'';
-    return `<section><h3>${escape(`${isSfpPort(port.port)?'SFP':'Port'} ${port.port}`)}${name.text===`${isSfpPort(port.port)?'SFP':'Port'} ${port.port}`?'':' · '+escape(name.text)}</h3><dl class="settings-details"><dt>Link</dt><dd>${escape(link.label)}${isUplink(port)?' · Uplink':''}</dd>${!isSfpPort(port.port)?`<dt>Power</dt><dd>${escape(power.description)}${power.delivering?' · '+poeTier(port.poe).name:''}</dd>`:''}<dt>Lighting</dt><dd>${escape(source.label)}</dd>${clientNames}</dl></section>`;
-  }).join('');
-  dialog.innerHTML=`<form method="dialog"><header class="dialog-header"><h2>Port details</h2><button class="button icon-button" aria-label="Close">×</button></header>${sections}<footer class="dialog-footer"><button class="button">Done</button></footer></form>`;
-  document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();
+  if(!selected.size)return;
+  livePortDetails?.close();
+  livePortDetails=openLivePortDetails({ports:[...selected].sort((a,b)=>a-b),getState:()=>state,effects,
+    history:portHistory,request:workspaceRequest(),onRefresh:()=>refresh(false),onError:notify,isDisconnected:()=>disconnected});
 }
-function saveUiState(){clearTimeout(saveUiTimer);const key=workspaceStorageKey(session);if(!key||!workspaceReady)return;try{sessionStorage.setItem(key,JSON.stringify({page,editor,selected:[...selected],draft,draftBaseline,recovery:pendingPlan?{before:lastApplied?.before,after:lastApplied?.after,mode:lastApplied?.mode}:null,galleryState,effects:[...rememberedEffects]}));}catch{}}
+function openEffectSettings(){
+  return openSavedLibrary({kind:'effect',request:workspaceRequest(),getState:()=>state,
+    getValue:()=>{const config=currentEffect();if(!config)throw new Error('Choose an effect first.');return {id:config.id,params:clone(config.params||{})};},
+    onUse:value=>{if(!selected.size)throw new Error('Select ports for these settings.');stageEffect({...value,ports:effectSelection(),clearOverrides:false});editor='effect';renderInspector();return true;}});
+}
 
-async function applyProfile(name){
+function saveUiState(){clearTimeout(saveUiTimer);const key=workspaceStorageKey(session);if(!key||!workspaceReady)return;try{sessionStorage.setItem(key,JSON.stringify({page,editor,selected:[...selected],draft,draftBaseline,draftBaseScene,recovery:pendingPlan?{before:lastApplied?.before,after:lastApplied?.after,mode:lastApplied?.mode}:null,galleryState,effects:[...rememberedEffects]}));}catch{}}
+
+async function applyProfile(reference){
   if(!await confirmDraft())return false;
   await serialize(async()=>{
     if(disconnected||!state.connected)throw new Error('Reconnect the switch before applying a profile.');
     const send=workspaceRequest(),workspace=session.workspace_id;
-    const [saved,before]=await Promise.all([send('/api/presets'),send('/api/scene')]);
-    if(!Object.hasOwn(saved,name))throw new Error('This profile changed. Refresh profiles and choose it again.');
+    const [saved,before]=await Promise.all([send('/api/profiles'),send('/api/scene')]);
+    const record=saved.profiles.find(item=>typeof reference==='string'?item.name===reference:item.id===reference.id);
+    if(!record||reference.revision&&record.revision!==reference.revision)throw new Error('This profile changed. Refresh profiles and choose it again.');
+    const notice=profileLayoutNotice(record.scene,state);if(notice)throw new Error(notice);
     const history={before,mode:state.mode,workspace};
-    try{history.after=await commitScene(before,saved[name],send,{preserveUnchanged:false});}
+    try{history.after=await commitScene(before,record.scene,send,{preserveUnchanged:false});}
     catch(error){if(error.acceptedScene)history.after=error.acceptedScene;if(workspace===session.workspace_id)lastApplied=history;throw error;}
     if(workspace!==session.workspace_id)return;
     lastApplied=history;await refresh(false);if(page==='Lighting')renderInspector();updateUndo();notify('Profile applied');
   });
 }
-
 async function renderQuickProfiles(){
   const host=document.querySelector('#quick-profile');if(!host)return;
   host.innerHTML='<label class="sr-only" for="quick-profile-select">Profile</label><select id="quick-profile-select" disabled><option>Loading profiles…</option></select><button class="button quiet" disabled>Apply profile</button>';
   host.setAttribute('aria-busy','true');
-  try{profiles=await request('/api/presets');if(!host.isConnected)return;const names=Object.keys(profiles);if(!names.length){host.querySelector('option').textContent='No saved profiles';return;}
-    host.innerHTML=`<label class="sr-only" for="quick-profile-select">Profile</label><select id="quick-profile-select">${names.map(name=>`<option value="${escape(name)}">${escape(name)}</option>`).join('')}</select><button class="button quiet" id="apply-profile">Apply profile</button>`;
-    host.querySelector('button').onclick=()=>run(async()=>{
-      if(!await confirmDraft())return;const name=host.querySelector('select').value;
-      await applyProfile(name);
-    });
+  try{
+    const records=(await request('/api/profiles')).profiles;if(!host.isConnected)return;
+    profiles=Object.fromEntries(records.map(item=>[item.name,item.scene]));
+    if(!records.length){host.querySelector('option').textContent='No saved profiles';return;}
+    host.innerHTML='<label class="sr-only" for="quick-profile-select">Profile</label><select id="quick-profile-select"></select><button class="button quiet" id="apply-profile">Apply profile</button>';
+    const select=host.querySelector('select'),button=host.querySelector('button');
+    for(const item of records){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.append(option);}
+    const update=()=>{const item=records.find(record=>record.id===select.value),notice=profileLayoutNotice(item.scene,state);button.disabled=Boolean(notice);button.title=notice;};
+    select.onchange=update;update();button.onclick=()=>run(()=>applyProfile(records.find(item=>item.id===select.value)));
   }catch(error){if(host.isConnected){host.querySelector('option').textContent='Open Profiles to retry';notify(error.message,true);}}
   finally{host.removeAttribute('aria-busy');}
 }
-function previewDraft(time){
-  if(compareApplied)return {};
-  const result={}, master=number(draft.brightness??state.brightness,100)/100,date=hostScheduleDate(state),hour=date.getHours()+date.getMinutes()/60+date.getSeconds()/3600;
-  if(draft.brightness!==undefined){
-    const previous=number(state.brightness,100);
-    for(const port of [...(state.ports||[]),...(state.sfp||[])])result[port.port]=masterDisplayRgb(port,master*100,previous,state.rules,state.output?.gamma,date);
-  }
-  const render=(config,ports,targets=new Set(ports))=>{
-    const normalized={...config,params:{...defaultConfig(config.id).params,...config.params}};
-    const key=config.id+':'+ports.join(',');if(!previewClocks.has(key))previewClocks.set(key,{motion:{},color:{}});
-    const clocks=previewClocks.get(key),phase=previewPhase(clocks.motion,normalized,time), colorPhase=previewColorPhase(clocks.color,normalized,time);
-    const resolvedParams=resolvedColorParams(normalized,time,colorPhase);
-    const telemetry=ports.map(id=>state.ports?.find(p=>p.port===id)||state.sfp?.find(p=>p.port===id));
-    const peakTraffic=activityPeak(telemetry.map(port=>port?.facts||{}),normalized.params.include_uplinks);
-    ports.forEach((port,index)=>{
-      if(!targets.has(port))return;
-      if(state.overrides?.[port]&&!draft.returnToEffect?.includes(port)&&!effectDraftForPort(draft,port)?.clearOverrides){const live=state.ports.find(p=>p.port===port);result[port]=masterDisplayRgb(live,master*100,number(state.brightness,100),state.rules,state.output?.gamma,date);return;}
-      const live=telemetry[index]||{}, optical=state.sfp?.find(light=>light.port===port);
-      if(normalized.id==='daylight'&&!Number.isFinite(hour)){result[port]??=portDisplayRgb(live,state.output?.gamma);return;}
-      const facts=live.facts||{};
-      const rule=optical?matchingSfpRule(state.rules||[],{...optical,mode:'color'},date):matchingRule(state.rules||[],{id:port,facts},date);
-      if(!previewStates.has(port))previewStates.set(port,{});
-      const color=effectColor(normalized,index,ports.length,time,{...facts,hour,phase,colorPhase,resolvedParams,peakTraffic,animationState:previewStates.get(port)});
-      const level=(rule?.look.brightness??master*100)/100, opticalLevel=optical?(draft.sfp?.[port]?.brightness??optical.brightness??100)/100:1;
-      result[port]=dim(rule?renderLook(rule.look,color,time):color,level*opticalLevel);
-    });
-  };
-  const returned=new Set(draft.returnToEffect||[]),zones=new Set();
-  for(const port of returned){const zone=zoneFor(port);if(zone&&!zones.has(zone.id)){zones.add(zone.id);render(zone.effect,zone.ports,returned);}}
-  for(const effect of effectDrafts(draft))render(effect,effect.ports);
-  for(const [port,color] of Object.entries(draft.colors||{}))result[port]=manualDisplayRgb(color.color,color.brightness,master*100);
-  const sync=sfpSync(state,draft),sfpPorts=sfpDraftPorts(state,draft);
-  for(const zone of draft.brightness!==undefined||sfpPorts.length?state.zones||[]:[]){
-    const targets=new Set(zone.ports.filter(id=>(draft.brightness!==undefined||sfpPorts.includes(id))&&state.sfp?.some(port=>port.port===id)&&!draft.sfpDetached?.includes(id)&&!effectDraftForPort(draft,id)));
-    if(targets.size)render(zone.effect,zone.ports,targets);
-  }
-  for(const port of sfpPorts){
-    if(portEffect(state,draft,port))continue;
-    const light=effectiveSfpLight(state,port,draft);
-    const rule=matchingSfpRule(state.rules||[],{...light,mode:sync.mode==='ethernet'?'color':light.mode},date);
-    if(rule){result[port]=portDisplayRgb(state.sfp.find(p=>p.port===port),state.output?.gamma);continue;}
-    if(sync.mode==='ethernet'){
-      const source=state.ports?.find(p=>p.port===sync.source_port);
-      result[port]=result[sync.source_port]||portDisplayRgb(source||{},state.output?.gamma);continue;
-    }
-    if(light.mode!=='color'){result[port]=matchingSfpRule(state.rules||[],light,date)?portDisplayRgb(light,state.output?.gamma):[0,0,0];continue;}
-    result[port]=sfpPreviewColor(light,light.effect,time,master*100,state.output?.gamma,sfpNativeAvailable(state));
-  }
-  return result;
-}
+
+function previewDraft(time){return compareApplied?{}:previewDraftColors(state,draft,time,{previewClocks,previewStates});}
 
 function speedLegend() {
   const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']];
@@ -577,6 +554,8 @@ function renderPorts() {
   }));
 }
 function updateLive() {
+  portHistory.update(state,disconnected);
+  livePortDetails?.update();
   const legend=document.querySelector('.current-speed-legend');
   if(legend){const keys=new Set([...(state.ports||[]),...(state.sfp||[])].map(port=>linkStatus(port).key));const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']].filter(([key])=>keys.has(key));const signature=entries.map(([key])=>key).join(',');if(legend.dataset.keys!==signature){legend.innerHTML=entries.map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');legend.dataset.keys=signature;}}
   uplinkBandwidth?.update(state,disconnected);
@@ -649,6 +628,7 @@ function updateGroups() {
   const details=document.querySelector('#port-details');if(details)details.disabled=!selected.size;
 }
 async function setSelection(ports, mode) {
+  if(ports.some(port=>!allPorts().includes(port)))throw new Error('Choose ports on the connected switch.');
   if(pendingPlan&&!await confirmDraft()){updateGroups();return false;}
   const invalid=view.querySelector('input:invalid');if(invalid){invalid.focus();notify('Correct the highlighted value before selecting other ports.',true);updateGroups();return false;}
   activeColorPopover?.();selected = new Set(ports); editor = mode||([...selected].length&&[...selected].every(id=>draft.colors?.[id]||(!draft.returnToEffect?.includes(id)&&!effectDraftForPort(draft,id)?.clearOverrides&&controlSource(state,id,effects).kind==='color'))?'color':'effect'); inspectorSignature='';saveUiState();
@@ -805,6 +785,7 @@ function renderInspectorContent() {
     grid.querySelector('#restore-effect').onclick=()=>{draft.returnToEffect=[...new Set([...(draft.returnToEffect||[]),...copperSelection()])];for(const id of copperSelection())if(draft.colors)delete draft.colors[id];queueEdit('return-effect');editor='effect';renderInspector();};
     updateDraftBar();return;
   }
+  const savedSettings=document.createElement('button');savedSettings.className='button quiet';savedSettings.textContent='Saved effect settings';savedSettings.onclick=()=>run(openEffectSettings);host.querySelector('.inspector-actions').append(savedSettings);
   const description=EFFECTS.find(effect=>effect.id===spec?.id)?.description||spec?.description;
   host.querySelector('.effect-choice-slot').innerHTML=`<div class="effect-summary effect-choice"><button class="button" id="browse-effects" aria-label="Choose effect: ${mixed?'Multiple effects':escape(spec?.name||'None')}" title="${escape(description||'Browse lighting effects')}">${mixed?'Multiple effects':escape(spec?.name||'Choose effect')} ${icon('chevron')}</button></div>`;
   host.querySelector('#browse-effects').onclick=()=>{galleryState.type='ethernet';run(()=>navigate('Effects'));};
@@ -971,7 +952,7 @@ function connectFrames() {
   currentSocket.addEventListener('open',()=>{disconnected=false;updateConnection();if(document.querySelector('#status').textContent==='The workspace connection was interrupted.')status('Workspace connection restored');updateDraftBar();});
   currentSocket.addEventListener('message',event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
-    if(message.type==='frame'&&workspaceReady){receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:Object.hasOwn(message,'uplink_bandwidth')?message.uplink_bandwidth:state.uplink_bandwidth,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected,mode:message.mode};session={...session,connected:message.connected};updateConnection();updateLive();}
+    if(message.type==='frame'&&workspaceReady){receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,telemetry:message.telemetry??state.telemetry,poe_summary:message.poe_summary??state.poe_summary,identify:Object.hasOwn(message,'identify')?message.identify:state.identify,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:Object.hasOwn(message,'uplink_bandwidth')?message.uplink_bandwidth:state.uplink_bandwidth,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected,mode:message.mode};session={...session,connected:message.connected};updateConnection();updateLive();}
     else if(message.type==='state'&&workspaceReady){
       receiveScheduleClock(message.state.schedule_clock);
       state={...message.state,ports:state.ports};
@@ -986,7 +967,7 @@ function connectFrames() {
   });
   currentSocket.addEventListener('close',()=>{
     if(closingWorkspace)return;
-    disconnected=true;updateConnection();uplinkBandwidth?.update(state,true);if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);retryTimer=setTimeout(connectFrames,1500);
+    disconnected=true;updateConnection();updateLive();if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);retryTimer=setTimeout(connectFrames,1500);
   });
   currentSocket.addEventListener('error',()=>currentSocket.close());
 }
@@ -1004,9 +985,10 @@ window.addEventListener('popstate',()=>{const historyEntry=routeHistory.observe(
 
 function resetWorkspace() {
   navigationVersion++;
-  document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog').forEach(dialog=>dialog.close('stay'));
+  document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog,.saved-library,.scene-history,.port-finder,.scene-conflict').forEach(dialog=>dialog.close('stay'));
   activeColorPopover?.();secondaryCleanup?.();secondaryCleanup=undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
-  state={};selected=new Set();draft={};draftBaseline=null;edits.clear();pendingPlan=null;lastApplied=null;copiedAppearance=null;compareApplied=false;
+  livePortDetails?.close();livePortDetails=null;portHistory.clear();
+  state={};selected=new Set();draft={};draftBaseline=null;draftBaseScene=null;edits.clear();pendingPlan=null;lastApplied=null;copiedAppearance=null;compareApplied=false;
   rememberedEffects.clear();previewClocks.clear();previewStates.clear();for(const key of Object.keys(galleryState))delete galleryState[key];
   inspectorSignature='';workspaceReady=false;
   multipleSelection=false;selectionAnchor=null;
@@ -1047,14 +1029,14 @@ async function acceptSession(next) {
       selected=new Set((Array.isArray(saved.selected)?saved.selected:[]).filter(id=>allPorts().includes(id)));
       if(saved.galleryState&&typeof saved.galleryState==='object'&&!Array.isArray(saved.galleryState))Object.assign(galleryState,saved.galleryState);
       for(const entry of Array.isArray(saved.effects)?saved.effects:[]){if(!Array.isArray(entry))continue;const [id,config]=entry;if(!effectSpec(id))continue;try{lightingOperations(state,{effect:{...config,ports:config.ports||[state.ports[0]?.port]}});rememberedEffects.set(id,config);}catch{}}
-      if(saved.draft&&Object.keys(saved.draft).length){try{lightingOperations(state,saved.draft);draft=saved.draft;draftBaseline=typeof saved.draftBaseline==='string'?saved.draftBaseline:sceneFingerprint(state);edits.add('restored');}catch{notify('The saved preview has invalid settings. Your applied lighting is unchanged.',true);}}
+      if(saved.draft&&Object.keys(saved.draft).length){try{lightingOperations(state,saved.draft);draft=saved.draft;draftBaseScene=saved.draftBaseScene||null;draftBaseline=typeof saved.draftBaseline==='string'?saved.draftBaseline:sceneFingerprint(state);edits.add('restored');}catch{notify('The saved preview has invalid settings. Your applied lighting is unchanged.',true);}}
       if(edits.size&&saved.recovery?.before){
         try{
           const current=await request('/api/scene');if(workspace!==session.workspace_id)return;
           const intended=lightingSnapshot(saved.recovery.before.scene,state,draft);
           if(sceneFingerprint(current.scene)===sceneFingerprint(intended)){
             lastApplied={before:saved.recovery.before,after:current,mode:saved.recovery.mode??state.mode,workspace};
-            const remainingMode=draft.mode;draft={};edits.clear();draftBaseline=null;
+            const remainingMode=draft.mode;draft={};edits.clear();draftBaseline=null;draftBaseScene=null;
             if(remainingMode!==undefined&&remainingMode!==state.mode){draft={mode:remainingMode};draftBaseline=sceneFingerprint(current.scene);edits.add('restored');}
           }
         }catch{ /* Keep the preview for review when confirmation is unavailable. */ }

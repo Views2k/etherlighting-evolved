@@ -4,9 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {effectDrafts,effectDraftForPort,stageEffectDraft,leaveSfpEffect,portEffect} from '../preview/effect-draft.mjs';
 import {lightingOperations,lightingSnapshot} from '../preview/lighting-state.mjs';
-import {defaultConfig,effectColor,previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim} from '../preview/effect-renderer.mjs';
-import {matchingRule,matchingSfpRule,renderLook} from '../src/rules.mjs';
-import {sfpSync,sfpDraftPorts} from '../preview/sfp-sync.mjs';
+import {previewDraftColors} from '../preview/draft-preview.mjs';
 import {sceneFingerprint} from '../preview/secondary-model.mjs';
 
 const config=(id,ports,params={},extra={})=>({id,ports,params,...extra});
@@ -37,22 +35,18 @@ test('a mixed activity group and return to SFP lighting round trip without chang
   assert.throws(()=>lightingSnapshot(joined,runtime(joined),{effect:config('static',[11])}),/available lighting ports/);
 });
 
-test('port map previews an optical member’s own traffic and brightness independently of Follow Ethernet',async()=>{
-  const app=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
-  const context={state:{brightness:100,ports:[{port:1,facts:{link:true,traffic:0}}],
+test('port map previews an optical member’s own traffic and brightness independently of Follow Ethernet',()=>{
+  const state={brightness:100,ports:[{port:1,facts:{link:true,traffic:0}}],
     sfp:[{port:10,link:true,mode:'off',brightness:40,facts:{link:true,uplink:true,traffic:1000}}],
-    sfp_sync:{mode:'ethernet',source_port:1},rules:[],zones:[]},
-    draft:{effect:config('activity_glow',[1,10],{idle_color:'#000000',active_color:'#ffffff',include_uplinks:true})},
-    number:Number,hostScheduleDate:()=>new Date(),effectDraftForPort,effectDrafts,portEffect,
-    compareApplied:false,previewClocks:new Map(),previewStates:new Map(),defaultConfig,effectColor,
-    previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim,matchingRule,matchingSfpRule,renderLook,sfpSync,sfpDraftPorts};
-  vm.createContext(context);vm.runInContext(app.slice(app.indexOf('function previewDraft('),app.indexOf('function speedLegend(')),context);
-  context.previewDraft(0);
-  const shown=context.previewDraft(5);
+    sfp_sync:{mode:'ethernet',source_port:1},rules:[],zones:[],overrides:{}};
+  const draft={effect:config('activity_glow',[1,10],{idle_color:'#000000',active_color:'#ffffff',include_uplinks:true})};
+  const clocks={previewClocks:new Map(),previewStates:new Map()};
+  previewDraftColors(state,draft,0,clocks);
+  const shown=previewDraftColors(state,draft,5,clocks);
   assert.equal(Math.max(...shown[1]),0);
   assert.ok(shown[10].every(channel=>channel>101&&channel<=102));
-  context.state.rules=[{id:'alert',enabled:true,ports:[10],conditions:[],look:{style:'solid',color:'#ff0000',brightness:50}}];
-  assert.deepEqual([...context.previewDraft(6)[10]],[51,0,0]);
+  state.rules=[{id:'alert',enabled:true,ports:[10],conditions:[],look:{style:'solid',color:'#ff0000',brightness:50}}];
+  assert.deepEqual(previewDraftColors(state,draft,6,clocks)[10],[51,0,0]);
 });
 
 test('different effect scopes remain staged together without changing earlier parameters or other edits',()=>{

@@ -120,14 +120,14 @@ async def test_preview_name_collision_keeps_the_existing_profile(preview_app):
 
 
 @pytest.mark.anyio
-async def test_current_snapshot_save_retains_legacy_overwrite_behavior(preview_app):
+async def test_current_snapshot_save_requires_explicit_guarded_replacement(preview_app):
     app, engine, transport = preview_app
     app.state.presets.save("Current", {"brightness": 12})
     before = active_state(engine, transport)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
         response = await client.post("/api/presets", json={"name": "Current"})
-    assert response.status_code == 201
-    assert response.json()["Current"] == engine.snapshot()
+    assert response.status_code == 409
+    assert app.state.presets.get("Current") == {"brightness": 12}
     assert active_state(engine, transport) == before
 
 

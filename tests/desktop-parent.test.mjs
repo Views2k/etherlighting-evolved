@@ -23,3 +23,25 @@ test('blocked output does not claim automatic reconnect is running',()=>{
   assert.equal(connectionLabel(session),'Switch connection needs attention');
   assert.equal(switchConnectionStatus(session).tone,'error');
 });
+
+
+test('parent cleanup has a finite retry budget and records exhaustion without claiming success',async()=>{
+  const input=new PassThrough(),timers=[],reports=[],exhausted=[];let closes=0;
+  const stop=watchDesktopParent({input,close:async()=>{closes++;throw Error('unconfirmed');},
+    report:value=>reports.push(value),exhausted:value=>exhausted.push(value),setTimer:(fn,delay)=>timers.push({fn,delay})});
+  input.end();await new Promise(resolve=>setImmediate(resolve));
+  for(let i=0;i<3;i++){
+    assert.equal(timers.length,1);const next=timers.shift();assert.equal(next.delay,5000);next.fn();
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.equal(closes,4);assert.equal(reports.length,4);assert.deepEqual(exhausted,[{attempts:4}]);assert.equal(timers.length,0);
+  stop();stop();await new Promise(resolve=>setImmediate(resolve));assert.equal(closes,4);
+});
+
+test('successful retry stops scheduling and duplicate parent requests cannot overlap cleanup',async()=>{
+  const input=new PassThrough(),timers=[];let closes=0,finish;
+  const stop=watchDesktopParent({input,close:()=>{closes++;return new Promise(resolve=>finish=resolve);},setTimer:fn=>timers.push(fn)});
+  stop();stop();input.end('quit');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closes,1);finish();await new Promise(resolve=>setImmediate(resolve));stop();
+  assert.equal(timers.length,0);assert.equal(closes,1);
+});

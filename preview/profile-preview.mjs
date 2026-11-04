@@ -22,11 +22,25 @@ export function profilePorts(scene, state = {}) {
   return {copper:Array.from({length:extent},(_,index) => index+1).filter(id => !sfp.includes(id)), sfp};
 }
 
-export function profileLayoutNotice(scene, state) {
-  if (scene.version >= 3 && !sceneTopology(scene)) return 'Review this profile’s saved port layout before applying it.';
-  if (scene.version < 3 || scene.version === undefined) {
-    const current = lightingPorts(state);
-    if (lights(scene).some(light => current.copper.includes(light.port))) return 'This older profile uses a different port layout. Review its port assignments before applying it.';
+export function profileLayoutNotice(scene, state = {}) {
+  const version=scene.version??(Object.hasOwn(scene,'zones')?2:1),current=lightingPorts(state);
+  const invalid='Review this profile’s saved port layout before applying it.';
+  const legacy='This older profile uses a different port layout. Review its port assignments before applying it.';
+  if(!Number.isInteger(version)||![1,2,3].includes(version))return invalid;
+  if(version===3){
+    const saved=sceneTopology(scene),topology=scene.topology,currentModel=state.topology?.model??state.hardware_profile?.id??null;
+    if(!saved||Object.keys(topology).sort().join(',')!=='copper_ports,model,sfp_ports,version'
+      ||topology.model!==null&&(typeof topology.model!=='string'||!topology.model.trim())
+      ||[...saved.copper,...saved.sfp].some(id=>id>64))return invalid;
+    if(JSON.stringify(saved.copper)!==JSON.stringify(current.copper)||JSON.stringify(saved.sfp)!==JSON.stringify(current.sfp))
+      return `This profile uses ${saved.copper.length} Ethernet and ${saved.sfp.length} SFP ports. Choose a profile for this switch’s ${current.copper.length} Ethernet and ${current.sfp.length} SFP ports.`;
+    if(topology.model!==null&&currentModel!==null&&topology.model!==currentModel)
+      return 'This profile was saved for a different switch model. Choose a profile for the connected switch.';
+  }else{
+    if(Object.hasOwn(scene,'topology'))return invalid;
+    if(version===2&&(JSON.stringify(current.copper)!=='[1,2,3,4,5,6,7,8]'||JSON.stringify(current.sfp)!=='[9,10]'))return legacy;
+    if(version===1&&['zones','sfp','sfp_sync'].some(key=>Object.hasOwn(scene,key)))return invalid;
+    if(version===1&&current.copper.length!==8&&(Object.keys(scene.overrides||{}).length||scene.rules?.length))return legacy;
   }
   return '';
 }

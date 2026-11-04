@@ -1,3 +1,4 @@
+import {checkProductWorkflows} from './product-workspace-checks.mjs';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
@@ -510,6 +511,7 @@ try {
   assert.deepEqual(restored.sfp, original.sfp);
   assert.deepEqual(restored.sfp_sync, original.sfp_sync);
   report.sfp_activity = {included: assigned.ports, restored: 9};
+  report.product_workflows=await checkProductWorkflows({evaluate,until,send,screenshot,url});
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

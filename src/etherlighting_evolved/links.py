@@ -103,15 +103,22 @@ class TrafficMeter:
 
     def __init__(self) -> None:
         self._previous: dict[int, tuple[float, int]] = {}
+        self.valid: set[int] = set()
 
     def update(self, links: dict[int, PortLink], now: float | None = None) -> dict[int, float]:
         now = time.monotonic() if now is None else now
         rates = {}
+        self.valid = set()
+        self._previous = {port: value for port, value in self._previous.items() if port in links}
         for port, link in links.items():
             total = link.rx_bytes + link.tx_bytes
             before = self._previous.get(port)
+            if not link.counters_valid:
+                self._previous.pop(port, None)
+                continue
             if before and now > before[0] and total >= before[1]:
                 rates[port] = (total - before[1]) * 8 / (now - before[0])
+                self.valid.add(port)
             else:
                 rates[port] = 0.0
             self._previous[port] = (now, total)

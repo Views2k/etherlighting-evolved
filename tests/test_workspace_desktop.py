@@ -90,3 +90,62 @@ def test_desktop_creation_uses_available_bounds_without_starting_a_real_window(m
     assert calls["window"]["min_size"] == (400, 350)
     assert calls["start"]["gui"] == "edgechromium"
     assert app.window is window
+
+
+def quit_fixture(tmp_path, server):
+    import threading
+
+    app = WorkspaceDesktopApp.__new__(WorkspaceDesktopApp)
+    app.directory, app.server = tmp_path, server
+    app.quit_lock, app.stopped = threading.Lock(), threading.Event()
+    app.frame = app.window = None
+    app.quitting = False
+    notifications, stops = [], []
+    app.tray = SimpleNamespace(notify=lambda *args: notifications.append(args), stop=lambda: stops.append(True))
+    return app, notifications, stops
+
+
+def test_dead_gateway_allows_shell_exit_and_preserves_unconfirmed_cleanup(tmp_path):
+    import json
+
+    from etherlighting_evolved.workspace_desktop import Gateway
+
+    gateway = Gateway(tmp_path, tmp_path, demo=True, port=1)
+    gateway.process = SimpleNamespace(poll=lambda: 19)
+    journal = tmp_path / "output-ownership.json"
+    journal.write_text('{"owner":"retained"}', encoding="utf-8")
+    app, notifications, stops = quit_fixture(tmp_path, gateway)
+    app.quit()
+    assert app.stopped.is_set() and app.quitting
+    assert stops == [True]
+    assert len(notifications) == 1
+    record = json.loads((tmp_path / "last-session.json").read_text("utf-8"))
+    assert record["stage"] == "desktop_exit"
+    assert record["outcome"] == "cleanup_unconfirmed"
+    assert set(record) == {"time", "stage", "outcome", "build"}
+    assert journal.read_text("utf-8") == '{"owner":"retained"}'
+    app.quit()
+    assert stops == [True]
+
+
+def test_running_gateway_cleanup_failure_keeps_retry_available(tmp_path):
+    def stop():
+        raise RuntimeError("cleanup has not been confirmed")
+
+    app, notifications, stops = quit_fixture(tmp_path, SimpleNamespace(stop=stop))
+    app.quit()
+    assert not app.stopped.is_set() and not app.quitting
+    assert stops == [] and len(notifications) == 1
+    assert not (tmp_path / "last-session.json").exists()
+
+
+def test_dead_gateway_can_close_shell_even_when_status_storage_is_unavailable(tmp_path):
+    from etherlighting_evolved.workspace_desktop import Gateway
+
+    gateway = Gateway(tmp_path, tmp_path, demo=True, port=1)
+    gateway.process = SimpleNamespace(poll=lambda: 19)
+    blocked = tmp_path / "blocked"
+    blocked.write_text("file", encoding="utf-8")
+    app, _, stops = quit_fixture(blocked, gateway)
+    app.quit()
+    assert app.stopped.is_set() and stops == [True]

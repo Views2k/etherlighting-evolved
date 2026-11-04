@@ -25,6 +25,7 @@ import logging
 import math
 import random
 import re
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -37,7 +38,7 @@ from .effects.base import Effect, RenderContext
 from .health import HEALTH_INTERVAL, HealthParseError
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
-from .poe import PoePort
+from .poe import PoePort, summarize_poe
 from .rules import DEFAULT_RULES, PortFacts, Rule, first_match
 from .sfp import NATIVE_PERIODS, SfpLight, SfpSync
 from .sfp_playback import SfpPlayback, displayed_rgb
@@ -224,6 +225,18 @@ class Engine:
         self.links: dict[int, PortLink] = {}
         self.poe: dict[int, PoePort] = {}
         self.traffic: dict[int, float] = {}
+        self._telemetry_generation = None
+        self._telemetry_token: str | None = None
+        self._telemetry_sequence = 0
+        self._telemetry_updated_at: float | None = None
+        self._telemetry_sampled_at: str | None = None
+        self._poe_updated_at: float | None = None
+        self._identify: dict | None = None
+        self._identify_base: tuple[Color, float] | None = None
+        self._identify_timer: asyncio.TimerHandle | None = None
+        self._history = None
+        self._history_binding: str | None = None
+        self.history_error: str | None = None
         self.revision = 0
         self.frames = 0
         self.commands = 0
@@ -326,6 +339,100 @@ class Engine:
             raise cleanup_error
         if self.switch.output_lease is not None:
             self.switch.output_lease.finish()
+
+    # Temporary identification stays outside the saved scene.
+
+    def start_identify(self, port: Any) -> dict:
+        port = self._port(port, effect_port=True)
+        if (not self.connected or self.mode != "running" or self._stopping
+                or self._native_blocked or self._output_uncertain() or self._reconnect_blocked):
+            raise ValueError("Resume connected lighting before identifying a port.")
+        self.switch.require_output_profile()
+        if not isinstance(self.switch.transport, SimulatedTransport):
+            lease = self.switch.output_lease
+            if lease is None or lease.closed or lease.uncertain or not all(lease.owns(path) for path in lease.paths):
+                raise ValueError("EE must own lighting output before identifying a port.")
+            lease.before_write(getattr(self.switch.transport, "host_key_fingerprint", None))
+        if port > self.num_ports and not self.switch.scoped_sfp:
+            raise ValueError("This SFP port does not have qualified lighting output.")
+        if self._identify is not None:
+            raise ValueError("Another port is being identified. Stop it before starting another.")
+        loop = asyncio.get_running_loop()
+        token = secrets.token_hex(16)
+        self._identify = {"id": token, "port": port, "started": timing.monotonic(),
+                          "expires": timing.monotonic() + 10.0}
+        self._identify_timer = loop.call_later(10.0, self.stop_identify, token)
+        self._identify_changed(port)
+        return self.identify_state()
+
+    def stop_identify(self, token: str | None = None) -> None:
+        current = self._identify
+        if current is None:
+            return
+        if token is not None and token != current["id"]:
+            raise ValueError("The identification changed. Refresh before stopping it.")
+        self._identify = None
+        self._identify_base = None
+        if self._identify_timer is not None:
+            self._identify_timer.cancel()
+            self._identify_timer = None
+        self._identify_changed(current["port"])
+
+    def _identify_changed(self, port: int) -> None:
+        if port in self.sfp:
+            self._revise_sfp_outputs({port})
+        else:
+            self._keys[port - 1] = None
+            self._fades.pop(port - 1, None)
+        if self.mode == "running":
+            self._output_halt.set()
+            self._output_halt = asyncio.Event()
+        self._dirty.set()
+        self._sfp_changed.set()
+        if self._subscribers:
+            self._publish(self.state_message())
+
+    def identify_state(self) -> dict | None:
+        current = self._identify
+        if current is None:
+            return None
+        return {"id": current["id"], "port": current["port"],
+                "seconds_remaining": max(0, round(current["expires"] - timing.monotonic(), 1))}
+
+    def _identifying(self, port: int) -> bool:
+        current = self._identify
+        return bool(current is not None and current["port"] == port
+                    and self.connected and self.mode == "running"
+                    and timing.monotonic() < current["expires"])
+
+    def _identify_color(self) -> Color:
+        phase = (timing.monotonic() - self._identify["started"]) % 1.0
+        return Color(255, 255, 255) if phase < 0.5 else Color(0, 128, 255)
+
+    def attach_history(self, history, binding: str | None) -> None:
+        self._history, self._history_binding = history, binding
+        self._record_history()
+
+    def _record_history(self) -> None:
+        if self._history is None or self._history_binding is None:
+            return
+        try:
+            self._history.record(self._history_binding, self.snapshot())
+            self.history_error = None
+        except OSError:
+            self.history_error = "Lighting history could not be saved. Check the data folder."
+
+    def telemetry_state(self) -> dict:
+        age = None if self._telemetry_updated_at is None else max(0, timing.monotonic() - self._telemetry_updated_at)
+        return {"generation": self._telemetry_token, "sequence": self._telemetry_sequence,
+                "sampled_at": self._telemetry_sampled_at,
+                "sample_age_ms": None if age is None else round(age * 1000),
+                "stale": not self.connected or age is None or age > max(5.0, self.link_poll * 2.5)}
+
+    def poe_summary(self) -> dict:
+        age = None if self._poe_updated_at is None else max(0, timing.monotonic() - self._poe_updated_at)
+        return summarize_poe(getattr(self.switch, "poe_sample", None), range(1, self.num_ports + 1),
+                             age=age, connected=self.connected, max_age=max(5.0, self.link_poll * 2.5))
 
     # Zones
 
@@ -665,13 +772,16 @@ class Engine:
         return self.sfp[self._sfp_leader if self.sfp_sync.mode == "together" else port]
 
     def _sfp_color(self, port: int, elapsed: float) -> tuple[Color, float]:
+        if self._identifying(port):
+            return self._identify_color(), 100.0
         light = self._sfp_light(port)
         follows_ethernet = self.sfp_sync.mode == "ethernet"
         grouped = port in self._sfp_zones
         if grouped:
             color, brightness = self._sfp_zone_colors.get(port, BLACK), self.brightness
         elif follows_ethernet:
-            color, brightness = self._shown[self.sfp_sync.source_port - 1]
+            color, brightness = (self._identify_base if self._identifying(self.sfp_sync.source_port)
+                                 and self._identify_base is not None else self._shown[self.sfp_sync.source_port - 1])
         else:
             color, brightness = light.render(elapsed, port), self.brightness
         rule = self._sfp_rule(port)
@@ -719,7 +829,7 @@ class Engine:
         return outputs
 
     def _sfp_native_spec(self, port: int) -> tuple | None:
-        if port in self._sfp_zones or not self.switch.sfp_native_gradient:
+        if self._identifying(port) or port in self._sfp_zones or not self.switch.sfp_native_gradient:
             return None
         rule = self._sfp_rule(port)
         if rule is not None and rule.look.style != "effect":
@@ -776,10 +886,12 @@ class Engine:
         return rule
 
     def _sfp_requires_output(self, port: int) -> bool:
-        return (port in self._sfp_zones or self.sfp_sync.mode == "ethernet" or self._sfp_light(port).mode != "unmanaged"
-                or self._sfp_rule(port) is not None)
+        return (self._identifying(port) or port in self._sfp_zones or self.sfp_sync.mode == "ethernet"
+                or self._sfp_light(port).mode != "unmanaged" or self._sfp_rule(port) is not None)
 
     def _sfp_port_animating(self, port: int) -> bool:
+        if self._identifying(port):
+            return True
         rule = self._sfp_rule(port)
         if rule is not None and rule.look.style != "effect":
             return rule.look.style in ("pulse", "blink", "flash")
@@ -916,6 +1028,7 @@ class Engine:
     def release(self) -> None:
         """Halt new frames; wait_for_output_idle also ends any native animation."""
         self.mode = "released"
+        self.stop_identify()
         self._output_halt.set()
         self._native_release_pending |= self._native_engaged or self.switch.native_uncertain
         self._sfp_release_pending |= self._sfp_engaged or any(
@@ -1231,6 +1344,10 @@ class Engine:
     def state(self) -> dict:
         return {
             "schedule_clock": self.schedule_clock(),
+            "identify": self.identify_state(),
+            "telemetry": self.telemetry_state(),
+            "poe_summary": self.poe_summary(),
+            "history_error": self.history_error,
             "mode": self.mode,
             "connected": self.connected,
             "error": self.error,
@@ -1299,7 +1416,7 @@ class Engine:
                 "link": link.to_dict() if link else None,
                 "poe": poe.to_dict() if poe else None,
                 "facts": {k: v for k, v in vars(facts).items() if k not in ("port", "now")},
-                "traffic_bps": round(self.traffic.get(port, 0.0)),
+                "traffic_bps": round(self.traffic[port]) if port in self.traffic else None,
             })
         return result
 
@@ -1309,6 +1426,8 @@ class Engine:
     def frame_message(self) -> dict:
         return {"type": "frame", "mode": self.mode, "connected": self.connected,
                 "schedule_clock": self.schedule_clock(),
+                "identify": self.identify_state(), "telemetry": self.telemetry_state(),
+                "poe_summary": self.poe_summary(), "history_error": self.history_error,
                 "error": self.error,
                 "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
                 "stats": self.output_stats(),
@@ -1333,6 +1452,7 @@ class Engine:
             mailbox.put(message)
 
     def _changed(self) -> None:
+        self._record_history()
         self.revision += 1
         if self.mode == "running":
             self._output_halt.set()
@@ -1416,7 +1536,16 @@ class Engine:
                     brightness = override.brightness
                 sources[i] = {"kind": "override"}
                 key = ("override",)
-            if port in native and rule is None and override is None:
+            if self._identifying(port):
+                self._identify_base = (colors[i], brightness)
+                colors[i], brightness = self._identify_color(), 100.0
+                sources[i] = {"kind": "identify"}
+                self._keys[i] = ("identify",)
+                self._fades.pop(i, None)
+                self._shown[i] = (colors[i], brightness)
+                outputs.append(to_output(colors[i], brightness, self.dimming, self.gamma,
+                                         precise=self.switch.precise_rgb))
+            elif port in native and rule is None and override is None:
                 self._keys[i] = ("native", sources[i].get("id"), self._effect_of(port))
                 self._fades.pop(i, None)
                 self._shown[i] = (colors[i], brightness)
@@ -1552,6 +1681,13 @@ class Engine:
         if self.connected:
             log.warning("lost the switch: %s", exc)
         self.connected = False
+        self.stop_identify()
+        self._telemetry_generation = None
+        self._telemetry_token = None
+        self._telemetry_updated_at = None
+        self._poe_updated_at = None
+        self.traffic = {}
+        self._meter = TrafficMeter()
         self._output_halt.set()
         self._bandwidth.reset()
         if self._output_uncertain():
@@ -1746,14 +1882,28 @@ class Engine:
             try:
                 generation = getattr(self.switch.transport, "lighting_generation", None)
                 links = await self.switch.read_links()
-                if self.connected and generation is getattr(self.switch.transport, "lighting_generation", None):
-                    self._bandwidth.update(links, now=timing.monotonic(), generation=generation)
-                self.traffic = self._meter.update(links)
+                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                    continue
+                sample_time = timing.monotonic()
+                if generation is not self._telemetry_generation:
+                    self._telemetry_generation = generation
+                    self._telemetry_token = secrets.token_hex(12)
+                    self._meter = TrafficMeter()
+                self._telemetry_updated_at = sample_time
+                self._telemetry_sampled_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                self._telemetry_sequence += 1
+                self._bandwidth.update(links, now=sample_time, generation=generation)
+                measured = self._meter.update(links)
+                self.traffic = {port: measured[port] for port in self._meter.valid}
                 changed = {p: (k.link_up, k.anomaly) for p, k in links.items()} != {
                     p: (k.link_up, k.anomaly) for p, k in self.links.items()
                 }
                 self.links = links
-                self.poe = await self.switch.read_poe()
+                poe = await self.switch.read_poe()
+                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                    continue
+                self.poe = poe
+                self._poe_updated_at = timing.monotonic()
                 cpu = await self.switch.read_cpu()
                 if cpu is not None:
                     self.cpu_idle = cpu["idle"] if cpu["idle"] is not None else self.cpu_idle

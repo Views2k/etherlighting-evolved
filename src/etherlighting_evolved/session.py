@@ -26,6 +26,7 @@ from .hardware import PRO_XG8
 from .mailbox import Mailbox
 from .ownership import OutputJournal, OutputOwnershipError, device_identity
 from .presets import DeviceSceneStore, SceneStore
+from .scene_history import SceneHistory
 from .switch import EtherlightSwitch
 from .transport import (
     AuthenticationError,
@@ -513,6 +514,7 @@ class SessionManager:
         self.host, self.port, self.username = candidate.host, candidate.port, (candidate.username or None)
         self.simulated = candidate.simulated
         self._scene_store = candidate.store
+        engine.attach_history(SceneHistory(self.config.data_dir / "scene-history.json"), self.schedule_identity())
         if self._handoff.state in {"pending", "unconfirmed"}:
             await self._disconnect_locked()
             raise self._fail("handoff_unconfirmed", "The switch connection was stopped for handoff.", 409)

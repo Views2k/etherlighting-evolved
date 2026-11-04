@@ -31,7 +31,8 @@ function uiDom(context){
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const rule=(id='alert',changes={})=>({id,name:'Alert',enabled:true,match:'all',ports:[1],conditions:[{field:'anomaly',op:'is',value:true}],look:{style:'pulse',color:'#123456',rate:.123456789,brightness:37},...changes});
-const scene=rules=>({version:2,zones:[{id:'all',name:'All ports',ports:[1,2],effect:{id:'static',params:{color:'#FFFFFF'}}}],rules,brightness:80,overrides:{2:{color:'#654321',brightness:50}},sfp:{},sfp_sync:{mode:'independent',source_port:1}});
+const scene=rules=>({version:3,topology:{version:1,model:null,copper_ports:[1,2],sfp_ports:[]},zones:[{id:'all',name:'All ports',ports:[1,2],effect:{id:'static',params:{color:'#FFFFFF'}}}],rules,brightness:80,overrides:{2:{color:'#654321',brightness:50}},sfp:{},sfp_sync:{mode:'independent',source_port:1}});
+const profileRecords=scenes=>({profiles:Object.entries(scenes).map(([name,scene])=>({id:`profile-${name}`,name,scene,revision:1,schedules:[]}))});
 const live=scene=>({...scene,num_ports:2,ports:[{port:1},{port:2}],sfp:[],revision:0});
 
 async function automation(context,rules=[rule()],reject=false,{readScene,writeScene,...options}={}){
@@ -272,16 +273,16 @@ test('deleting a rule does not apply a separate pending priority edit',async con
 
 test('profile Apply delegates to the workspace history owner and legacy rename uses a body route',async context=>{
   const ui=uiDom(context),profiles={'.':scene([])},state=live(profiles['.']),sent=[],applied=[];
-  const request=async(path,method,body)=>{sent.push({path,method,body});if(path==='/api/presets'&&!method)return profiles;if(path==='/api/state')return state;if(path==='/api/presets/action')return {Renamed:profiles['.']};throw new Error('Unexpected profile request');};
-  const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state,onChange:async()=>{},onApplyProfile:async name=>applied.push(name)});ui.after(cleanup);await flush();
+  const request=async(path,method,body)=>{sent.push({path,method,body});if(path==='/api/profiles'&&!method)return profileRecords(profiles);if(path==='/api/state')return state;if(path==='/api/profiles/profile-.')return profileRecords({Renamed:profiles['.']});throw new Error('Unexpected profile request');};
+  const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state,onChange:async()=>{},onApplyProfile:async record=>applied.push(record.name)});ui.after(cleanup);await flush();
   assert.equal(ui.button('Replace with applied setup').disabled,true);ui.button('Apply profile').click();await flush();assert.deepEqual(applied,['.']);assert.equal(sent.some(item=>item.method),false);
   ui.button('Rename').click();await flush();const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0],form=dialog.querySelector('form');form.querySelector('input').value='Renamed';form.listeners.get('submit')({preventDefault(){}});await flush();
-  assert.deepEqual(sent.find(item=>item.method),{path:'/api/presets/action',method:'POST',body:{action:'rename',name:'.',target:'Renamed'}});
+  assert.deepEqual(sent.find(item=>item.method),{path:'/api/profiles/profile-.',method:'PATCH',body:{action:'rename',name:'Renamed',expected_revision:1}});
 });
 
 test('unchanged profile Rename closes without an error or request',async context=>{
   const ui=uiDom(context),profiles={Evening:scene([])},state=live(profiles.Evening),sent=[];
-  const request=async(path,method)=>{if(method)sent.push(path);return path==='/api/presets'?profiles:state;};
+  const request=async(path,method)=>{if(method)sent.push(path);return path==='/api/profiles'?profileRecords(profiles):path==='/api/presets'?profiles:state;};
   const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state});ui.after(cleanup);await flush();ui.button('Rename').click();await flush();
   const dialog=ui.findAll(ui.doc.body,node=>node.tagName==='dialog')[0];dialog.querySelector('form').listeners.get('submit')({preventDefault(){}});await flush();
   assert.deepEqual(sent,[]);assert.equal(ui.findAll(ui.doc.body,node=>node.tagName==='dialog').length,0);assert.equal(ui.byClass(ui.host,'notice')[0].textContent,'Profile name unchanged.');
@@ -318,7 +319,7 @@ test('Automation aborts a scene write when the shared mutation gate is canceled'
 
 async function profiles(context,options={}){
   const ui=uiDom(context),presets={Evening:scene([])},state=live(presets.Evening),sent=[];
-  const request=async(path,method,body)=>{if(method)sent.push({path,method,body});return path==='/api/presets'?presets:state;};
+  const request=async(path,method,body)=>{if(method)sent.push({path,method,body});return path==='/api/profiles'?profileRecords(presets):path==='/api/presets'?presets:state;};
   const cleanup=await renderProfiles(ui.host,{request,state,getState:()=>state,...options});ui.after(cleanup);await flush();
   return {...ui,presets,state,sent,cleanup};
 }

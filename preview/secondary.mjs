@@ -1,3 +1,6 @@
+import {renderSchedules} from './weekly-schedules.mjs';
+import {openRuleTester} from './rule-tester.mjs';
+import {mountLastSession} from './last-session.mjs';
 import {confirmAction} from './confirmation.mjs';
 import {switchHealth} from './switch-health.mjs';
 import {createOperationGate, matchingProfile, sceneFingerprint, profileNameError, scopeSummary, templateForRule, validateRuleDraft, conditionAvailable, ruleRateFromCycle, rulesSnapshot, profileSfpSummary} from './secondary-model.mjs';
@@ -196,7 +199,31 @@ function conditionEditor(condition, specs, onChange, remove, index) {
   return {row, read};
 }
 
-export async function renderAutomation(host, {request, state, onChange, getState = () => state, initialRuleId, getDraftScene = () => null, onBeforeMutation = async () => true}) {
+export async function renderAutomation(host, options) {
+  let current, active=true, changing=false, mode='rules';
+  async function show(next) {
+    if(changing||!active||current?.canLeave&&!(await current.canLeave()))return;
+    changing=true;
+    try {
+      current?.();mode=next;
+      current=await (mode==='schedules'?renderSchedules:renderRules)(host,options);
+      if(!active){current?.();return;}
+      const tabs=node('nav','automation-tabs');tabs.setAttribute('aria-label','Automation views');
+      for(const [value,label] of [['rules','Rules'],['schedules','Schedules']]) {
+        const tab=button(label,()=>show(value),`quiet ${value===mode?'selected':''}`);
+        tab.setAttribute('aria-pressed',String(value===mode));tabs.append(tab);
+      }
+      host.querySelector('.view-header')?.after(tabs);
+    } finally {changing=false;}
+  }
+  await show('rules');
+  const cleanup=()=>{active=false;current?.();};
+  cleanup.canLeave=()=>!changing&&(current?.canLeave?.()??true);
+  cleanup.hasChanges=()=>Boolean(current?.hasChanges?.());
+  cleanup.update=(...args)=>current?.update?.(...args);return cleanup;
+}
+
+async function renderRules(host, {request, state, onChange, getState = () => state, initialRuleId, getDraftScene = () => null, onBeforeMutation = async () => true}) {
   const controller = new AbortController();
   const {header, notice, status} = frame(host, 'Automation', 'Choose when your ports change color.');
   const gate = operationGate(host, status);
@@ -472,6 +499,7 @@ export async function renderAutomation(host, {request, state, onChange, getState
     body.append(appearance);
     summary = node('p','rule-summary');
     const actions = node('div','view-actions rule-actions'), save = node('button','button primary',orderDirty?'Apply rule and priority':'Apply rule'); save.type = 'submit';
+    actions.append(button('Test rules',()=>{sync();const candidate=copy(rules),replacement=copy(draft);replacement.id=selectedId||'preview-rule';const index=candidate.findIndex(rule=>rule.id===selectedId);if(index<0)candidate.push(replacement);else candidate[index]=replacement;openRuleTester({request,state:getState(),rules:candidate,signal:controller.signal});},'quiet'));
     actions.append(save,button('Cancel rule changes', () => { dirty = false; draft = copy(rules.find(rule => rule.id === selectedId) || blank()); drawEditor('rule-name'); }));
     if (selectedId) {
       const priority = node('div','priority-controls'), index = rules.findIndex(rule => rule.id === selectedId);
@@ -580,7 +608,11 @@ export async function renderProfiles(host, {request, state, onChange, getState =
   const controller = new AbortController();
   const {header,notice,status} = frame(host,'Profiles','Save a complete lighting setup and apply it when you want.');
   const gate = operationGate(host,status);
-  let scenes = {}, selected, current = getState(), loaded = false;
+  let scenes = {}, profileRecords = {}, selected, current = getState(), loaded = false;
+  function acceptProfiles(result) {
+    profileRecords=Object.fromEntries(result.profiles.map(row=>[row.name,row]));
+    scenes=Object.fromEntries(result.profiles.map(row=>[row.name,row.scene]));
+  }
   const previews=createProfilePreviews(current);
   let currentFingerprint=sceneFingerprint(current);
   const list = node('aside','secondary-list list'); list.setAttribute('aria-label','Saved profiles');
@@ -589,6 +621,7 @@ export async function renderProfiles(host, {request, state, onChange, getState =
   async function refreshCurrent() { await onChange?.(); current = {...getState(),...await request('/api/state')};previews.update(current); }
   async function afterWrite(message) {
     let refreshed = true;
+    try {acceptProfiles(await request('/api/profiles'));}catch{refreshed=false;}
     try { await refreshCurrent(); } catch { refreshed = false; }
     if (!gate.active) return;
     try { draw(); } catch { refreshed = false; }
@@ -615,32 +648,35 @@ export async function renderProfiles(host, {request, state, onChange, getState =
     const actions = node('div','row profile-actions');
     actions.append(button('Apply profile',() => gate.run(async () => {
       const target = selected;
-      if(onApplyProfile){if(await onApplyProfile(target) === false || !gate.active)return;current=getState();previews.update(current);draw();status('Profile applied.');}
+      if(onApplyProfile){if(await onApplyProfile(profileRecords[target]||target) === false || !gate.active)return;current=getState();previews.update(current);draw();status('Profile applied.');}
       else {
         const before=await request('/api/scene');
         await request('/api/scene','PUT',{scene:copy(scenes[target]),expected_revision:before.revision,preserve_unchanged:true,confirm_output:true});
         await afterWrite('Profile applied.');
       }
     }),'primary'));
+    if(layoutNotice)actions.firstElementChild.disabled=true;
     const updateProfile=button('Replace with applied setup',() => gate.run(async () => {
       if (!await onBeforeMutation()) return;
       const target = selected;
       if (!await confirmAction(host,'Update profile?',`Replace “${target}” with the lighting currently applied to the switch?`,'Update',controller.signal)) return;
-      scenes = await request('/api/presets','POST',{name:target}); await afterWrite('Profile updated.');
+      const record=profileRecords[target];acceptProfiles(await request(`/api/profiles/${record.id}`,'PATCH',{action:'replace',expected_revision:record.revision}));await afterWrite('Profile updated.');
     }));
     if(profileNameError(selected)){updateProfile.disabled=true;updateProfile.title='Rename this profile before updating it.';}
     actions.append(updateProfile);
     actions.append(button('Rename',() => gate.run(async () => {
       const target = selected, name = await nameDialog('Rename profile',target,scenes,controller.signal,target); if (!name) return;
       if(name===target){status('Profile name unchanged.');return;}
-      scenes = await request('/api/presets/action','POST',{action:'rename',name:target,target:name}); selected = name; await afterWrite('Profile renamed.');
+      const record=profileRecords[target];acceptProfiles(await request(`/api/profiles/${record.id}`,'PATCH',{action:'rename',name,expected_revision:record.revision})); selected = name; await afterWrite('Profile renamed.');
     }),'quiet'),button('Duplicate',() => gate.run(async () => {
       const target = selected, name = await nameDialog('Duplicate profile',`${target.slice(0,59)} copy`,scenes,controller.signal); if (!name) return;
-      scenes = await request('/api/presets/action','POST',{action:'duplicate',name:target,target:name}); selected = name; await afterWrite('Profile duplicated.');
+      const record=profileRecords[target];acceptProfiles(await request(`/api/profiles/${record.id}`,'PATCH',{action:'duplicate',name,expected_revision:record.revision})); selected = name; await afterWrite('Profile duplicated.');
     }),'quiet'),button('Delete',() => gate.run(async () => {
       const target = selected;
-      if (!await confirmAction(host,'Delete profile?',`Remove “${target}” from your saved profiles? Your current lighting keeps running.`,'Delete',controller.signal)) return;
-      scenes = await request('/api/presets/action','POST',{action:'delete',name:target}); selected = Object.keys(scenes)[0]; await afterWrite('Profile deleted.');
+      const record=profileRecords[target],dependent=record.schedules.filter(item=>item.enabled);
+      const message=`Remove “${target}” from your saved profiles? Your current lighting keeps running.`+(dependent.length?` This also disables ${dependent.map(item=>`“${item.name}”`).join(', ')}.`:'');
+      if (!await confirmAction(host,'Delete profile?',message,'Delete',controller.signal)) return;
+      acceptProfiles(await request(`/api/profiles/${record.id}`,'PATCH',{action:'delete',expected_revision:record.revision,disable_schedules:dependent.length>0})); selected = Object.keys(scenes)[0]; await afterWrite('Profile deleted.');
     }),'quiet danger')); detail.append(actions);
     const summary = node('div','scene-summary'); summary.append(node('h3','','Ethernet groups'));
     for (const group of scene.zones || []) {
@@ -663,8 +699,8 @@ export async function renderProfiles(host, {request, state, onChange, getState =
   }
   const reload = () => gate.run(async () => {
     try {
-      const results = await Promise.all([request('/api/presets'),request('/api/state')]); if (!gate.active) return;
-      scenes = results[0]; current = {...getState(),...results[1]};previews.update(current); if (!Object.hasOwn(scenes,selected)) selected = Object.keys(scenes)[0];
+      const results = await Promise.all([request('/api/profiles'),request('/api/state')]); if (!gate.active) return;
+      acceptProfiles(results[0]); current = {...getState(),...results[1]};previews.update(current); if (!Object.hasOwn(scenes,selected)) selected = Object.keys(scenes)[0];
       loaded = true; saveNew.disabled = false; draw(); status('');
     } catch(error) { if (!loaded) retryPanel(detail,'Profiles could not be loaded. Your saved profiles are unchanged.',reload); throw error; }
   });
@@ -720,10 +756,11 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   about.append(node('h2','','Etherlighting Evolved'),node('p','muted','Open-source UniFi Etherlighting controller.'),node('p','muted','Unofficial community project. Not affiliated with Ubiquiti.'));
   if (onHelp) about.append(button('Open help',onHelp,'quiet'));
   let controllerCleanup, switchState;
-  const privateHost=node('div','private-access-settings');
+  const privateHost=node('div','private-access-settings'),lastSessionHost=node('div','last-session-settings');
+  const lastSessionCleanup=mountLastSession(lastSessionHost,{request});
   const workspace = node('div','settings-workspace'), navigation = node('nav','settings-nav'), pane = node('div','settings-pane');
   navigation.setAttribute('aria-label','Settings sections');
-  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[about,'About']];
+  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[lastSessionHost,'Last session'],[about,'About']];
   const sectionButtons = sections.map(([section,label],index) => {
     const control = button(label, () => {
       const top = pane.scrollTop + section.getBoundingClientRect().top - pane.getBoundingClientRect().top;
@@ -742,12 +779,12 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
     });
   };
   pane.addEventListener('scroll',updateSection,{passive:true});
-  pane.append(content,health,controllerHost,privateHost,about);workspace.append(navigation,pane);host.append(workspace,notice);
+  pane.append(content,health,controllerHost,privateHost,lastSessionHost,about);workspace.append(navigation,pane);host.append(workspace,notice);
   updateSection();
   const privateCleanup=renderPrivateAccess(privateHost,request,{signal:lifecycle.signal});
   const reload = () => gate.run(async () => {
     try {
-      const [session, state] = await Promise.all([request('/api/session'),request('/api/state')]); if (!gate.active) return;
+      const [session, state, capabilities] = await Promise.all([request('/api/session'),request('/api/state'),request('/api/private-access').catch(()=>({can_close_workspace:false}))]); if (!gate.active) return;
       health.hidden = Boolean(session.simulated); sectionButtons[1].hidden = sectionButtons[2].hidden = Boolean(session.simulated); updateHealth(state);
       content.replaceChildren();
       switchState = node('p','connection-state');
@@ -780,13 +817,13 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       const details = node('dl','settings-details');
       for (const [label,value] of [['Lighting',state.mode === 'released' ? 'Controlled by UniFi' : 'Controlled by EE'],['Ethernet ports',lightingPorts(state).copper.length],['SFP lights',lightingPorts(state).sfp.length]]) details.append(node('dt','muted',label),node('dd','',value));
       content.append(details); status(''); updateSection();
-      if (onCloseWorkspace) content.append(button('Close web session',()=>gate.run(async()=>{
+      if (onCloseWorkspace && capabilities.can_close_workspace === true) content.append(button('Close web session',()=>gate.run(async()=>{
         if(await confirmAction(host,'Close web session?','This releases the switch connection and closes the web service. Your saved setup is preserved.','Close web session',lifecycle.signal)&&gate.active)await onCloseWorkspace();
       }),'quiet'));
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();
-  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
+  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();lastSessionCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
   cleanup.update = (state,session,unavailable = false) => {
     if (!gate.active) return;
     if (switchState) showConnectionStatus(switchState,switchConnectionStatus(session,unavailable));
@@ -806,7 +843,8 @@ export function renderHelp(host, {state = {}} = {}) {
       'Open Lighting and select a port. All ports selects every Ethernet and SFP port. Ethernet and SFP select those ports together.',
       'Turn on Select multiple to add or remove ports with a click or tap. Shift-click selects a range; Ctrl-click on Windows or Command-click on Mac adds individual ports.',
       'In Port controls, choose a fixed color or an effect, then adjust its settings. Apply changes sends the changes; Discard returns to your applied settings.',
-      'On a rack screen, open Workspace for groups, saved profiles, and Undo last apply.',
+      'Open Workspace for Find port, Saved selections, History, groups, profiles, and Undo last apply. Find port searches port numbers, port names, and associated clients.',
+      'Saved selections keeps named sets of ports. Recall one to select those ports, then choose the lighting you want to preview.',
       'Copy appearance keeps a selected port’s settings. Select compatible ports and choose Paste appearance to preview the same look before applying it.'
     ]],
     ['Preview and apply changes', [
@@ -814,7 +852,9 @@ export function renderHelp(host, {state = {}} = {}) {
       'The port map previews those changes. Show applied lets you compare them with the applied lighting; Show preview returns to your edits.',
       'Lighting previews stay available while you browse. Return to Lighting to continue editing, or save the preview as a profile. Apply changes sends it to the switch.',
       'Undo last apply restores the setup from before the most recent lighting or profile apply. It is available in Lighting and Profiles while that setup is still current.',
-      'Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.'
+      'Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.',
+      'History in Workspace lists earlier lighting setups for this switch. Review an entry and choose Restore to apply it.',
+      'When another device changes the lighting, Review lighting changes shows both edits. Reapply compatible edits or choose which settings to keep.'
     ]],
     ['Brightness and colors', [
       'Default brightness sets the brightness for effects and SFP lighting.',
@@ -826,12 +866,14 @@ export function renderHelp(host, {state = {}} = {}) {
     ['Choose an effect', [
       'Port effects run on the selected Ethernet and SFP ports. When only Ethernet ports are selected, turn on Include SFP lights to add the switch’s SFP indicators.',
       'Favorite effects are easy to find again. Recent effects keep the effects you have chosen close at hand.',
+      'In Port controls, open Saved effect settings to name the current effect and its settings. Choose a saved configuration to preview it on the selected ports.',
       'Speed controls how quickly an effect moves or completes a cycle. Color controls set its primary and secondary colors.',
       'Random color options vary the colors you enable. Leave the primary color fixed and randomize the background for a multicolor Marquee.',
       'PoE Usage blends between Low power and High power using each port’s delivered watts. Logarithmic scaling makes low-power differences visible; Fade speed controls how quickly colors follow a change.'
     ]],
     ['Understand the port map', [
       'The illuminated socket shows the lighting color. The link-speed legend explains the dot beneath each port.',
+      'Port details shows current traffic, link speed, PoE power, lighting source, and recent readings. Choose Identify for 10 seconds to locate a physical port, or Stop to finish early.',
       'The uplink symbol identifies the port connecting to the rest of your network. PoE symbols and watts describe power supplied by a port.',
       'Choose SFP lighting in Effects for the indicator’s own color and animation controls. Link status lets the switch manage the indicator.'
     ]],
@@ -844,7 +886,9 @@ export function renderHelp(host, {state = {}} = {}) {
       'Create a rule, choose when it should match, select the ports, then choose what they should show.',
       'Use All ports, Ethernet, or SFP to select targets quickly. Rules are checked from top to bottom; the first matching rule wins.',
       'Apply rule saves its conditions and appearance. Apply priority saves changes to the rule order. Time rules follow the EE computer’s local time.',
-      'For an SFP alert, select the Anomaly template, select the SFP targets, choose the alert color, and apply the rule.'
+      'For an SFP alert, select the Anomaly template, select the SFP targets, choose the alert color, and apply the rule.',
+      'Test rules evaluates your edits and priority for a selected port and time. Review the matching conditions and lighting source before applying.',
+      'Open Schedules to choose weekdays, a time on the EE computer, and a profile, brightness, handoff, or resume action. Review the next run and last result, then save the schedule.'
     ]],
     ['Save and reuse profiles', [
       'Save current as profile captures your applied lighting. Save preview as profile keeps unapplied changes so you can apply the complete setup later.',
@@ -852,7 +896,7 @@ export function renderHelp(host, {state = {}} = {}) {
       'Replace with applied setup updates the selected saved profile after confirmation. Rename and Duplicate organize profiles without changing your lighting.'
     ]],
     ['Connection and recovery', [
-      'Settings shows the current connection and which application controls the lighting. Refresh connection checks again.',
+      'Settings shows the current connection and which application controls the lighting. Refresh connection checks again. Last session shows the latest shutdown or cleanup result.',
       'Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. Your saved logins, profiles, and lighting setup are kept. EE waits until you connect again.',
       'When you want to resume EE, choose Connect with saved login or enter your SSH login. Choose Retry handoff when it is offered. If EE requests a recovery review, keep it disconnected until that review is complete.',
       'Connect UniFi Network in Settings to display device names from your controller. Enter its HTTPS address and account details. If prompted, verify the controller certificate fingerprint before approving it.',

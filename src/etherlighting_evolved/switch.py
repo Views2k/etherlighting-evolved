@@ -26,7 +26,7 @@ from .hardware import PRO_XG8, HardwareProfile, identify_profile
 from .health import parse_health
 from .links import PortLink, parse_port_show
 from .ownership import OutputLease, OutputOwnershipError
-from .poe import PoePort, parse_poe_show
+from .poe import PoePort, PoeSample, parse_poe_sample
 from .transport import NativeOutputUncertain, SimulatedTransport, SSHTransport, Transport, TransportError
 
 WRITE_FAILED = "__EE_LED_WRITE_FAILED__"
@@ -241,6 +241,7 @@ class EtherlightSwitch:
         self._last: dict[int, PortOutput] = {}
         self._last_sent: dict[int, float] = {}
         self._last_full = 0.0
+        self.poe_sample: PoeSample | None = None
         self._has_poe: bool | None = None  # learned from the first `swctrl poe show`
         self._cpu_ticks: tuple[int, int] | None = None
         self._send_lock = asyncio.Lock()
@@ -1018,7 +1019,8 @@ class EtherlightSwitch:
         if self._has_poe is False:
             return {}
         out = await self.transport.run("swctrl poe show 2>/dev/null", channel="links", timeout=10)
-        ports = parse_poe_show(out)
+        self.poe_sample = parse_poe_sample(out)
+        ports = self.poe_sample.ports
         if self._has_poe is None:
             self._has_poe = bool(ports)
         return ports
