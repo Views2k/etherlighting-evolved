@@ -1297,11 +1297,22 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
 @media (max-width: 700px) {
   .port-map { gap: 10px; }
   .port-map .uplink-bandwidth { margin: 0; padding: 0; border: 0; }
-  .output-dock { padding: 2px 10px; }
-  .output-dock .brightness-controls { width: 100%; gap: 2px 8px; }
-  .output-dock .output-control { flex: 1 1 200px; width: auto; flex-wrap: nowrap; }
-  .output-dock .output-control label { flex-basis: auto; }
-  .output-dock #draft-actions { border-top: 1px solid var(--line); }
+  .app-shell { height: 100dvh; }
+  .statusbar { min-height: 22px; padding: 1px 10px; gap: 0 8px; }
+  .status-connections { gap: 0 10px; }
+  .output-dock { padding: 0 10px; }
+  .output-dock .brightness-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 6px; width: 100%; }
+  .output-dock .output-control { display: grid; grid-template-columns: auto minmax(44px, 1fr) auto; gap: 6px; min-width: 0; width: auto; }
+  .output-dock #master { width: 100%; min-width: 44px; height: 44px; }
+  .output-dock #open-map-key { min-height: 44px; padding-inline: 6px; }
+  .output-dock .ownership-preview { grid-column: 1 / -1; }
+  .output-dock #draft-actions { gap: 0 4px; padding: 0; border-top: 1px solid var(--line); }
+  .output-dock #draft-actions > span:first-child { margin: 0; padding-top: 2px; font-size: 12px; line-height: 1.3; }
+  .output-dock #draft-actions .button { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 4px; white-space: normal; }
+}
+@media (display-mode: standalone) and (max-width: 700px) and (orientation: portrait) {
+  :root { --standalone-safe-top: env(safe-area-inset-top, 0px); }
+  .reserved-screen-bottom .app-shell { padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--standalone-safe-top))); }
 }
 
 .rack-meter-slot:empty, .bandwidth-chart { display: none; }
