@@ -18,6 +18,7 @@ function fixture() {
     remove(){this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
   }
   doc.createElement=tag=>new Element(tag);
+  doc.createElementNS=(_,tag)=>new Element(tag);
   const host=new Element('div'), media={matches:false,addEventListener:(type,fn)=>motionListeners.set(type,fn),removeEventListener:type=>motionListeners.delete(type)};
   const environment={document:doc,performance:{now:()=>time},matchMedia:()=>media,
     requestAnimationFrame:fn=>{const id=++next;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
@@ -37,8 +38,22 @@ test('bandwidth uses decimal network units without presenting tiny positive traf
   assert.deepEqual(formatBandwidth(125),{value:'<0.01',unit:'Mbps'});
   assert.deepEqual(formatBandwidth(10_000),{value:'0.01',unit:'Mbps'});
   assert.deepEqual(formatBandwidth(42_420_000),{value:'42.42',unit:'Mbps'});
-  assert.deepEqual(formatBandwidth(1_250_000_000),{value:'1.25',unit:'Gbps'});
+  assert.deepEqual(formatBandwidth(1_250_000_000),{value:'1250',unit:'Mbps'});
   for(const invalid of [null,undefined,'5000',-1,NaN,Infinity])assert.deepEqual(formatBandwidth(invalid),{value:'—',unit:''});
+});
+
+test('a speed test remains visible after the live sample returns to idle',()=>{
+  const ui=fixture();
+  ui.update(sample({upload_bps:500_000,download_bps:750_000,history:[
+    [-10_000,1_000_000,1_500_000_000],[-5000,200_000_000,750_000],[0,500_000,750_000]]}));
+  assert.equal(ui.text(1),'0.75 Mbps');
+  assert.equal(ui.readings[1].children[2].textContent,'Peak 1500 Mbps');
+  assert.equal(ui.readings[0].children[2].textContent,'Peak 200.00 Mbps');
+  assert.equal(ui.section.children[2].hidden,false);
+  ui.update(sample({status:'stale'}));
+  assert.equal(ui.readings[1].children[2].textContent,'');
+  assert.equal(ui.section.children[2].hidden,true);
+  ui.panel.dispose();
 });
 
 test('uplink data requires complete measured rates and fresh sample timing',()=>{

@@ -4,7 +4,7 @@ An open-source controller for UniFi Etherlighting switches. Unofficial; not affi
 supported by Ubiquiti Inc. UniFi and Etherlighting are trademarks of Ubiquiti Inc.
 """
 
-__version__ = "0.4.16"
+__version__ = "0.4.17"
 PROJECT_NAME = "Etherlighting Evolved"
 SHORT_NAME = "EE"
 TAGLINE = "Open-source controller for UniFi Etherlighting."

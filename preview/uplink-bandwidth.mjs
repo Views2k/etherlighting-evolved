@@ -7,8 +7,8 @@ const labels = {waiting:'Waiting for samples', stale:'Readings delayed', no_upli
 export function formatBandwidth(bps) {
   if (!finiteRate(bps)) return {value:'—',unit:''};
   if (bps > 0 && bps < 10_000) return {value:'<0.01',unit:'Mbps'};
-  const gigabits = bps >= 1_000_000_000;
-  return {value:(bps / (gigabits ? 1_000_000_000 : 1_000_000)).toFixed(2),unit:gigabits?'Gbps':'Mbps'};
+  const mbps = bps / 1_000_000;
+  return {value:mbps.toFixed(mbps >= 1000 ? 0 : 2),unit:'Mbps'};
 }
 
 export function uplinkReading(record, {connected=true, disconnected=false, elapsedMs=0}={}) {
@@ -36,10 +36,33 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     const arrow=element('span','bandwidth-direction',index?'↓':'↑');arrow.setAttribute('aria-hidden','true');
     term.append(arrow,element('span','',label));
     const description=element('dd',''), value=element('span','bandwidth-value','—'), unit=element('span','bandwidth-unit','');
-    description.append(value,unit);item.append(term,description);readings.append(item);
-    return {label,description,value,unit};
+    const peak=element('dd','bandwidth-peak');
+    description.append(value,unit);item.append(term,description,peak);readings.append(item);
+    return {label,description,value,unit,peak};
   });
-  section.append(heading,readings);host.append(section);
+  const chart=element('div','bandwidth-chart');chart.hidden=true;
+  chart.setAttribute('aria-hidden','true');
+  const svgNode=tag=>doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  const plot=svgNode('svg');plot.setAttribute('viewBox','0 0 240 36');plot.setAttribute('preserveAspectRatio','none');
+  const lines=fields.map(field=>{
+    const line=svgNode('polyline');line.setAttribute('class',field.label.toLowerCase());
+    plot.append(line);return line;
+  });
+  chart.append(element('span','bandwidth-chart-label','Last minute'),plot);
+  section.append(heading,readings,chart);host.append(section);
+  function showHistory(history) {
+    const samples=Array.isArray(history)?history.filter(point=>Array.isArray(point)&&point.length===3
+      &&Number.isFinite(point[0])&&point[0]<=0&&point[0]>-60000&&finiteRate(point[1])&&finiteRate(point[2])):[];
+    const peaks=fields.map((field,index)=>Math.max(0,...samples.map(p=>p[index+1])));
+    const scale=Math.max(1,...peaks);
+    for(const [index,field] of fields.entries()){
+      const peak=formatBandwidth(peaks[index]);
+      field.peak.textContent=samples.length?`Peak ${peak.value} ${peak.unit}`:'';
+      field.peak.title='Highest measured interval in the last minute';
+      lines[index].setAttribute('points',samples.map(p=>`${240+p[0]/250},${34-32*p[index+1]/scale}`).join(' '));
+    }
+    chart.hidden=samples.length<2;
+  }
   let record, connected=false, disconnected=false, receivedAt=0, signature='', frame=0, timer=0, disposed=false;
   let displayed=null, animation=null;
   const now=()=>environment.performance.now();
@@ -69,7 +92,7 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     if(disposed||doc.hidden)return;
     const reading=current();section.dataset.status=reading.status;
     if(reading.status!=='ready'){
-      cancel();signature='';write(null);status.textContent=labels[reading.status];
+      cancel();if(signature)showHistory([]);signature='';write(null);status.textContent=labels[reading.status];
       fields.forEach(field=>field.description.setAttribute('aria-label',`${field.label}: ${labels[reading.status]}`));
       section.title='Traffic across detected switch uplinks.';return;
     }
@@ -79,7 +102,7 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     const next=JSON.stringify([reading.sequence,reading.ports,reading.upload,reading.download]);
     const target=[reading.upload,reading.download];
     if(next!==signature||settle){
-      signature=next;cancel();
+      signature=next;cancel();showHistory(record.history);
       fields.forEach((field,index)=>{const formatted=formatBandwidth(target[index]);field.description.setAttribute('aria-label',`${field.label}: ${formatted.value} ${formatted.unit}`);});
       if(!displayed||settle||media.matches)write(target);
       else {animation={start:now(),from:[...displayed],to:target};frame=environment.requestAnimationFrame(paint);}

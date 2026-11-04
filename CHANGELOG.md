@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.17
+
+- The rack port inspector uses the full workspace height. The map key and brightness control share a row with the link legend.
+- Uplink rates stay in Mbps across gigabit speeds. The rack display shows the last minute of measured traffic and the highest five-second reading for each direction.
+
 ## 0.4.16
 
 - The Lighting faceplate shows uplink bandwidth next to the switch name. The eight Ethernet ports and two SFP ports share a row on desktop and rack displays.

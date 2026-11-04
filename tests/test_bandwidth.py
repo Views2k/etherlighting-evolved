@@ -30,8 +30,26 @@ def test_directional_rate_uses_actual_elapsed_time_and_not_the_nominal_refresh()
     meter.publish(now=7.25)
     sample = meter.snapshot(now=7.25)
     assert sample == {"status": "ready", "ports": [5], "upload_bps": 500_000.0,
-                      "download_bps": 1_000_000.0, "sample_period_ms": 6000.0,
+                      "download_bps": 1_000_000.0, "history": [[0, 500_000, 1_000_000]], "sample_period_ms": 6000.0,
                       "sample_age_ms": 250.0, "sequence": 1, "refresh_interval_ms": 5000}
+
+
+def test_uplink_history_keeps_the_test_burst_after_traffic_returns_to_idle():
+    meter = UplinkBandwidth([5])
+    rx = tx = 0
+    meter.update({5: uplink()}, now=0)
+    for t in range(5, 70, 5):
+        rx += 625_000 * (900 if t == 10 else 1)
+        tx += 625_000 * (300 if t == 15 else 1)
+        meter.update({5: uplink(rx=rx, tx=tx)}, now=t)
+        meter.publish(now=t)
+    sample = meter.snapshot(now=65)
+    assert sample["download_bps"] == sample["upload_bps"] == 1_000_000
+    assert sample["history"][:2] == [[-55_000, 1_000_000, 900_000_000], [-50_000, 300_000_000, 1_000_000]]
+    assert sample["history"][-1] == [0, 1_000_000, 1_000_000]
+    assert len(sample["history"]) == 12
+    meter.update({5: uplink()}, now=66)
+    assert meter.snapshot(now=66)["history"] == []
 
 
 def test_counter_collection_waits_for_publication_and_preserves_exact_large_counter_deltas():
