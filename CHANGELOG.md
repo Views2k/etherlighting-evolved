@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.19
+
+- Switch health displays the three temperature channels reported by the Pro XG 8 PoE.
+- Self-hosted controller sign-in uses the same strict login option as UniFi Network. EE renews an expired controller session when UniFi reports it in a JSON response.
+- Controller service errors in Settings identify the failed operation and show the HTTP status when available.
+
 ## 0.4.18
 
 - Hide Port controls to expand the map. Reopen the panel to continue editing the same selection.

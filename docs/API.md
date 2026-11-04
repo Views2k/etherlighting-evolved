@@ -417,6 +417,8 @@ active session's eligibility. `saved_login_matches_connection` distinguishes the
 active controller or credential set. When it is false and saving is eligible, offer an explicit Apply even
 if the checkbox is already checked. A new manual connection never implicitly replaces saved credentials.
 
+Account-based controller requests may include an `operation` with a `controller_error` (`login`, `sites`, `devices`, or `clients`). An unexpected upstream HTTP status is returned as `upstream_status`. Controller response bodies are private.
+
 `reconnect_state` is `off`, `waiting`, `connecting`, `retrying`, `connected`, `paused`, or `attention`.
 `saved_login_error` is null or a sanitized `{code,message}` object. No saved credential fields are returned.
 After a live switch session is established, the protected controller login is restored automatically within

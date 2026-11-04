@@ -1,6 +1,12 @@
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from etherlighting_evolved.health import (
+    HEALTH_COMMAND,
     MAX_HEALTH_RESPONSE,
     HealthParseError,
     parse_health,
@@ -73,10 +79,36 @@ def test_actual_sensor_labels_and_units_are_preserved_without_role_inference():
     assert temperatures == [
         {"id": "thermal_zone0", "label": "board", "celsius": 43.5, "source": "thermal_zone"},
         {"id": "hwmon0/temp1", "label": "tmp102 / Ambient", "celsius": 27, "source": "hwmon"},
-        {"id": "hwmon0/temp2", "label": "tmp102", "celsius": -5.5, "source": "hwmon"},
+        {"id": "hwmon0/temp2", "label": "tmp102 / Sensor 2", "celsius": -5.5, "source": "hwmon"},
         {"id": "thermal_zone1", "label": "thermal_zone1", "celsius": 0, "source": "thermal_zone"},
     ]
     assert all("role" not in sensor for sensor in temperatures)
+
+
+def test_hwmon_collector_reads_device_channels_once_and_respects_class_fault(tmp_path):
+    shell = shutil.which("sh")
+    if os.name == "nt":
+        git_shell = Path(os.environ["PROGRAMFILES"]) / "Git/bin/sh.exe"
+        shell = str(git_shell) if git_shell.is_file() else shell
+    if not shell:
+        pytest.skip("Shell unavailable for the sysfs fixture")
+    hwmon = tmp_path / "hwmon/hwmon0"
+    device = hwmon / "device"
+    device.mkdir(parents=True)
+    for directory in (hwmon, device):
+        (directory / "name").write_text("adt7475\n", newline="\n")
+    for channel, reading in enumerate((71750, 66750, 66500, 99000), 1):
+        (device / f"temp{channel}_input").write_text(f"{reading}\n", newline="\n")
+    (hwmon / "temp4_input").write_text("99000\n", newline="\n")
+    (hwmon / "temp4_fault").write_text("1\n", newline="\n")
+    command = HEALTH_COMMAND.replace("/sys/class/", "./").replace("/proc/", "./")
+    output = subprocess.run([shell, "-c", command], cwd=tmp_path, check=True,
+                            capture_output=True, text=True, timeout=10).stdout
+    sensors = parse_health(output)["temperatures"]
+    assert [(item["label"], item["celsius"]) for item in sensors] == [
+        ("adt7475 / Sensor 1", 71.75), ("adt7475 / Sensor 2", 66.75), ("adt7475 / Sensor 3", 66.5),
+    ]
+    assert output.count("hwmon0/temp4") == 1
 
 
 @pytest.mark.parametrize("record", [

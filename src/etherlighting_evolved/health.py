@@ -39,11 +39,14 @@ for ee_path in /sys/class/thermal/thermal_zone[0-9]*; do
     printf 'T\t%s\t%s\t%s\n' "${ee_path##*/}" "$ee_label" "$ee_temp"
 done
 ee_n=0
-for ee_path in /sys/class/hwmon/hwmon[0-9]*/temp[0-9]*_input; do
-    ee_n=$((ee_n + 1))
-    [ "$ee_n" -le 32 ] || break
+for ee_path in /sys/class/hwmon/hwmon[0-9]*/temp[0-9]*_input \
+               /sys/class/hwmon/hwmon[0-9]*/device/temp[0-9]*_input; do
     [ -r "$ee_path" ] || continue
     ee_dir=${ee_path%/*}
+    ee_class=${ee_dir%/device}
+    if [ "$ee_dir" != "$ee_class" ] && [ -e "$ee_class/${ee_path##*/}" ]; then continue; fi
+    ee_n=$((ee_n + 1))
+    [ "$ee_n" -le 32 ] || break
     ee_base=${ee_path%_input}
     ee_sensor=${ee_base##*/}
     ee_name=
@@ -63,7 +66,7 @@ for ee_path in /sys/class/hwmon/hwmon[0-9]*/temp[0-9]*_input; do
         IFS= read -r ee_type < "${ee_base}_type"
     fi
     printf 'H\t%s/%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "${ee_dir##*/}" "$ee_sensor" "$ee_name" "$ee_label" "$ee_temp" "$ee_fault" "$ee_type"
+        "${ee_class##*/}" "$ee_sensor" "$ee_name" "$ee_label" "$ee_temp" "$ee_fault" "$ee_type"
 done
 ee_n=0
 ee_mounts=0
@@ -160,6 +163,8 @@ def _sensor(record: list[str]) -> dict[str, Any] | None:
         label = _label(raw_label)
         if driver is None or label is None:
             return None
+        if not label:
+            label = f"Sensor {identifier.rsplit('/temp', 1)[1]}"
         label = " / ".join(part for part in (driver, label) if part)
         source = "hwmon"
     else:

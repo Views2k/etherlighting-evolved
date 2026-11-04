@@ -50,6 +50,14 @@ test('controller errors keep upstream response text and credentials out of the U
   }
 });
 
+test('controller errors identify a safe operation and status in live and saved responses', () => {
+  const detail = {operation:'devices', upstream_status:503};
+  for (const error of [{code:'controller_error', ...detail}, {code:'controller_error', details:detail}]) {
+    assert.match(controllerError(error), /switch discovery \(HTTP 503\)/);
+  }
+  assert.doesNotMatch(controllerError({code:'controller_error',operation:'private',upstream_status:'secret'}), /private|secret/);
+});
+
 test('verification challenges ask for a code without blaming the password', () => {
   assert.equal(controllerError({code:'two_factor_required',message:'private-account'}), 'Enter the verification code for your UniFi account.');
   assert.equal(controllerError({code:'verification_failed',message:'code 123456'}), 'The verification code was not accepted. Enter a new code and try again.');

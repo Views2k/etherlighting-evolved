@@ -35,7 +35,10 @@ def test_fresh_account_logs_in_and_reads_only_selected_controller_routes(monkeyp
         client.get(path)
     calls = [connection.calls[0] for connection in connections]
     assert calls[0][0:2] == ("POST", login_path)
-    assert json.loads(calls[0][2]) == {"username": "new-user", "password": "fixture-secret", remember: False}
+    expected = {"username": "new-user", "password": "fixture-secret", remember: False}
+    if kind == "self_hosted":
+        expected["strict"] = True
+    assert json.loads(calls[0][2]) == expected
     assert [call[1] for call in calls[1:]] == [prefix + path for path in (
         "/api/self/sites", "/api/s/branch/stat/device", "/api/s/branch/stat/sta")]
     assert all(call[0] == "GET" and call[2] is None for call in calls[1:])
