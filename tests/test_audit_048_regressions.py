@@ -135,9 +135,12 @@ def test_failed_profile_schedule_records_failure_and_does_not_skip_other_due_act
                          ("Brightness", {"type": "brightness", "value": 20})]:
         store.add({"name": name, "at": "12:00", "action": action, "device_binding": "demo"})
     presets = PresetStore(tmp_path / "presets.json")
+    presets.save("Evening", {"brightness": 23})
+    row = presets.record(name="Evening")
+    store.update(store.items[0].id, {"action": {"type": "preset", "profile_id": row["id"]}})
     def failed(_):
         raise ProfileStoreError("The saved profile could not be read.")
-    monkeypatch.setattr(presets, "get", failed)
+    monkeypatch.setattr(presets, "get_id", failed)
     class Session:
         def __init__(self):
             self.engine = self

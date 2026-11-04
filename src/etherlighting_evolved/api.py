@@ -10,6 +10,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 from weakref import ref
 
@@ -28,8 +29,10 @@ from .controller_api import ControllerIntegration
 from .effects import list_effects
 from .engine import Engine, NotFound
 from .guard import LOOPBACK_BINDS, RequestGuard
-from .presets import PresetStore, ProfileStoreError
-from .rules import FIELDS, STYLES, TEMPLATES
+from .lighting_library import attach_library_routes
+from .presets import PresetStore, ProfileConflict, ProfileStoreError
+from .rules import FIELDS, STYLES, TEMPLATES, Rule
+from .scene_history import attach_routes as attach_history_routes
 from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
 from .session import LoginError, SessionManager
 from .transport import SimulatedTransport, TransportError
@@ -117,7 +120,20 @@ class PresetSave(BaseModel):
     name: str
     scene: dict[str, Any] | None = None
     expected_revision: str | None = Field(default=None, min_length=1)
-    overwrite: bool = True
+    overwrite: bool = False
+
+
+class RuleTest(BaseModel):
+    port: int = Field(ge=1, le=256)
+    rules: list[dict[str, Any]] = Field(max_length=256)
+    at: str | None = None
+
+
+class ProfileChange(BaseModel):
+    expected_revision: int = Field(ge=1)
+    action: str = "replace"
+    name: str | None = None
+    disable_schedules: bool = False
 
 
 class PresetAction(BaseModel):
@@ -340,6 +356,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
     controller.routes(api)
+    attach_library_routes(api, engine, sessions, config)
 
     # About and login
 
@@ -478,6 +495,41 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     # Rules
 
+    @api.post("/rules/test")
+    async def test_rules(body: RuleTest):
+        e = engine()
+        if body.port not in [*range(1, e.num_ports + 1), *e.switch.sfp_ports]:
+            raise HTTPException(400, detail={"code": "invalid", "message": "Choose a port on this switch."})
+        now = apply(datetime.fromisoformat, body.at) if body.at else datetime.now()
+        if now.tzinfo is not None:
+            raise HTTPException(400, detail={"code": "invalid", "message":
+                "Use the EE computer's local date and time."})
+        rules = [apply(Rule.parse, value, num_ports=e.num_ports, extra_ports=tuple(e.switch.sfp_ports))
+                 for value in body.rules]
+        facts = e.facts(body.port, now)
+        optical = body.port in e.switch.sfp_ports
+        indicator_active = optical and (e.sfp_sync.mode == "ethernet" or body.port in e._sfp_zones)
+        light = e._sfp_light(body.port) if optical else None
+        candidates = [rule for rule in rules if not optical or rule.ports]
+        winner = next((rule for rule in candidates if rule.matches(facts)), None)
+        suppressed = optical and ((light.mode == "off" and not indicator_active)
+                     or (winner and winner.look.style == "effect"
+                         and light.mode == "unmanaged" and not indicator_active))
+        if suppressed:
+            winner = None
+        override = e.overrides.get(body.port) if not optical else None
+        results = [{"id": rule.id, "name": rule.name, "enabled": rule.enabled,
+                    "in_scope": bool((not optical or rule.ports) and (not rule.ports or body.port in rule.ports)),
+                    "matches": bool(rule in candidates and rule.matches(facts)),
+                    "conditions": [{**condition.to_dict(), "label": FIELDS[condition.field].label,
+                                    "actual": facts.value(condition.field), "passes": condition.test(facts)}
+                                   for condition in rule.conditions]} for rule in rules]
+        return {"port": body.port, "at": now.isoformat(timespec="minutes"), "rules": results,
+                "winner": {"id": winner.id, "name": winner.name} if winner else None,
+                "source": ("individual_color" if override else "rule" if winner else
+                           "port_effect" if not optical or indicator_active else "sfp_setting"),
+                "output_running": e.mode == "running", "scene_revision": scene_envelope(e.snapshot())["revision"]}
+
     @api.get("/rules")
     async def rules():
         return engine().state()["rules"]
@@ -612,7 +664,56 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in affected_sfp})
         return accepted
 
+    async def restore_history_scene(scene, revision):
+        return await restore_scene(SceneRestore(scene=scene, expected_revision=revision,
+                                               preserve_unchanged=True, confirm_output=True))
+
+    attach_history_routes(api, engine, apply, restore_history_scene)
+
     # Presets
+
+    def dependent_schedules(profile_id):
+        scheduler.migrate_profiles()
+        return [schedule for schedule in schedules.items if schedule.action.get("profile_id") == profile_id]
+
+    @api.get("/profiles")
+    async def profile_records():
+        scheduler.migrate_profiles()
+        return {"profiles": [{**row, "schedules": [{"id": item.id, "name": item.name, "enabled": item.enabled}
+                for item in schedules.items if item.action.get("profile_id") == row["id"]]}
+                for row in presets.records()]}
+
+    @api.patch("/profiles/{profile_id}")
+    async def change_profile(profile_id: str, body: ProfileChange):
+        require_workspace()
+        dependents = dependent_schedules(profile_id)
+        try:
+            row = presets.record(profile_id=profile_id)
+            if row["revision"] != body.expected_revision:
+                raise ProfileConflict("This profile changed. Refresh profiles before trying again.")
+            if body.action == "delete":
+                enabled = [item for item in dependents if item.enabled]
+                if enabled and not body.disable_schedules:
+                    raise HTTPException(409, detail={"code": "profile_in_use", "message":
+                        "This profile has enabled schedules. Disable those schedules when deleting it.",
+                        "schedules": [{"id": item.id, "name": item.name} for item in enabled]})
+                for item in enabled:
+                    schedules.update(item.id, {"enabled": False})
+                presets.change(profile_id, body.expected_revision, delete=True)
+            elif body.action == "replace":
+                presets.change(profile_id, body.expected_revision, scene=engine().snapshot())
+            elif body.action in {"rename", "duplicate"} and body.name is not None:
+                presets.change(profile_id, body.expected_revision, name=body.name, duplicate=body.action == "duplicate")
+            else:
+                raise ValueError("Choose a profile action and a name when renaming or duplicating.")
+        except (ProfileConflict, KeyError) as exc:
+            raise HTTPException(409, detail={"code": "profile_changed", "message":
+                "This profile changed or was removed. Refresh profiles before trying again."}) from exc
+        except FileExistsError as exc:
+            raise HTTPException(409, detail={"code": "already_exists", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail={"code": "invalid", "message": str(exc)}) from exc
+        return await profile_records()
 
     @api.get("/presets")
     async def list_presets():
@@ -621,6 +722,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @api.post("/presets", status_code=201)
     async def save_preset(body: PresetSave):
         e = engine()
+        scheduler.migrate_profiles()
         current = scene_envelope(e.snapshot())
         if body.scene is not None and body.expected_revision is None:
             raise HTTPException(400, detail={"code": "scene_revision_required", "message":
@@ -634,7 +736,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             raise HTTPException(400, detail={"code": "invalid", "message":
                                             "The lighting setup has invalid settings."}) from exc
         try:
-            apply(presets.save, body.name, snapshot, overwrite=body.overwrite)
+            apply(presets.save, body.name, snapshot, overwrite=False)
         except FileExistsError as exc:
             raise HTTPException(409, detail={"code": "already_exists", "message": str(exc)}) from exc
         return presets.list()
@@ -652,6 +754,10 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @api.delete("/presets/{name}")
     async def delete_preset(name: str):
         try:
+            row = presets.record(name=name)
+            if any(item.enabled for item in dependent_schedules(row["id"])):
+                raise HTTPException(409, detail={"code": "profile_in_use", "message":
+                    "This profile has enabled schedules. Review it in Profiles before deleting it."})
             presets.delete(name)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found", "message": f"no preset named {name!r}"}) from None
@@ -659,6 +765,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     def transfer_preset(action, source: str, target: str):
         try:
+            scheduler.migrate_profiles()
             action(source, target)
         except KeyError:
             raise HTTPException(404, detail={
@@ -694,7 +801,9 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.get("/schedules")
     async def list_schedules():
-        return {"schedules": scheduler.list(), "actions": list(ACTIONS), "history": scheduler.history}
+        return {"schedules": scheduler.list(), "actions": list(ACTIONS), "history": scheduler.history,
+                "history_available": not scheduler._journal_error,
+                "clock": sessions.engine.state().get("schedule_clock") if sessions.engine else None}
 
     def bind_schedule(data):
         require_workspace()
@@ -702,7 +811,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         if identity is None:
             raise HTTPException(409, detail={"code": "not_logged_in", "message": "Connect a switch before "
                                             "applying a schedule."})
-        return {**data, "device_binding": identity}
+        return apply(scheduler.bind_action, {**data, "device_binding": identity})
 
     @api.post("/schedules", status_code=201)
     async def add_schedule(schedule: dict[str, Any] = Body(...)):
@@ -710,22 +819,34 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.patch("/schedules/{schedule_id}")
     async def update_schedule(schedule_id: str, changes: dict[str, Any] = Body(...)):
+        current = apply(schedules.get, schedule_id)
+        if changes.get("expected_revision", current.revision) != current.revision:
+            raise HTTPException(409, detail={"code": "schedule_changed", "message":
+                "This schedule changed. Refresh schedules before saving it."})
         return scheduler.describe(apply(schedules.update, schedule_id, bind_schedule(changes)))
 
     @api.delete("/schedules/{schedule_id}")
-    async def delete_schedule(schedule_id: str):
+    async def delete_schedule(schedule_id: str, changes: dict[str, Any] = Body(default={})):
+        require_workspace()
+        current = apply(schedules.get, schedule_id)
+        if changes.get("expected_revision", current.revision) != current.revision:
+            raise HTTPException(409, detail={"code": "schedule_changed", "message":
+                "This schedule changed. Refresh schedules before deleting it."})
         apply(schedules.delete, schedule_id)
         return scheduler.list()
 
     @api.post("/schedules/{schedule_id}/run")
-    async def run_schedule(schedule_id: str):
+    async def run_schedule(schedule_id: str, changes: dict[str, Any] = Body(default={})):
         require_workspace()
+        scheduler.migrate_profiles()
         schedule = apply(schedules.get, schedule_id)
+        if changes.get("expected_revision", schedule.revision) != schedule.revision:
+            raise HTTPException(409, detail={"code": "schedule_changed", "message":
+                "This schedule changed. Refresh schedules before running it."})
         if not scheduler.is_bound(schedule):
             raise HTTPException(409, detail={"code": "schedule_confirmation_required", "message":
                                             "Review and apply this schedule for the connected switch first."})
-        scheduler.run(schedule)
-        return scheduler.history[0]
+        return await scheduler.run_confirmed(schedule)
 
     # Simulator controls (demo login only)
 

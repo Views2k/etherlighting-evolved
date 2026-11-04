@@ -22,6 +22,14 @@ export function switchHealth(state = {}, unavailable = false) {
   if(storage.length) for(const drive of storage) resourceRows.push([`Storage · ${drive.mount}`,usage(drive)]);
   else resourceRows.push(['Storage used','Not reported']);
   resourceRows.push(['Resource sample age',finite(stats.health_sample_age_ms)?`${number(stats.health_sample_age_ms/1000)} s`:'—']);
+  const poe=state.poe_summary,poeRows=[];
+  if(poe){
+    const fresh=!unavailable&&state.connected&&poe.status==='ready';
+    poeRows.push(['PoE draw',finite(poe.draw_w)?number(poe.draw_w)+' W'+(fresh?'':' · '+(poe.status==='partial'?'Partial sample':'Last sample')):'Waiting for a sample']);
+    poeRows.push(['PoE budget',finite(poe.budget_w)?number(poe.budget_w)+' W':'Not reported']);
+    poeRows.push(['PoE headroom',fresh&&Number.isFinite(poe.headroom_w)?poe.headroom_w<0?number(-poe.headroom_w)+' W over budget':number(poe.headroom_w)+' W':'Waiting for a complete sample']);
+    for(const consumer of (poe.consumers||[]).slice(0,5))poeRows.push(['PoE · Port '+consumer.port,number(consumer.power_w)+' W']);
+  }
   return {
     status: state.reconnect_required ? 'Reconnect the switch to resume lighting.'
       : unavailable || !state.connected ? 'Last reported readings · switch disconnected'
@@ -32,7 +40,7 @@ export function switchHealth(state = {}, unavailable = false) {
       ['CPU usage · last sample', hasCpuSample && finite(idle) && idle <= 1 ? `${number((1 - idle) * 100, 0)}%` : '—'],
       ['Load average', hasCpuSample ? number(stats.switch_load, 2) : '—'],
       ['CPU sample age', finite(stats.cpu_sample_age_ms) ? `${number(stats.cpu_sample_age_ms / 1000)} s` : '—'],
-      ...resourceRows,
+      ...resourceRows,...poeRows,
     ],
   };
 }

@@ -42,7 +42,7 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
       if(!access.authorize(request).ok){json(response,403,{detail:{code:'private_access_denied',message:'Use your approved Tailscale account to open EE.'}});return;}
       const pathname=requestPath(request.url);
       if(pathname===null){json(response,403,{detail:{code:'private_access_denied',message:'This request cannot be opened through private access.'}});return;}
-      if(pathname==='/api/private-access'&&request.method==='GET'){json(response,200,{...status(),can_configure:false,can_change_port:false,setup_action:null,action_url:null});return;}
+      if(pathname==='/api/private-access'&&request.method==='GET'){json(response,200,{...status(),can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null});return;}
       if(LOCAL_ONLY.has(pathname)){json(response,403,{detail:{code:'local_access_required',message:'Manage this setting on the computer running EE.'}});return;}
       const upstream=http.request({host:'127.0.0.1',port:targetPort,path:request.url,method:request.method,headers:headers(request)},remote=>{
         response.writeHead(remote.statusCode,remote.headers);remote.pipe(response);

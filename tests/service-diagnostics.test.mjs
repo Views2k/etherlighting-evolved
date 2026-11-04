@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,readdirSync,statSync,rmSync} from 'node:fs';
+import {mkdtempSync,readFileSync,readdirSync,statSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {createServiceDiagnostics} from '../preview/service-diagnostics.mjs';
+import {createServiceDiagnostics,readLastSession,sessionSummary} from '../preview/service-diagnostics.mjs';
 
 function fixture(context,maxBytes){
   const directory=mkdtempSync(path.join(tmpdir(),'ee-service-diagnostics-'));
@@ -45,7 +45,7 @@ test('diagnostics rotate to one bounded backup and unsupported events are ignore
   const f=fixture(context,1024);
   assert.equal(f.log.record('secret event'),false);
   for(let i=0;i<100;i++)assert.equal(f.log.record('engine_exit',{code:i}),true);
-  assert.deepEqual(readdirSync(f.directory).sort(),['service-diagnostics.log','service-diagnostics.log.1']);
+  assert.deepEqual(readdirSync(f.directory).sort(),['last-session.json','service-diagnostics.log','service-diagnostics.log.1']);
   for(const name of readdirSync(f.directory))assert.ok(statSync(path.join(f.directory,name)).size<=1024);
   assert.equal(f.entries().at(-1).exit_code,99);
 });
@@ -53,4 +53,36 @@ test('diagnostics rotate to one bounded backup and unsupported events are ignore
 test('an unavailable log destination does not break lifecycle cleanup',()=>{
   const log=createServiceDiagnostics(path.join(tmpdir(),'missing-ee-diagnostics',String(Date.now())));
   assert.equal(log.record('workspace_closed'),false);
+});
+
+
+test('last session persists safe lifecycle status across restart and log rotation',context=>{
+  const f=fixture(context,1024);f.log.setBuild('0.4.19');
+  f.log.record('parent_cleanup_exhausted',{attempts:4,message:'private secret'});
+  assert.equal(f.log.summary().last_session.stage,'parent_cleanup');
+  for(let i=0;i<100;i++)f.log.record('engine_started');
+  const restarted=createServiceDiagnostics(f.directory);
+  assert.deepEqual(restarted.summary(),f.log.summary());
+  assert.equal(restarted.summary().last_session.build,'0.4.19');
+  assert.equal(restarted.summary().last_session.attempts,4);
+  assert.equal(restarted.summary().last_session.outcome,'cleanup_unconfirmed');
+  assert.equal(JSON.stringify(restarted.summary()).includes('private'),false);
+  restarted.setBuild('0.4.20');restarted.record('workspace_closed');
+  assert.equal(readLastSession(f.directory).last_session.outcome,'closed');
+});
+
+test('stored diagnostics are validated again and never expose arbitrary strings',context=>{
+  const f=fixture(context);
+  writeFileSync(path.join(f.directory,'last-session.json'),JSON.stringify({time:'2026-11-04T12:00:00Z',stage:'desktop_exit',outcome:'cleanup_unconfirmed',build:'private host',secret:'private token'}));
+  const read=readLastSession(f.directory);assert.equal(read.available,true);assert.equal(read.last_session.build,null);
+  assert.equal(JSON.stringify(read).includes('private'),false);
+  writeFileSync(path.join(f.directory,'last-session.json'),'private raw error');
+  assert.deepEqual(readLastSession(f.directory),{available:false,last_session:null});
+  assert.equal(sessionSummary({time:'invalid',stage:'engine',outcome:'failed'}),null);
+});
+
+test('a current diagnostic remains visible when its durable destination is unavailable',()=>{
+  const log=createServiceDiagnostics(path.join(tmpdir(),'missing-ee-diagnostics',String(Date.now())));
+  log.record('parent_cleanup_exhausted',{attempts:4});
+  assert.equal(log.summary().last_session.outcome,'cleanup_unconfirmed');
 });

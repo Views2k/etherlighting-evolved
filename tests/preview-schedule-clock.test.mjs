@@ -51,19 +51,16 @@ test('missing, offset-free and malformed clocks never claim browser-local schedu
 
 test('Lighting, profile and ownership previews use the same host schedule in different browser timezones',()=>{
   const url=name=>new URL(`../${name}`,import.meta.url).href;
-  const script=`import {readFile} from 'node:fs/promises';import vm from 'node:vm';
+  const script=`import {previewDraftColors} from ${JSON.stringify(url('preview/draft-preview.mjs'))};
     import {hostScheduleDate,receiveScheduleClock} from ${JSON.stringify(url('preview/schedule-clock.mjs'))};
     import {profileColors} from ${JSON.stringify(url('preview/profile-preview.mjs'))};
-    import {effectDrafts,effectDraftForPort} from ${JSON.stringify(url('preview/effect-draft.mjs'))};
     import {controlSource} from ${JSON.stringify(url('preview/lighting-state.mjs'))};
-    import {matchingRule,matchingSfpRule,renderLook} from ${JSON.stringify(url('src/rules.mjs'))};
-    import {defaultConfig,effectColor,previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim} from ${JSON.stringify(url('preview/effect-renderer.mjs'))};
+    import {defaultConfig} from ${JSON.stringify(url('preview/effect-renderer.mjs'))};
     const effect={id:'static',params:{color:'#ffffff'}},rule={id:'night',name:'Night',enabled:true,ports:[1],match:'all',conditions:[{field:'time',op:'between',value:['22:00','07:00']}],look:{style:'solid',color:'#ff0000',brightness:100}};
     const state={schedule_clock:{local_iso:'2026-10-31T23:30:00-05:00',zone_name:'Central Daylight Time'},brightness:100,num_ports:1,ports:[{port:1,facts:{},color:'#ffffff'}],zones:[{id:'all',ports:[1],effect}],rules:[rule],overrides:{},sfp:[]};receiveScheduleClock(state.schedule_clock);
-    const source=await readFile(new URL(${JSON.stringify(url('preview/app.mjs'))}),'utf8'),start=source.indexOf('function previewDraft(time)'),end=source.indexOf('function speedLegend()',start);
-    const context={state,draft:{effect:{...effect,ports:[1],clearOverrides:true}},compareApplied:false,number:Number,effectDrafts,effectDraftForPort,hostScheduleDate,defaultConfig,effectColor,previewPhase,previewColorPhase,resolvedColorParams,activityPeak,dim,matchingRule,matchingSfpRule,renderLook,previewClocks:new Map(),previewStates:new Map(),sfpSync:()=>({mode:'independent'}),sfpDraftPorts:()=>[]};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+    const draft={effect:{...effect,params:{color:'#00ffff'},ports:[1],clearOverrides:true}};
     const daylight={...state,zones:[{id:'all',ports:[1],effect:defaultConfig('daylight')}],rules:[]};
-    console.log(JSON.stringify({hour:hostScheduleDate(state).getHours(),lighting:context.previewDraft(0),profile:profileColors(state,state,0),source:controlSource(state,1).kind,daylight:profileColors(daylight,state,0)}));`;
+    console.log(JSON.stringify({hour:hostScheduleDate(state).getHours(),lighting:previewDraftColors(state,draft,0),profile:profileColors(state,state,0),source:controlSource(state,1).kind,daylight:profileColors(daylight,state,0)}));`;
   const results=['America/Chicago','Europe/Berlin','Asia/Tokyo'].map(zone=>{
     const result=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',env:{...process.env,TZ:zone}});
     assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);

@@ -29,6 +29,7 @@ const ready = await new Promise((resolve,reject)=>{
 });
 if (!ready.ready) throw new Error(ready.code === 'instance_running' ? 'Close the other EE app before starting the live web workspace.' : 'Preview service could not start.');
 const backendPort = ready.port;
+diagnostics.setBuild(ready.version);
 diagnostics.record('engine_started');
 const allowed = new Set([`127.0.0.1:${port}`,`localhost:${port}`]);
 const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.webmanifest':'application/manifest+json','.png':'image/png','.ico':'image/x-icon','.svg':'image/svg+xml'};
@@ -48,12 +49,12 @@ const server=http.createServer(async(req,res)=>{
   if (!permitted(req)) {res.writeHead(403);res.end();return;}
   if(['/api/private-access','/api/private-access/refresh','/api/private-access/login'].includes(req.url)){
     const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
-    if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false});return;}
+    if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing});return;}
     try{
       if(workspaceClosing&&req.method!=='GET'){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
       if(req.url.endsWith('/refresh')&&req.method==='POST'){await privateAccess.initialize();respond(200,{...privateAccess.status(),can_configure:true});return;}
       if(req.url.endsWith('/login')&&req.method==='POST'){await privateAccess.login();respond(200,{...privateAccess.status(),can_configure:true});return;}
-      if(req.url==='/api/private-access'&&req.method==='GET'){respond(200,{...privateAccess.status(),can_configure:!workspaceClosing});return;}
+      if(req.url==='/api/private-access'&&req.method==='GET'){respond(200,{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing});return;}
       if(req.url==='/api/private-access'&&req.method==='PUT'){
         let body='';for await(const chunk of req){body+=chunk;if(body.length>1024){respond(413,{detail:'The setting is too large.'});return;}}
         let value;try{value=JSON.parse(body);}catch{respond(400,{detail:'Choose a valid access setting.'});return;}
@@ -65,6 +66,11 @@ const server=http.createServer(async(req,res)=>{
       respond(405,{detail:'This action is not supported.'});
     }catch{respond(409,{detail:{code:'private_access_failed',message:'Private access could not be updated. Refresh status and try again.'},status:privateAccess.status()});}
     return;
+  }
+  if(req.url==='/api/last-session'){
+    if(req.method!=='GET'){res.writeHead(405);res.end();return;}
+    res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+    res.end(JSON.stringify(diagnostics.summary()));return;
   }
   if(req.url==='/api/workspace/close'){
     if(req.method!=='POST'){res.writeHead(405);res.end();return;}
@@ -111,6 +117,9 @@ if(process.env.EE_DESKTOP_HOST==='1') watchDesktopParent({input:process.stdin,cl
   workspaceClosing=true;closing??=closeWorkspace();
   try{await closing;diagnostics.record('workspace_closed');server.close();process.stdin.destroy();}
   catch(error){diagnostics.record('workspace_close_failed',{reason:error.message});closing=undefined;throw error;}
+},exhausted:({attempts})=>{
+  diagnostics.record('parent_cleanup_exhausted',{attempts});
+  if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;
 }});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{workspaceClosing=true;void privateAccess.close();server.close();child.stdin.end('quit\n');});
 server.listen(port,'127.0.0.1',()=>{console.log(`Browser preview: http://127.0.0.1:${port}`);if(live)void privateAccess.initialize().catch(()=>{});});

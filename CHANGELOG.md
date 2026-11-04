@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Find ports by number or device name, inspect live traffic and link changes, and identify a socket for ten seconds.
+- Save named effect settings and reusable port selections. Review recent lighting setups and restore one from history.
+- Create weekly schedules and test rule conditions and priority before applying.
+- Profile renaming preserves scheduled references. Saved changes use revision checks, and scheduled occurrences survive restarts.
+- Review concurrent lighting edits before applying them. Port previews reflect updated group membership and SFP brightness.
+- Health shows reported PoE budget, measured draw, available headroom, and the largest consumers.
+- Settings shows the last session outcome. Desktop exit and parent-loss cleanup preserve unresolved recovery status.
+
 - Regular effects can run on selected SFP lights, on their own or alongside Ethernet ports. Return to SFP lighting restores the saved indicator settings.
 - Activity Glow, Traffic Trails, and Live Traffic can include measured uplink traffic.
 

@@ -6,6 +6,17 @@ Update this record when a tracked issue is fixed, disproved, or deferred. Record
 
 Version 0.4.19 includes the Pro XG temperature and UniFi Network sign-in changes described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
 
+## Product audit implementation
+
+The current work branch adds port search, a live inspector with traffic history and timed identification,
+weekly schedules, a nonwriting rule tester, named effect settings, PoE headroom, concurrent scene review,
+device-scoped lighting history, and saved port selections. Profile identity, stale edits, scheduler
+occurrence persistence, preview composition, and lifecycle diagnostics have corresponding regression checks.
+
+Identification uses the existing qualified output adapter. Physical LED appearance and device timing
+require device acceptance. Last session diagnostics are read-only; historic records without sufficient
+identity and cleanup evidence continue to block output.
+
 ## Remaining work
 
 | Area | Required result | Status |
@@ -13,12 +24,12 @@ Version 0.4.19 includes the Pro XG temperature and UniFi Network sign-in changes
 | Interrupted output ownership | In-app recovery after crash or restart, with pinned device identity, exclusive ownership, and confirmed scoped cleanup | Open |
 | Interrupted handoff | Retry completes retained cleanup without deleting evidence or bypassing ownership checks | Open |
 | Abrupt SSH loss | Automatic reconnect uses the verified recovery path; transient qualification failures remain retryable | Open |
-| Desktop shutdown | A dead gateway does not indefinitely block Tray Quit or installer upgrade | Open |
-| Parent-loss cleanup | Retries are bounded and expose actionable recovery state | Open |
+| Desktop shutdown | A dead gateway does not indefinitely block Tray Quit or installer upgrade | Implemented; source and simulator checks |
+| Parent-loss cleanup | Retries are bounded and expose actionable recovery state | Implemented; source and simulator checks |
 | Autostart upgrade | An unselected installer task preserves an existing tray-enabled preference | Open |
-| Profile layout validation | A cross-switch profile identifies incompatible topology before Apply | Open |
+| Profile layout validation | A cross-switch profile identifies incompatible topology before Apply | Implemented; source and simulator checks |
 | Touch and accessibility | Physical rack, mobile, installed WebView, keyboard, and virtual-cursor picker acceptance | Awaiting device verification |
-| Subset effect previews | Spatial-group geometry remains accurate when previewing a subset | Open |
+| Subset effect previews | Spatial-group geometry remains accurate when previewing a subset | Implemented; source and simulator checks |
 | Pro Max and SONiC | Verified output adapter and model-specific acceptance before enabling lighting | Blocked pending qualification |
 | Brightness comparison | Compare the same fixed color against the earlier accepted build | Deferred by owner |
 

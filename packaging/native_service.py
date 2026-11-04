@@ -15,6 +15,7 @@ from pathlib import Path
 
 import uvicorn
 
+from etherlighting_evolved import __version__
 from etherlighting_evolved.api import create_app
 from etherlighting_evolved.app_lock import AppInstanceLock, AppLockError
 from etherlighting_evolved.config import Config, data_dir, load_config
@@ -84,7 +85,7 @@ async def serve(options: dict, token: str, *, demo: bool, browser_live: bool) ->
                 await task
                 raise RuntimeError("service stopped before startup")
             await asyncio.sleep(0.025)
-        print(json.dumps({"ready": True, "port": port}), flush=True)
+        print(json.dumps({"ready": True, "port": port, "version": __version__}), flush=True)
         await task
 
 

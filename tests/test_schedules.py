@@ -58,10 +58,14 @@ def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
     sessions = FakeSessions()
     scheduler = Scheduler(store, presets, sessions)
 
-    assert len(scheduler.tick(WEDNESDAY_1900)) == 2
+    assert len(scheduler.tick(WEDNESDAY_1900)) == 1
     assert scheduler.tick(WEDNESDAY_1900.replace(second=50)) == []
     assert sessions.engine.calls == [("scene", {"version": 2, "zones": []})]
-    assert scheduler.history[0]["result"].startswith("failed")
+    missing = next(item for item in scheduler.list() if item["name"] == "Missing")
+    assert missing["profile_missing"] and not missing["enabled"]
+    presets.save("Gone", {"brightness": 99})
+    assert scheduler.list()[1]["profile_missing"]
+    assert len(scheduler.history) == 1 and scheduler.history[0]["result"] == "ok"
 
 
 def test_store_persists(tmp_path):

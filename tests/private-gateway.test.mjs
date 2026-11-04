@@ -24,13 +24,13 @@ test('private gateway denies unapproved access before touching its upstream',asy
 test('private gateway strips identity headers and keeps host-management actions local',async()=>{
   let received;
   const upstream=http.createServer((req,res)=>{received=req.headers;res.end('ok');});
-  const targetPort=await listen(upstream),gateway=createPrivateGateway({targetPort,listenPort:0,status:()=>({ready:true,can_configure:true,can_change_port:true,setup_action:'approve',action_url:'https://login.tailscale.com/a/fixture'})});
+  const targetPort=await listen(upstream),gateway=createPrivateGateway({targetPort,listenPort:0,status:()=>({ready:true,can_configure:true,can_close_workspace:true,can_change_port:true,setup_action:'approve',action_url:'https://login.tailscale.com/a/fixture'})});
   try{
     const {port}=await gateway.start({authorize:()=>({ok:true})});
     assert.equal((await get(port,'/api/state',{headers:{'tailscale-user-login':'private','x-ee-workspace':'current','authorization':'must-not-forward'}})).status,200);
     assert.equal(received['tailscale-user-login'],undefined);assert.equal(received.authorization,undefined);
     assert.equal(received.host,`127.0.0.1:${targetPort}`);assert.equal(received['x-ee-workspace'],'current');
-    const state=JSON.parse((await get(port,'/api/private-access')).text);assert.equal(state.can_configure,false);
+    const state=JSON.parse((await get(port,'/api/private-access')).text);assert.equal(state.can_configure,false);assert.equal(state.can_close_workspace,false);
     assert.equal(state.action_url,null);assert.equal(state.setup_action,null);assert.equal(state.can_change_port,false);
     assert.equal((await get(port,'/api/private-access',{method:'PUT',body:'{}'})).status,403);
     assert.equal((await get(port,'/api/private-access/login',{method:'POST'})).status,403);

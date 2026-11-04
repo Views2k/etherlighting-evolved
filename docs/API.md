@@ -834,7 +834,7 @@ A preset stores zones, rules, brightness and manual colors.
 | | |
 |---|---|
 | `GET /api/presets` | `{"Movie night": {...}, ...}` |
-| `POST /api/presets` | `{"name": "Movie night"}` saves the current setup, replacing a preset with the same name |
+| `POST /api/presets` | `{"name": "Movie night"}` creates a profile from the current setup; existing names return 409 |
 | `POST /api/presets/{name}/apply` | Load a preset |
 | `DELETE /api/presets/{name}` | Delete a preset |
 | `POST /api/presets/{name}/duplicate` | `{"name":"New name"}` copies the saved snapshot without applying it |
@@ -843,13 +843,34 @@ A preset stores zones, rules, brightness and manual colors.
 To save a preview without applying it, `POST /api/presets` accepts `scene` and
 `expected_revision` alongside `name`. The revision must match the current scene;
 the supplied scene uses the same topology, capability, and setting validation as
-Apply. Saving leaves engine output and the current scene unchanged. Set
-`overwrite: false` to reject an existing profile name with HTTP 409. Omitting
-`scene` saves the applied setup as before.
+Apply. Saving leaves engine output and the current scene unchanged. This endpoint creates
+profiles only. An existing name returns HTTP 409, including when an older client sends
+`overwrite: true`. Omitting `scene` saves the applied setup.
 
 Rename and duplicate return the updated preset mapping. An existing target name returns
 409; a missing source returns 404; an invalid name returns 400. Names contain 1–64 letters,
 numbers, spaces, periods, underscores, or hyphens. A failed save preserves the original file.
+
+### Stable profile records
+
+`GET /api/profiles` returns `{"profiles":[{"id":"...","revision":1,"name":"Evening","scene":{...},"schedules":[]}]}`.
+The ID survives rename. Duplicate creates a different ID. `schedules` lists dependent schedule
+IDs, names, and enabled states. Legacy name-to-scene storage migrates atomically before IDs are returned.
+`GET /api/presets` retains its name-to-scene response for older clients.
+
+`PATCH /api/profiles/{id}` requires `expected_revision` and one of these actions:
+
+- `{"action":"replace","expected_revision":1}` replaces this existing profile with the applied setup.
+- `{"action":"rename","name":"Night","expected_revision":1}` changes its name.
+- `{"action":"duplicate","name":"Night copy","expected_revision":1}` copies the saved setup to a new ID.
+- `{"action":"delete","expected_revision":1,"disable_schedules":true}` deletes it and disables enabled dependent schedules.
+
+The response is the updated `/api/profiles` envelope. A missing or changed identity returns
+409 `profile_changed`, so a stale editor cannot recreate a renamed/deleted profile. Deleting a profile
+with enabled dependent schedules requires `disable_schedules: true`; otherwise it returns
+409 `profile_in_use` with the affected schedules. Existing name-based delete also rejects enabled
+dependents. Profile mutations do not change live output. The browser validates saved topology before
+Apply, while the engine remains authoritative.
 
 ### Scene undo
 
@@ -893,9 +914,123 @@ automatically and restored on the next login.
 }
 ```
 
-Actions: `{"type": "preset", "preset": "Evening"}`, `{"type": "brightness", "value": 40}`, `{"type": "release"}`
-and `{"type": "resume"}`. `days` defaults to every day. `history` lists the last 20 runs, each with a `result`
-of `"ok"` or the reason it failed.
+Actions: `{"type":"preset","profile_id":"..."}`, `{"type":"brightness","value":40}`,
+`{"type":"release"}`, and `{"type":"resume"}`. A profile action accepts a legacy `preset` name at
+creation, resolves it immediately to a stable ID, and returns its current name for display. Rename
+and name reuse never retarget a bound schedule. On migration, unresolved legacy references are
+disabled and assigned a missing ID for explicit review. Saving another profile with that name does
+not reconnect the schedule.
+
+Omitted `days` defaults to every day. An explicit empty list or null is rejected. Times are on the EE
+computer in its local time zone. `/api/schedules` includes `clock`, `history_available`, and the last
+100 persisted runs. Each schedule includes `revision`, `last_run`, `needs_device_confirmation`,
+`profile_missing`, and `conflicts`. Save binds the schedule to the connected switch. Browser edits,
+Delete, and Run now send `expected_revision`; a changed schedule returns 409 `schedule_changed`.
+
+The service writes an occurrence claim before any scheduled mutation. Its key contains schedule ID,
+bound device, local calendar date, and minute. Restart during that minute cannot repeat it. Both
+folds of a repeated DST minute count once. A skipped local minute is not caught up. Competing actions
+run in saved list order, and the editor asks for confirmation before saving a same-minute conflict.
+Manual Run now records a separate trigger and does not consume a timed occurrence.
+
+A run starts as pending. Production execution waits for the existing release cleanup or relevant SFP
+output acknowledgments before reporting `ok`. Failure or interruption remains failed/unconfirmed.
+On restart, an unfinished persisted run displays an unconfirmed result and is not replayed. If the
+occurrence journal cannot be read or claimed, scheduled writes stop until its history can be verified.
+
+### Rule tester
+
+`POST /api/rules/test` accepts `{"port":1,"at":"2026-11-04T18:30","rules":[...]}`.
+`at` is an optional local date/time on the EE computer; offsets are rejected. The endpoint parses the
+supplied rule order and evaluates the engine's current port facts without writing a scene or lighting.
+The response lists each condition's actual value and pass result, rule scope/enabled state, the first
+matching rule, the effective source (including individual-color precedence), current output mode,
+and the evaluated scene revision. Optical rules use the same explicit scope and native-setting
+eligibility as the engine. Changing the supplied order tests priority without saving it.
+
+## Saved effect settings and port selections
+
+`GET /api/library/{kind}` returns `{"items":[...]}` for `kind` equal to `effect` or `selection`.
+Each item contains `id`, `revision`, `name`, and `value`. Effect settings are shared across switches.
+Selections are bound to the connected switch and retain its port topology.
+
+`POST /api/library/{kind}` creates an item with `{"name":"...","value":{...}}`.
+An effect value is `{"id":"activity_glow","params":{...}}` and uses the existing effect validator.
+A selection value is `{"ports":[1,3,9]}` and must use available ports. The stored selection also includes
+its topology. Neither operation changes a lighting scene or selection in another client.
+
+`PUT /api/library/{kind}/{id}` replaces or renames an item with `name`, `value`, and
+`expected_revision`. `DELETE` on the same path requires `{"expected_revision":"..."}`.
+Missing, changed, or out-of-scope items return 409 `library_changed`. Duplicate names in one kind/scope
+are rejected. The host bounds the library to 256 items and preserves unreadable storage for review.
+Recalling an effect creates a local lighting preview. Recalling a selection only selects ports.
+
+## Port identification
+
+`POST /api/identify` accepts `{"port": 3}` and starts a ten-second identification on one qualified
+lighting port. It returns `id`, `port`, and `seconds_remaining`. Send that exact ID with
+`DELETE /api/identify`, for example `{"id": "<returned-id>"}`, to stop early. A stale ID cannot stop a
+newer identification. An overlapping start is rejected until the current identification finishes.
+
+Identification requires a connected, running output session owned by EE. The host owns the timer.
+The temporary white/blue indicator does not alter the scene or its revision. Expiry and Stop resume
+the current rules, effects, colors, and brightness, including changes applied during identification.
+Release, disconnect, and shutdown cancel the temporary intent. SFP identification uses the existing
+qualified optical output and release paths. An SFP following an identified Ethernet port continues
+showing the Ethernet port's underlying lighting.
+
+State and frame messages contain `identify`, either `null` or the same active identification object.
+The command response records accepted intent. Existing port output and SFP control fields continue
+to report the displayed and acknowledged output state.
+
+## Lighting history
+
+`GET /api/history` returns `entries`, `limit`, and `error`. Entries contain an opaque `id`, a UTC ISO
+`at` timestamp, the scene `revision`, and the saved `scene`. Newest entries come first. History retains
+up to 50 distinct successive scenes for the connected device and 250 entries across stored devices.
+Identical successive scenes are deduplicated. Scene changes made by schedules and other clients are
+included. Temporary identification and telemetry are excluded.
+
+`POST /api/history/{id}/restore` requires `{"expected_revision": "<current-scene-revision>"}`. Read
+`GET /api/scene` when opening the review and retain that revision through confirmation. Restore uses
+the normal scene transaction, topology validation, revision guard, and SFP output confirmation.
+An intervening edit returns `scene_changed` without replacing it. A successful restore creates a new
+history entry so the replaced scene remains available.
+
+History is scoped to the existing stable device binding, with a separate demo scope. A missing or
+invalid history store returns `history_unavailable`; the original file remains in place. A save
+failure is also exposed as `history_error` in state and frame messages and `error` in the history
+response. It does not roll back an already applied lighting change.
+
+## Port telemetry and PoE budget
+
+State and frame messages contain `telemetry` with `generation`, `sequence`, `sampled_at`,
+`sample_age_ms`, and `stale`. A sequence advances once per collected link sample, independently of
+frame delivery. The opaque generation changes after reconnection. Use both fields to deduplicate
+samples and begin a new event/trend window after a monitoring interruption. `sampled_at` is an ISO
+host timestamp with its UTC offset. Clients also expire readings when incoming samples stop.
+
+Per-port `traffic_bps` is combined receive plus transmit bits per second. Its corresponding
+`facts.traffic` is Mbps. Missing samples, the first counter observation, and counter resets produce
+`null`; two valid unchanged counter samples produce zero. These fields do not split upload and
+download. The separate uplink bandwidth object retains its directional measurements.
+
+The `poe_summary` object provides the reported switch-wide `budget_w`, measured `draw_w`,
+`headroom_w`, `complete`, `sample_age_ms`, and `consumers`. Consumers contain `port` and `power_w`,
+sorted by draw. All power values are watts. The budget comes from the parsed switch response.
+
+| Status | Meaning |
+| --- | --- |
+| `ready` | Fresh complete table and reported budget; headroom is budget minus measured draw |
+| `partial` | Some expected copper-port measurements are missing or malformed |
+| `stale` | The sample aged out or the connection was interrupted |
+| `budget_unavailable` | Complete fresh measurements without a reported total budget |
+| `unavailable` | No parsed PoE measurements |
+
+Only `ready` supplies a numeric headroom. A partial draw is the measured subset and must be labeled
+as such. Negative headroom is retained if the measured draw exceeds the reported budget. The current
+adapter requires a valid measurement row for every copper port before declaring a complete sample.
+It uses the existing telemetry collection interval and adds no switch polling.
 
 ## Catalogs
 

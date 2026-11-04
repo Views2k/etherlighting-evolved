@@ -17,6 +17,7 @@ class 0-3 is 802.3af (PoE), 4 is 802.3at (PoE+), 5-6 is 802.3bt type 3 (PoE++), 
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass
 
@@ -92,3 +93,57 @@ def parse_poe_show(text: str) -> dict[int, PoePort]:
             mode=mode,
         )
     return ports
+
+
+@dataclass(frozen=True)
+class PoeSample:
+    ports: dict[int, PoePort]
+    budget_w: float | None
+    measured_ports: frozenset[int]
+    malformed: bool = False
+
+
+def parse_poe_sample(text: str) -> PoeSample:
+    """Keep the switch-wide limit and measurement completeness alongside port records."""
+    ports = parse_poe_show(text)
+    limits = re.findall(r"(?im)^\s*Total Power Limit\(mW\):\s*(\d+(?:\.\d+)?)\s*$", text)
+    budget = float(limits[0]) / 1000 if len(limits) == 1 else None
+    if budget is not None and (not math.isfinite(budget) or budget <= 0):
+        budget = None
+    measured, seen = set(), set()
+    malformed = len(limits) > 1
+    for line in text.splitlines():
+        tokens = line.split()
+        if not tokens or not tokens[0].isdigit():
+            continue
+        port = int(tokens[0])
+        values = [float(token) for token in tokens if _FLOAT.fullmatch(token)]
+        valid = (port in ports and port not in seen and len(values) >= 3
+                 and all(math.isfinite(value) and value >= 0 for value in values[-3:]))
+        malformed |= not valid
+        if valid:
+            measured.add(port)
+        seen.add(port)
+    return PoeSample(ports, budget, frozenset(measured), malformed)
+
+
+def summarize_poe(sample: PoeSample | None, expected_ports, *, age: float | None,
+                  connected: bool, max_age: float = 5.0) -> dict:
+    """A partial or stale table cannot certify remaining switch-wide power."""
+    expected = set(expected_ports)
+    fresh = connected and age is not None and age <= max_age
+    complete = bool(sample and expected and not sample.malformed
+                    and sample.measured_ports == expected and set(sample.ports) == expected)
+    consumers = [] if sample is None else sorted(
+        ({"port": port, "power_w": round(sample.ports[port].power_w, 2)}
+         for port in sample.measured_ports if sample.ports[port].power_w > 0),
+        key=lambda item: (-item["power_w"], item["port"]))
+    draw = None if sample is None or not sample.measured_ports else round(sum(
+        sample.ports[port].power_w for port in sample.measured_ports), 2)
+    budget = sample.budget_w if sample else None
+    status = ("unavailable" if sample is None or not sample.ports else "stale" if not fresh else
+              "partial" if not complete else "budget_unavailable" if budget is None else "ready")
+    return {"status": status, "budget_w": budget, "draw_w": draw,
+            "headroom_w": round(budget - draw, 2) if status == "ready" else None,
+            "complete": complete, "consumers": consumers,
+            "sample_age_ms": None if age is None else round(max(0, age) * 1000)}
