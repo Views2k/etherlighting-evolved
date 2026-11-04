@@ -41,6 +41,10 @@ test('manifest references real icon dimensions and launches the scoped standalon
   assert.match(html,/rel="manifest" href="\/preview\/manifest.webmanifest"/);
   assert.match(html,/rel="apple-touch-icon" sizes="180x180" href="\/assets\/pwa-180.png"/);
   assert.match(html,/src="\/preview\/pwa.mjs"/);
+  const viewport = html.match(/<meta name="viewport" content="([^"]+)"/)?.[1];
+  assert.match(viewport, /\bwidth=device-width\b/);
+  const fit = viewport.split(',').map(item => item.trim()).find(item => item.startsWith('viewport-fit='));
+  assert.ok(fit === undefined || fit === 'viewport-fit=auto', 'Use native viewport sizing for Home Screen launch');
 });
 
 test('registration requires a secure context and uses only the same-origin module worker',async()=>{

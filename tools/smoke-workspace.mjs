@@ -111,9 +111,9 @@ async function checkFaceplate(width, height) {
   }
   return {headerHeight: header.height, canvasHeight: canvas.height, overflowY: geometry.overflowY, portsInRow: ports.length};
 }
-async function checkPhoneFooter(width, height) {
+async function checkPhoneFooter(width, height, bottomInset) {
   await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: true});
-  await send('Emulation.setSafeAreaInsetsOverride', {insets: {top: 59, bottom: 34}});
+  await send('Emulation.setSafeAreaInsetsOverride', {insets: {top: bottomInset ? 59 : 0, bottom: bottomInset}});
   await send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
   await evaluate("document.body.style.height = 'calc(100dvh - 59px)'");
   const workspace = '.rack-workspace-dialog';
@@ -152,7 +152,8 @@ async function checkPhoneFooter(width, height) {
         const interrupted = connection.getBoundingClientRect().height;
         connection.className = 'connection-state online'; message.classList.add('error');
         const error = message.getBoundingClientRect().height;
-        return {dock:document.querySelector('.output-dock').getBoundingClientRect().height, normal, safeBottom, interrupted, error};
+        const errorInset = visualViewport.height - status.getBoundingClientRect().bottom;
+        return {dock:document.querySelector('.output-dock').getBoundingClientRect().height, normal, safeBottom, interrupted, error, errorInset};
       } finally {
         controller.hidden = previous.hidden; controller.className = previous.controller;
         connection.className = previous.connection; message.className = previous.message;
@@ -160,7 +161,33 @@ async function checkPhoneFooter(width, height) {
     })()`);
     assert.equal(idle.dock, 0, 'The idle phone dock takes no space');
     assert.equal(idle.normal, 0, 'An optional disconnected controller does not add a status row');
-    assert.ok(Math.abs(idle.safeBottom - 34) <= 1, 'The map reaches the bottom safe area');
+    assert.ok(Math.abs(idle.safeBottom) <= 1, `Idle port map leaves ${idle.safeBottom}px below its scroller`);
+    assert.ok(Math.abs(idle.errorInset - bottomInset) <= 1, 'Reported errors clear the home indicator');
+    const edge = await evaluate(`(() => {
+      const scroller = document.querySelector('.studio-content');
+      document.querySelector('#select-none').click();
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      scroller.scrollTop = Math.round(maxScroll / 2);
+      const y = Math.floor(visualViewport.height) - 1;
+      const hit = document.elementFromPoint(Math.floor(visualViewport.width / 2), y);
+      const midScroll = scroller.scrollTop;
+      scroller.scrollTop = scroller.scrollHeight;
+      const last = document.querySelectorAll('.port-tile.sfp');
+      const port = last[last.length - 1];
+      return {midScroll, maxScroll, edgeHitsMap: Boolean(hit?.closest('.canvas-area')),
+        lastPort: port.dataset.port, clearance: visualViewport.height - port.getBoundingClientRect().bottom};
+    })()`);
+    assert.ok(edge.midScroll > 0 && edge.midScroll < edge.maxScroll, 'Exercise the edge while the port list is between scroll limits');
+    assert.ok(edge.edgeHitsMap, 'The last pixel of the visible viewport belongs to the scrolling port map');
+    assert.ok(edge.clearance >= bottomInset - 1, 'The last SFP port scrolls completely above the home indicator');
+    const opticalPort = `.port-tile.sfp[data-port="${edge.lastPort}"]`;
+    await tap(opticalPort, true);
+    assert.equal(await evaluate(`document.querySelector('${opticalPort}').getAttribute('aria-pressed')`), 'true');
+    await evaluate("document.querySelector('#open-port-controls').scrollIntoView({block:'nearest'})");
+    await tap('#open-port-controls', true);
+    const inspectorInset = await evaluate("visualViewport.height - document.querySelector('.studio-content.is-editing-ports').getBoundingClientRect().bottom");
+    assert.ok(Math.abs(inspectorInset - bottomInset) <= 1, 'Port controls clear the home indicator');
+    await tap('#back-to-ports', true);
     assert.ok(idle.interrupted > 0 && idle.error > 0, 'Switch interruptions and status errors stay visible');
     await openWorkspace();
     assert.ok(await evaluate(`['master','open-map-key','connection','controller-connection'].every(id=>
@@ -181,7 +208,7 @@ async function checkPhoneFooter(width, height) {
     const buttons = [];
     for (const selector of ['#compare-draft', '#cancel-draft', '#apply-draft']) buttons.push(await bounds(selector));
     assert.ok(dock.height >= 44 && dock.height <= 48, 'A pending change uses only one row');
-    assert.ok(Math.abs(height - dock.bottom - 34) <= 1, 'Draft actions sit above the phone safe area');
+    assert.ok(Math.abs(height - dock.bottom - bottomInset) <= 1, 'Draft actions sit above the phone safe area');
     for (const [i, control] of buttons.entries()) {
       assert.ok(control.height >= 44 && control.width >= 44 && control.x >= 0 && control.x + control.width <= width + 1);
       assert.ok(Math.abs(control.y - buttons[0].y) <= 1 && (!i || control.x >= buttons[i - 1].x + buttons[i - 1].width - 1));
@@ -209,7 +236,7 @@ async function checkPhoneFooter(width, height) {
     await until(() => evaluate("document.querySelector('#draft-actions').hidden"), 'applied phone brightness');
     assert.equal(await brightness(), target, 'Applying the phone draft sets the simulator brightness');
     assert.equal((await bounds('.output-dock')).height, 0);
-    return {width, height, idle, pendingHeight: dock.height};
+    return {width, height, bottomInset, idle, edge, inspectorInset, pendingHeight: dock.height};
   } finally {
     await evaluate("document.querySelector('.map-key[open]')?.close(); document.querySelector('.rack-workspace-dialog[open]')?.close(); if (!document.querySelector('#draft-actions').hidden) document.querySelector('#cancel-draft').click(); document.body.style.removeProperty('height')");
     await send('Emulation.setSafeAreaInsetsOverride', {insets: {}});
@@ -434,8 +461,8 @@ try {
     }
   }
   report.phone_footer = [];
-  for (const [width, height] of [[320, 640], [390, 844], [430, 932]]) {
-    report.phone_footer.push(await checkPhoneFooter(width, height));
+  for (const [width, height, bottomInset] of [[320, 640, 34], [390, 844, 34], [390, 844, 0], [430, 932, 34]]) {
+    report.phone_footer.push(await checkPhoneFooter(width, height, bottomInset));
   }
   await send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: false});
   await evaluate(`document.querySelector('[data-select="ethernet"]').click()`);
@@ -460,8 +487,17 @@ try {
     zone.effect.id === 'activity_glow' && zone.effect.params.include_uplinks && zone.ports.length === 10), 'mixed activity group');
   assert.deepEqual(assigned.ports, [1,2,3,4,5,6,7,8,9,10]);
   await until(() => evaluate('document.querySelector("#draft-actions").hidden && !document.querySelector("#undo-last").disabled'), 'Apply confirmed in workspace');
+  const previousDocument = await evaluate('performance.timeOrigin');
   await send('Page.reload', {ignoreCache: true});
-  await until(() => evaluate('document.querySelectorAll(".port-socket-rim").length === 10'), 'reloaded lighting');
+  await until(async () => {
+    try {
+      return await evaluate(`performance.timeOrigin !== ${previousDocument} &&
+        document.querySelectorAll(".port-socket-rim").length === 10 && !!document.querySelector('[data-port="9"]')`);
+    } catch (error) {
+      if (/execution context was destroyed|cannot find (?:default )?(?:execution )?context/i.test(error.message)) return false;
+      throw error;
+    }
+  }, 'port 9 in the reloaded lighting workspace');
   await evaluate(`document.querySelector('[data-port="9"]').click()`);
   const restore = `[...document.querySelectorAll('#inspector button')].find(button => button.textContent === 'Return to SFP lighting')`;
   await until(() => evaluate(`!!(${restore})`), 'restore SFP control');

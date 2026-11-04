@@ -1297,7 +1297,13 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
 @media (max-width: 700px) {
   .port-map { gap: 10px; }
   .port-map .uplink-bandwidth { margin: 0; padding: 0; border: 0; }
-  .app-shell { height: 100dvh; }
+  .app-shell { height: 100dvh; --phone-bottom: env(safe-area-inset-bottom, 0px); padding-bottom: var(--phone-bottom); }
+  .app-shell:has(.studio-content:not(.is-editing-ports) ~ .output-dock #draft-actions[hidden]):not(:has(> .statusbar :is(.error, .waiting):not([hidden]))) {
+    padding-bottom: 0;
+    --map-end-space: var(--phone-bottom);
+  }
+  .studio-content { scroll-padding-bottom: var(--map-end-space, 0px); }
+  .canvas-area { padding-bottom: max(18px, var(--map-end-space, 0px)); }
   .statusbar { min-height: 22px; padding: 1px 10px; gap: 0 8px; }
   .status-connections { gap: 0 10px; }
   .app-shell:has(.studio) > .statusbar:not(:has(#status.error, .connection-state:is(.error, .waiting):not([hidden]))),
@@ -1317,8 +1323,10 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .output-dock #draft-actions .button { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 4px; white-space: normal; }
 }
 @media (display-mode: standalone) and (max-width: 700px) and (orientation: portrait) {
-  :root { --standalone-safe-top: env(safe-area-inset-top, 0px); }
-  .reserved-screen-bottom .app-shell { padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--standalone-safe-top))); }
+  @supports (-webkit-touch-callout: none) {
+    /* With native viewport fitting, iOS can report zero over the home indicator. */
+    .app-shell { --phone-bottom: max(34px, env(safe-area-inset-bottom, 0px)); }
+  }
 }
 
 .rack-meter-slot:empty, .bandwidth-chart { display: none; }
