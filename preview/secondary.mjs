@@ -1,3 +1,4 @@
+import {mountThemeSettings} from './theme-settings.mjs';
 import {renderSchedules} from './weekly-schedules.mjs';
 import {openRuleTester} from './rule-tester.mjs';
 import {mountLastSession} from './last-session.mjs';
@@ -367,7 +368,7 @@ async function renderRules(host, {request, state, onChange, getState = () => sta
       }), `rule-item ${rule.id === selectedId ? 'selected' : ''}`);
       item.dataset.ruleId = rule.id;
       const heading = node('span', 'rule-list-heading'), swatch = node('i', 'rule-swatch');
-      swatch.style.background = rule.look?.color || '#8b83ba'; swatch.setAttribute('aria-hidden', 'true');
+      swatch.style.background = rule.look?.color || 'var(--faint)'; swatch.setAttribute('aria-hidden', 'true');
       heading.append(swatch, node('span','item-name',`${index + 1}. ${rule.name}`));
       const output = node('span', 'rule-output-status muted');
       ruleStatusNodes.set(rule.id, output);
@@ -728,7 +729,7 @@ export async function renderProfiles(host, {request, state, onChange, getState =
 export {renderProfiles as renderScenes};
 
 export async function renderSettings(host, {request, onHelp, onSessionChange, onCloseWorkspace, onChange}) {
-  const {header,notice,status} = frame(host,'Settings','Connection and application details.');
+  const {header,notice,status} = frame(host,'Settings','Connections, appearance, and application details.');
   const gate = operationGate(host,status), content = node('div','settings-content panel'), controllerHost = node('div','controller-settings');
   const lifecycle = new AbortController();
   const health = section('Switch health','Lighting command activity, CPU, memory, temperature, and storage readings.');
@@ -758,9 +759,10 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   let controllerCleanup, switchState;
   const privateHost=node('div','private-access-settings'),lastSessionHost=node('div','last-session-settings');
   const lastSessionCleanup=mountLastSession(lastSessionHost,{request});
+  const appearance=node('section','settings-appearance panel'),themeCleanup=mountThemeSettings(appearance);
   const workspace = node('div','settings-workspace'), navigation = node('nav','settings-nav'), pane = node('div','settings-pane');
   navigation.setAttribute('aria-label','Settings sections');
-  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[lastSessionHost,'Last session'],[about,'About']];
+  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[lastSessionHost,'Last session'],[appearance,'Appearance'],[about,'About']];
   const sectionButtons = sections.map(([section,label],index) => {
     const control = button(label, () => {
       const top = pane.scrollTop + section.getBoundingClientRect().top - pane.getBoundingClientRect().top;
@@ -779,7 +781,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
     });
   };
   pane.addEventListener('scroll',updateSection,{passive:true});
-  pane.append(content,health,controllerHost,privateHost,lastSessionHost,about);workspace.append(navigation,pane);host.append(workspace,notice);
+  pane.append(content,health,controllerHost,privateHost,lastSessionHost,appearance,about);workspace.append(navigation,pane);host.append(workspace,notice);
   updateSection();
   const privateCleanup=renderPrivateAccess(privateHost,request,{signal:lifecycle.signal});
   const reload = () => gate.run(async () => {
@@ -823,7 +825,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();
-  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();lastSessionCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
+  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();lastSessionCleanup();themeCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
   cleanup.update = (state,session,unavailable = false) => {
     if (!gate.active) return;
     if (switchState) showConnectionStatus(switchState,switchConnectionStatus(session,unavailable));
@@ -894,6 +896,9 @@ export function renderHelp(host, {state = {}} = {}) {
       'Save current as profile captures your applied lighting. Save preview as profile keeps unapplied changes so you can apply the complete setup later.',
       'Select a saved profile to review it, then choose Apply profile. The Applied label identifies a profile matching the current setup.',
       'Replace with applied setup updates the selected saved profile after confirmation. Rename and Duplicate organize profiles without changing your lighting.'
+    ]],
+    ['Choose an app theme', [
+      'Open Settings, choose Appearance, then select a dark or light theme. The change appears immediately and is saved on this device.'
     ]],
     ['Connection and recovery', [
       'Settings shows the current connection and which application controls the lighting. Refresh connection checks again. Last session shows the latest shutdown or cleanup result.',

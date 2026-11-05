@@ -5,12 +5,17 @@ import vm from 'node:vm';
 import {renderSettings,renderHelp} from '../preview/secondary.mjs';
 import {connectionError,handoffComplete,handoffStatus,renderSwitchConnection,showSceneChoice,requestHandoff} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
+import {DEFAULT_THEME} from '../preview/theme-catalog.mjs';
+import {setTheme} from '../preview/theme.mjs';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;return {promise:new Promise((yes,no)=>{resolve=yes;reject=no;}),resolve:value=>resolve(value),reject:error=>reject(error)};};
 const connected=()=>({logged_in:true,connected:true,connecting:false,simulated:false,has_saved_login:true,workspace_id:'fixture',handed_off:false,handoff_state:'none',automatic_connect_paused:false});
 const complete=()=>({...connected(),logged_in:false,connected:false,workspace_id:null,handed_off:true,handoff_state:'complete',automatic_connect_paused:true});
 const privateStatus={available:false,enabled:false,ready:false,url:null,can_configure:true,error:{code:'tailscale_unavailable'}};
+
+const browserEvents=new EventTarget();
+let browserRoot;
 
 function uiDom(context){
   const dom=rendererDom(context),create=dom.doc.createElement;
@@ -37,9 +42,22 @@ function uiDom(context){
     return element;
   };
   dom.doc.createElement=tag=>adapt(create(tag));adapt(dom.host);
-  const oldOption=Object.getOwnPropertyDescriptor(globalThis,'Option');
-  Object.defineProperty(globalThis,'Option',{configurable:true,value:function(text,value){const option=dom.doc.createElement('option');option.textContent=text;option.value=value;return option;}});
-  context.after(()=>oldOption?Object.defineProperty(globalThis,'Option',oldOption):delete globalThis.Option);
+  // Theme state belongs to one browser realm; each fixture replaces its page content.
+  browserRoot ??= dom.doc.createElement('html');
+  dom.doc.documentElement=browserRoot;
+  dom.doc.querySelector=selector=>dom.findAll(dom.doc.body,node=>matches(node,selector))[0]||null;
+  const values=new Map(),globals={
+    Option:function(text,value){const option=dom.doc.createElement('option');option.textContent=text;option.value=value;return option;},
+    addEventListener:browserEvents.addEventListener.bind(browserEvents),
+    removeEventListener:browserEvents.removeEventListener.bind(browserEvents),
+    localStorage:{getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))}
+  },original=new Map();
+  for(const [key,value] of Object.entries(globals)){
+    original.set(key,Object.getOwnPropertyDescriptor(globalThis,key));
+    Object.defineProperty(globalThis,key,{configurable:true,writable:true,value});
+  }
+  dom.after(()=>{for(const [key,descriptor] of original)descriptor?Object.defineProperty(globalThis,key,descriptor):delete globalThis[key];});
+  setTheme(DEFAULT_THEME);
   return {...dom,button:(text,root=dom.doc.body)=>dom.findAll(root,node=>node.tagName==='button'&&node.textContent===text)[0],
     dialog:()=>dom.findAll(dom.doc.body,node=>node.tagName==='dialog')[0]};
 }

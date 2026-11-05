@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Choose from nine dark themes and three light themes in Settings, including Silver and Midnight. Each device remembers its selection.
+
 - Find ports by number or device name, inspect live traffic and link changes, and identify a socket for ten seconds.
 - Save named effect settings and reusable port selections. Review recent lighting setups and restore one from history.
 - Create weekly schedules and test rule conditions and priority before applying.

@@ -1,13 +1,26 @@
+const fixturesByContext = new WeakMap();
+
 export function rendererDom(context, preferences = {}) {
   const original = new Map(), cleanups = [];
+  let fixtures = fixturesByContext.get(context);
+  if (!fixtures) {
+    fixtures = []; fixturesByContext.set(context, fixtures);
+    context.after(() => {
+      try { for (const restore of fixtures.reverse()) restore(); }
+      finally { fixturesByContext.delete(context); }
+    });
+  }
   const install = (key, value) => { original.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, {configurable: true, writable: true, value}); };
   const doc = {activeElement: null, createElement: tag => new Element(tag), addEventListener() {}, removeEventListener() {}};
   class Element {
     constructor(tag) {
       this.tagName = tag; this.ownerDocument = doc; this.children = []; this.parentNode = null;
-      this.style = {}; this.dataset = {}; this.attributes = new Map(); this.listeners = new Map();
+      this.style = {setProperty(name, value) { this[name] = String(value); }};
+      this.dataset = {}; this.attributes = new Map(); this.listeners = new Map();
       this.className = ''; this.hidden = false; this.scrollTop = 0; this.value = '';
-      this.classList = {toggle: (name, enabled) => {
+      this.classList = {add: (...names) => {
+        this.className = [...new Set([...this.className.split(' ').filter(Boolean), ...names])].join(' ');
+      }, toggle: (name, enabled) => {
         const classes = new Set(this.className.split(' ').filter(Boolean));
         (enabled ?? !classes.has(name)) ? classes.add(name) : classes.delete(name);
         this.className = [...classes].join(' ');
@@ -41,7 +54,7 @@ export function rendererDom(context, preferences = {}) {
   install('requestAnimationFrame', () => ++request); install('cancelAnimationFrame', () => {});
   install('IntersectionObserver', class {observe() {} disconnect() {}});
   install('localStorage', {getItem: () => JSON.stringify(preferences), setItem() {}});
-  context.after(() => {
+  fixtures.push(() => {
     try { for (const cleanup of cleanups.reverse()) cleanup(); }
     finally { for (const [key, descriptor] of original) descriptor ? Object.defineProperty(globalThis, key, descriptor) : delete globalThis[key]; }
   });

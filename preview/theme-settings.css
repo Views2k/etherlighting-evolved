@@ -1,0 +1,23 @@
+.theme-settings { display:flex; flex-direction:column; gap:12px; max-width:960px; }
+.theme-settings > h2 { font-size:17px; }
+.theme-current { font-size:12px; }
+.theme-group { border:0; padding:0; margin:8px 0 0; min-width:0; }
+.theme-group legend { color:var(--text); font-size:14px; font-weight:600; margin-bottom:12px; }
+.theme-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.theme-option { display:grid; grid-template-columns:minmax(0,1fr) auto; align-content:start; align-items:center; column-gap:10px; row-gap:6px; min-width:0; padding:10px; border:1px solid var(--line-strong); border-radius:9px; color:var(--text); background:var(--panel); cursor:pointer; }
+.theme-option:hover { background:var(--raised); border-color:var(--muted); }
+.theme-option[data-selected="true"] { border-color:var(--accent); background:var(--selection-soft); }
+.theme-option:has(input:focus-visible) { outline:2px solid var(--accent); outline-offset:3px; }
+.theme-option input:focus-visible { outline:none; }
+.theme-option input[type="radio"] { justify-self:end; margin:0; }
+.theme-choice-title { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+.theme-choice-description { grid-column:1 / -1; color:var(--muted); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.theme-choice-state { grid-column:1 / -1; min-height:18px; font-size:12px; color:var(--accent); }
+.theme-preview { position:relative; display:block; grid-column:1 / -1; height:76px; margin-bottom:4px; overflow:hidden; border-radius:5px; background:var(--preview-bg); }
+.theme-preview::before { content:""; position:absolute; inset:0 0 auto; height:14px; background:var(--preview-panel); }
+.theme-preview-nav { position:absolute; top:22px; bottom:8px; left:8px; width:19px; border-radius:3px; background:var(--preview-panel); }
+.theme-preview-panel { position:absolute; top:22px; right:8px; bottom:8px; left:34px; border-radius:3px; background:var(--preview-panel); }
+.theme-preview-accent { position:absolute; top:30px; left:42px; width:35%; height:5px; border-radius:2px; background:var(--preview-accent); box-shadow:0 12px 0 var(--preview-accent); }
+.theme-error { grid-column:1 / -1; margin:0; overflow-wrap:anywhere; }
+@media(max-width:1000px) { .theme-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:380px) { .theme-grid { gap:8px; } .theme-option { padding:8px; column-gap:6px; } .theme-preview { height:64px; } }

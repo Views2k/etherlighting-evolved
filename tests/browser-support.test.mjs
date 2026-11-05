@@ -13,6 +13,9 @@ test('the interface loads only when required browser features are present',()=>{
   for(const feature of ['color','selector(:has(*))']){
     const env=capable();env.CSS.supports=value=>value!==feature;assert.equal(supportedBrowser(env),false);
   }
+  for(const color of ['color(srgb 1 0 0)','color-mix(in srgb, black, white)']){
+    const env=capable();env.CSS.supports=(property,value)=>value!==color;assert.equal(supportedBrowser(env),false,color);
+  }
   const remote=capable();delete remote.crypto.randomUUID;assert.equal(supportedBrowser(remote),false);
 });
 
