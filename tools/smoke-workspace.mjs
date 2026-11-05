@@ -1,5 +1,6 @@
 import {checkProductWorkflows} from './product-workspace-checks.mjs';
 import {checkThemeWorkflows} from './theme-workspace-checks.mjs';
+import {checkTopologyWorkflows} from './topology-workspace-checks.mjs';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
@@ -514,6 +515,7 @@ try {
   report.sfp_activity = {included: assigned.ports, restored: 9};
   report.product_workflows=await checkProductWorkflows({evaluate,until,send,screenshot,url});
   report.themes=await checkThemeWorkflows({evaluate,until,send,screenshot,url});
+  report.topologies=await checkTopologyWorkflows({evaluate,until,send,screenshot,url,root});
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

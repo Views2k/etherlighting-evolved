@@ -537,6 +537,8 @@ function renderPorts() {
   const map=copper.closest('.port-map');
   const inlineBanks=ports.length>0 && lights.length>0 && ports.length<=8 && lights.length<=2;
   map.classList.toggle('inline-banks',inlineBanks);
+  map.classList.toggle('wrapped-banks',!inlineBanks && ports.length+lights.length>8);
+  map.style.setProperty('--physical-port-count',ports.length+lights.length);
   if(inlineBanks)map.style.setProperty('--bank-widths',`minmax(0, ${ports.length}fr) minmax(0, ${lights.length}fr)`);
   sfp.style.setProperty('--port-count',Math.max(1,lights.length));
   sfp.classList.toggle('dense-bank',lights.length>16);
