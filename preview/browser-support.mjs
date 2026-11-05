@@ -6,7 +6,8 @@ export function supportedBrowser(env) {
     && Boolean(env.crypto) && typeof env.crypto.randomUUID === 'function'
     && typeof env.HTMLDialogElement === 'function' && typeof env.HTMLDialogElement.prototype.showModal === 'function'
     && Boolean(env.CSS) && typeof env.CSS.supports === 'function'
-    && env.CSS.supports('color','color(srgb 1 0 0)') && env.CSS.supports('selector(:has(*))');
+    && env.CSS.supports('color','color(srgb 1 0 0)')
+    && env.CSS.supports('color','color-mix(in srgb, black, white)') && env.CSS.supports('selector(:has(*))');
 }
 
 export function browserRecoveryMessage(env) {

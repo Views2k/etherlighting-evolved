@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
+import {THEMES,DEFAULT_THEME} from './theme-catalog.mjs';
 import {ColorFrames, smoothColor, portInk, createPortAnimator, rgbCss} from './port-animation.mjs';
 
 test('uneven network arrivals render an even fade between confirmed samples', () => {
@@ -88,11 +89,16 @@ test('cadence evidence expires after interruption and stale output holds exactly
   assert.deepEqual(frames.latest(), {1: [0, 255, 0]});
 });
 
-test('neutral port labels retain 4.5 contrast through lighting colors and selection', async () => {
-  const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
-  const channels = hex => [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16));
-  const token = name => css.match(new RegExp(`--${name}:\\s*(#[\\da-f]{6});`, 'i'))?.[1];
-  const ink = channels(token('text'));
+test('neutral port labels retain 4.5 contrast in every theme through lighting colors and selection', async () => {
+  const [css, palettes] = await Promise.all(['style.css','themes.css'].map(name => readFile(new URL('./'+name, import.meta.url), 'utf8')));
+  const channels = hex => {assert.match(hex,/^#[\da-f]{6}(?:[\da-f]{2})?$/i);return [1,3,5].map(offset=>parseInt(hex.slice(offset,offset+2),16));};
+  const declarations = selector => {
+    const escaped=selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const block=palettes.match(new RegExp(escaped+'\\s*\\{([^}]+)\\}'))?.[1];
+    assert.ok(block,'Palette declarations exist for '+selector);
+    return Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(([,name,value])=>[name,value.trim()]));
+  };
+  const defaults=declarations(':root'),derived=declarations(':root[data-theme]:not([data-theme="evolved"])');
   const glow = Number(css.match(/\.port-glow\s*\{[^}]*opacity:\s*([.\d]+)/)[1]);
   const selection = css.match(/\.port-tile\.selected\s*\{[^}]*background:\s*(#[\da-f]{8})/i)[1];
   const composite = (foreground, background, alpha) => foreground.map((value, index) => value * alpha + background[index] * (1 - alpha));
@@ -100,20 +106,23 @@ test('neutral port labels retain 4.5 contrast through lighting colors and select
     const value = channel / 255;
     return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4;
   }).reduce((sum, value, i) => sum + value * [.2126, .7152, .0722][i], 0);
-  const tints = css.match(/--canvas-tint:([^;]+);/)[1].match(/#[\da-f]{8}/gi);
-  const backgrounds = ['surface', 'panel', 'raised'].map(name => tints.reduce((background, tint) =>
-    composite(channels(tint), background, parseInt(tint.slice(7), 16) / 255), channels(token(name))));
-  const check = color => {
-    assert.equal(portInk(color), '#ffffff');
-    for (const base of backgrounds) for (const selected of [false, true]) {
-      const lit = composite(color, base, glow);
-      const background = selected ? composite(channels(selection), lit, parseInt(selection.slice(7), 16) / 255) : lit;
-      const contrast = (luminance(ink) + .05) / (luminance(background) + .05);
-      assert.ok(contrast >= 4.5, `${color}, selected=${selected}: contrast ${contrast}`);
+  const colors=Array.from({length:256},(_,value)=>[value,value,value]);
+  for(let r=0;r<=255;r+=17)for(let g=0;g<=255;g+=17)for(let b=0;b<=255;b+=17)colors.push([r,g,b]);
+  for(const color of colors)assert.equal(portInk(color),'#ffffff');
+  for(const theme of THEMES){
+    const values={...defaults,...theme.id===DEFAULT_THEME?{}:derived,...declarations(':root[data-theme="'+theme.id+'"]')};
+    const token=name=>{assert.ok(values[name],'Palette token '+name);return values[name];};
+    const ink=luminance(channels(token('text')));
+    const tints=[...token('canvas-tint').matchAll(/(#[\da-f]{8})|color-mix\(in srgb, var\(--([\w-]+)\) ([\d.]+)%, transparent\)/gi)].map(([,hex,name,percent])=>({color:channels(hex||token(name)),alpha:hex?parseInt(hex.slice(7),16)/255:Number(percent)/100}));
+    assert.ok(tints.length,'Canvas tint colors are accounted for in '+theme.id);
+    const backgrounds=['surface','panel','raised'].map(name=>tints.reduce((background,tint)=>composite(tint.color,background,tint.alpha),channels(token(name))));
+    for(const color of colors)for(const base of backgrounds)for(const selected of [false,true]){
+      const lit=composite(color,base,glow);
+      const background=selected?composite(channels(selection),lit,parseInt(selection.slice(7),16)/255):lit;
+      const backdrop=luminance(background),contrast=(Math.max(ink,backdrop)+.05)/(Math.min(ink,backdrop)+.05);
+      assert.ok(contrast>=4.5,`${theme.id}, ${color}, selected=${selected}: contrast ${contrast}`);
     }
-  };
-  for (let gray = 0; gray <= 255; gray++) check([gray, gray, gray]);
-  for (let r = 0; r <= 255; r += 17) for (let g = 0; g <= 255; g += 17) for (let b = 0; b <= 255; b += 17) check([r, g, b]);
+  }
   assert.match(css, /\.port-tile\s*\{[^}]*color:\s*var\(--text\)/);
   assert.doesNotMatch(css.match(/\.port-number\s*\{[^}]*\}/)[0], /--port-(?:color|ink)/);
 });

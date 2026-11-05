@@ -1,3 +1,4 @@
+import {initializeTheme} from './theme.mjs';
 import {browserRecoveryMessage} from './browser-support.mjs';
 
 function recovery(message, retry) {
@@ -13,6 +14,7 @@ function recovery(message, retry) {
   app.replaceChildren(panel);
 }
 
+initializeTheme();
 const supportMessage=browserRecoveryMessage(globalThis);
 if(supportMessage) recovery(supportMessage,false);
 else import('./app.mjs').then(()=>{
