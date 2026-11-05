@@ -1205,6 +1205,16 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
 .output-dock #draft-actions > span:first-child { margin-inline: auto 4px; }
 
 @container port-canvas (min-width: 640px) {
+  .port-map.wrapped-banks { grid-template-columns: repeat(min(var(--physical-port-count), 10), minmax(0, 1fr)); gap: 0 10px; }
+  .wrapped-banks > .port-group:not([hidden]), .wrapped-banks .port-bank:not([hidden]) { display: contents; }
+  .wrapped-banks .port-group-heading { display: none; }
+  .port-map.wrapped-banks .port-tile { padding-top: 18px; margin-bottom: 16px; }
+  .wrapped-banks .port-tile::after { left: auto; right: 6px; top: 4px; }
+  .wrapped-banks .port-heading { align-items: end; }
+  .wrapped-banks .port-number { white-space: nowrap; }
+  .wrapped-banks .sfp .port-number::before { content: "SFP"; display: block; font-size: 10px; line-height: 10px; color: var(--muted); }
+  .wrapped-banks .link-long { display: none; }
+  .wrapped-banks .link-short { display: inline; }
   .port-map.inline-banks { grid-template-columns: var(--bank-widths); }
   .inline-banks .sfp-group { border: 0; border-left: 1px solid var(--line); padding: 0 0 0 8px; }
   .inline-banks .port-bank { --port-columns: 8; }
@@ -1216,6 +1226,10 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
     .inline-banks > .port-group { display: grid; grid-row: span 6; grid-template-rows: subgrid; row-gap: 0; }
     .inline-banks .port-bank { grid-row: span 5; grid-template-rows: subgrid; row-gap: 0; }
   }
+}
+@container port-canvas (min-width: 640px) and (max-width: 840px) {
+  .port-map.wrapped-banks .port-tile { padding-inline: 2px; }
+  .wrapped-banks .port-heading { padding-inline: 0; }
 }
 @media (min-width: 900px) {
   .titlebar, .titlebar .navigation { padding-block: 0; }

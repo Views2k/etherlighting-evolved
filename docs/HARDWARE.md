@@ -35,6 +35,14 @@ The six Pro Max models, ECS-Aggregation, and ECS-Core remain output-blocked. The
 commits all staged MCU records and hides commit errors. The SONiC models require a separate ownership and
 cleanup adapter. Detection of a device or a similarly named command does not grant output permission.
 
+## Port map layout
+
+The map uses the Ethernet and optical ports reported by the connected switch. Larger layouts fill rows
+of up to ten ports on desktop, laptop, and rack screens, with additional rows reached by vertical scrolling.
+Optical-only switches use the same layout. Narrow screens retain the compact two- or four-column map.
+The eight-Ethernet/two-optical layout stays on one row when the canvas has room. These display rules apply
+independently of the model and firmware qualification above.
+
 ## Port controls and saved profiles
 
 Copper ports use their group effect, matching rules, or an individual color. Qualified optical indicators
