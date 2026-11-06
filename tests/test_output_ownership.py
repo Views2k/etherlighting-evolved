@@ -152,12 +152,16 @@ async def test_marker_precedes_first_initialization_and_clears_after_stop(config
 
 
 @pytest.mark.anyio
-async def test_uncertain_previous_owner_blocks_new_session_without_reset(config):
-    sessions = SessionManager(config, transport_factory=lambda **kw: MemoryDevice())
-    sessions.output_journal.claim("fixture.invalid", 22, PEER)
-    with pytest.raises(LoginError) as exc:
-        await sessions.connect("alias.invalid", "fixture", "fixture")
-    assert exc.value.code == "output_recovery_required" and sessions.engine is None
+async def test_uncertain_previous_owner_is_recovered_before_a_new_session(config):
+    transport = MemoryDevice()
+    sessions = SessionManager(config, transport_factory=lambda **kw: transport)
+    paths = sessions.output_journal.claim("fixture.invalid", 22, PEER).paths
+    # The same authenticated switch through another address: the retained record is resolved with
+    # acknowledged default-restoring commands before any new session starts, not by deleting it.
+    info = await sessions.connect("alias.invalid", "fixture", "fixture")
+    assert transport.writes[0] == "steady"
+    assert not paths[1].exists()
+    assert info["pending_scene_choice"] and sessions.engine is None
 
 
 def test_custom_data_directory_does_not_change_output_journal(tmp_path):
@@ -365,3 +369,88 @@ def test_server_owner_lock_precedes_app_creation(config, monkeypatch, demo):
     args = argparse.Namespace(config=None, host=None, port=None, log_level="error", demo=demo, no_autoconnect=True)
     with pytest.raises(AlreadyRunningError):
         cli._serve(args)
+
+
+class RecordingDevice(MemoryDevice):
+    async def write_sfp_mode(self, port, direct):
+        self.on_write()
+        self.writes.append(("sfp_mode", port, direct))
+        await self.simulator.write_sfp_mode(port, direct)
+
+
+def test_adopt_takes_over_records_and_finish_removes_them_after_confirmation(tmp_path):
+    journal = OutputJournal(tmp_path)
+    stale = journal.claim("switch.invalid", 22, PEER)
+    with pytest.raises(OutputOwnershipError):
+        journal.adopt("switch.invalid", 22, PEER + "other")
+    lease = journal.adopt("switch.invalid", 22, PEER)
+    assert lease.uncertain and all(lease.owns(path) for path in lease.paths)
+    assert not stale.owns(lease.paths[0])
+    with pytest.raises(OutputOwnershipError):
+        lease.finish()
+    lease.uncertain = False
+    lease.finish()
+    assert not any(path.exists() for path in lease.paths)
+    journal.claim("switch.invalid", 22, PEER).finish()
+
+
+def test_release_endpoint_refuses_when_the_device_record_matches(tmp_path):
+    journal = OutputJournal(tmp_path)
+    lease = journal.claim("switch.invalid", 22, PEER)
+    with pytest.raises(OutputOwnershipError):
+        journal.release_endpoint("switch.invalid", 22, PEER)
+    journal.release_endpoint("switch.invalid", 22, PEER + "other")
+    assert not lease.paths[0].exists() and lease.paths[1].exists()
+
+
+@pytest.mark.anyio
+async def test_retained_record_for_the_same_switch_is_recovered_on_the_next_connect(config):
+    paths = OutputJournal().claim("fixture.invalid", 22, PEER).paths  # an earlier session that never confirmed
+    transport = RecordingDevice()
+    sessions = SessionManager(config, transport_factory=lambda **kw: transport)
+    under_record = []
+    transport.on_write = lambda: under_record.append(all(path.exists() for path in paths))
+    info = await sessions.connect("fixture.invalid", "fixture", "fixture")
+    assert transport.writes[0] == "steady"
+    assert [write for write in transport.writes if isinstance(write, tuple)] == [
+        ("sfp_mode", 9, False), ("sfp_mode", 10, False)]
+    assert any('port_rgb":"9 000000 100' in write for write in transport.writes if isinstance(write, str))
+    assert under_record and all(under_record)
+    assert not any(path.exists() for path in paths)
+    assert info["pending_scene_choice"]
+    transport.on_write = lambda: None
+    await activate(sessions)
+    assert sessions.engine.switch.output_lease is not None
+    await sessions.close()
+    assert not any(path.exists() for path in paths)
+
+
+@pytest.mark.anyio
+async def test_retained_record_for_another_switch_releases_only_the_endpoint(config):
+    other = OutputJournal().claim("fixture.invalid", 22, PEER + "other").paths
+    transport = RecordingDevice()
+    sessions = SessionManager(config, transport_factory=lambda **kw: transport)
+    await sessions.connect("fixture.invalid", "fixture", "fixture")
+    assert not transport.writes
+    assert not other[0].exists() and other[1].exists()
+    await activate(sessions)
+    await sessions.close()
+    assert other[1].exists()
+
+
+@pytest.mark.anyio
+async def test_failed_recovery_keeps_the_record_and_refuses_the_login(config):
+    paths = OutputJournal().claim("fixture.invalid", 22, PEER).paths
+    transport = RecordingDevice()
+
+    async def failing(behavior):
+        raise TransportError("write timed out")
+
+    transport.write_behavior = failing
+    sessions = SessionManager(config, transport_factory=lambda **kw: transport)
+    with pytest.raises(LoginError) as exc:
+        await sessions.connect("fixture.invalid", "fixture", "fixture")
+    assert exc.value.code == "output_recovery_required"
+    assert "Connect again" in exc.value.message
+    assert all(path.exists() for path in paths) and sessions.engine is None
+    assert not transport.connected
