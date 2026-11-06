@@ -53,6 +53,9 @@ class FakeSessions:
     def info(self):
         return {"logged_in": self.engine is not None, "simulated": self.simulated}
 
+    def schedule_identity(self):
+        return self.workspace_id() if not self.handoff_pending else None
+
     def workspace_id(self):
         return "controller-test-workspace" if self.engine is not None else None
 
@@ -253,8 +256,10 @@ def test_rest_and_websocket_enrichment_preserves_lighting_and_telemetry(wired):
     with TestClient(app, base_url=BASE, headers=HEADERS) as client:
         ports = client.get("/api/ports").json()
         state = client.get("/api/state").json()
-        assert ports[0] == {**PORT, "name": "Device 1", "controller": {"source": "unifi"}}
-        assert state["sfp"][0] == {**SFP, "name": "Device 9", "controller": {"source": "unifi"}}
+        assert ports[0] == {**PORT, "name": "Device 1", "controller": {"source": "unifi"},
+                            "name_mode": "unifi", "display_name": None}
+        assert state["sfp"][0] == {**SFP, "name": "Device 9", "controller": {"source": "unifi"},
+                                  "name_mode": "unifi", "display_name": None}
         assert state["mode"] == "running" and state["brightness"] == 51
         with client.websocket_connect("/api/ws", headers={"Host": "127.0.0.1:8787", **HEADERS}) as socket:
             assert socket.receive_json()["type"] == "session"

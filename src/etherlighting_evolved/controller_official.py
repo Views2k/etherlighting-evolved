@@ -236,6 +236,8 @@ class IntegrationClient(ControllerClient):
             if not _integer(index, 1, 256) or index in metadata or port.get("state") not in ("UP", "DOWN", "UNKNOWN"):
                 raise ControllerError("invalid_response", "The controller returned invalid port information.", 502)
             value = {"source": "unifi_integration", "kind": "port", "client_mapping": False, "state": port["state"]}
+            if name := _name(port.get("name")):
+                value["port_name"] = name
             if _integer(port.get("speedMbps")):
                 value["speed_mbps"] = port["speedMbps"]
             poe = port.get("poe")

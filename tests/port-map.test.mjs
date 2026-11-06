@@ -133,3 +133,13 @@ test('scope options use reported ports rather than assuming eight copper and two
   const state = {ports:[{port:2},{port:8},{port:24}],sfp:[{port:25},{port:26},{port:27},{port:28}],zones:[]};
   assert.deepEqual(portScopeOptions(state).map(option=>option.ports), [[2,8,24,25,26,27,28],[2,8,24],[25,26,27,28]]);
 });
+
+test('chosen port names override client and uplink text while preserving uplink detection', () => {
+  const port={port:9,facts:{uplink:true},name:'Client',controller:{clients:[{name:'Client'}]},display_name:'Rack fiber',name_mode:'manual'};
+  assert.equal(portLabel(port,true).text,'Rack fiber');
+  assert.equal(isUplink(port),true);
+  assert.equal(portLabel({...port,display_name:null},true).text,'SFP 9');
+  assert.equal(portLabel({...port,name_mode:'unifi',display_name:'UniFi fiber'},true).text,'UniFi fiber');
+  assert.equal(portLabel({...port,name_mode:'unifi',display_name:null},true).text,'Uplink');
+  assert.equal(portLabel({...port,display_name:'<img src=x onerror=alert(1)>'},true).text,'<img src=x onerror=alert(1)>');
+});

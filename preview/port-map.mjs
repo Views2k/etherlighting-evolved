@@ -8,6 +8,9 @@ const samePorts = (first, second) => first.length === second.length && first.eve
 export const isUplink = port => port.link?.uplink === true || port.facts?.uplink === true;
 
 export function portLabel(port, sfp = false) {
+  const display=text(port.display_name);
+  if(display)return {lines:[display],text:display};
+  if(port.name_mode==='manual'){const fallback=`${sfp?'SFP':'Port'} ${port.port}`;return {lines:[fallback],text:fallback};}
   if (isUplink(port)) return {lines: ['Uplink'], text: 'Uplink'};
   const clients = port.controller?.clients;
   let lines;

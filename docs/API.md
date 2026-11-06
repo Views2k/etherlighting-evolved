@@ -1107,3 +1107,22 @@ These only work after a demo login.
 The simulator starts with all 8 ports linked at mixed speeds, port 5 as the uplink, and PoE devices on ports 2
 (class 4, PoE+), 4 (class 3, PoE), 6 (class 6, PoE++) and 7 (class 8, PoE+++). Link changes appear within about a
 second.
+
+## Port display names
+
+`GET /api/port-names` returns `{revision, use_unifi, names}` for the authenticated switch identity.
+`names` maps physical port numbers (string keys) to saved manual display names. The default `use_unifi` is true.
+`PUT /api/port-names` accepts `{expected_revision, use_unifi, names}`. Each supplied name updates that port;
+an empty value clears it. Other port names are retained. Names accept up to 64 characters on one line.
+The current revision is required; concurrent edits return 409 and require reloading. Send `X-EE-Workspace`
+to guard against a switch change. Storage failures return 503 without accepting an in-memory-only edit.
+
+Port details → Edit names opens the naming editor. Manual names are saved per switch on the host, shared
+with other workspace clients, and retained when UniFi naming is selected. Clearing a manual name displays
+the physical port number. With UniFi naming selected, configured port names take priority, followed by the
+existing connected-device names. Existing controller refreshes update automatic names.
+
+Port arrays from REST and WebSocket frames include `name_mode` (`manual` or `unifi`) and `display_name`
+(a resolved custom name or null). Controller metadata retains client information and adds `port_name`
+when a configured name is reported. Naming preferences have their own atomic storage and revision;
+they do not change the lighting scene or send switch/controller configuration commands.

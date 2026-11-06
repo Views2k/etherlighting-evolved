@@ -45,3 +45,5 @@ packaging/wizard*.bmp
 Thumbs.db
 .idea/
 .vscode/
+
+port-names/
