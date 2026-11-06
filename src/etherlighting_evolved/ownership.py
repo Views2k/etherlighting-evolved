@@ -43,6 +43,59 @@ class OutputJournal:
                     "complete the lighting recovery review before reconnecting."
                 )
 
+    def retained(self, host: str, port: int, fingerprint: str, *,
+                 current: OutputLease | None = None) -> dict[str, Path | None]:
+        """The records that would refuse a claim: the endpoint record for this address and the device record
+        for this authenticated switch. A record owned by `current` does not count."""
+        endpoint, device = self.paths(host, port, fingerprint)
+
+        def blocking(path: Path) -> bool:
+            return path.exists() and not (current and path in current.paths and current.owns(path))
+
+        return {"endpoint": endpoint if blocking(endpoint) else None, "device": device if blocking(device) else None}
+
+    def adopt(self, host: str, port: int, fingerprint: str) -> OutputLease:
+        """Take over the records of an earlier unconfirmed session with the same authenticated switch.
+
+        The caller must then return the switch lighting to its defaults with acknowledged commands and call
+        `finish()`; until that confirms, the lease stays uncertain and the records stay on disk.
+        """
+        paths = self.paths(host, port, fingerprint)
+        if not paths[1].exists():
+            raise OutputOwnershipError("There is no retained lighting record for this switch.")
+        lease = OutputLease(paths, device_identity(fingerprint))
+        lease.uncertain = True
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            for path in paths:
+                temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+                try:
+                    with temporary.open("x", encoding="utf-8") as stream:
+                        json.dump({"version": 1, "owner": lease.owner}, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            raise OutputOwnershipError("Could not take over the retained lighting record. Keep EE output stopped "
+                                       "and review the ownership records before retrying.") from exc
+        return lease
+
+    def release_endpoint(self, host: str, port: int, fingerprint: str) -> None:
+        """Remove an endpoint record whose device record does not describe the switch now at that address.
+
+        The earlier session's device record stays, so that switch is still protected when it is seen again.
+        """
+        endpoint, device = self.paths(host, port, fingerprint)
+        if device.exists():
+            raise OutputOwnershipError("The retained lighting record belongs to this switch and needs recovery.")
+        try:
+            endpoint.unlink(missing_ok=True)
+        except OSError as exc:
+            raise OutputOwnershipError("Could not remove the stale lighting ownership record. Keep EE output "
+                                       "stopped and review the ownership records before retrying.") from exc
+
     def claim(self, host: str, port: int, fingerprint: str) -> OutputLease:
         paths = self.paths(host, port, fingerprint)
         self.check(host, port, fingerprint)

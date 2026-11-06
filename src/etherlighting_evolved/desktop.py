@@ -380,8 +380,35 @@ class DesktopApp:
                 log.info("closing for Windows (%s)", args.CloseReason)
                 self.closing_for_windows = True
                 args.Cancel = False
+                self.stop_for_windows()
 
         self.window.native.FormClosing += on_form_closing
+
+    def stop_for_windows(self) -> None:
+        """Return the switch lighting before Windows ends the process.
+
+        Windows may terminate the app shortly after its window closes for a sign-out or shutdown, which used to
+        leave the lighting ownership record behind and refuse the next login. A shutdown block reason asks
+        Windows to wait while the lighting is handed back; the user can still end the session at once.
+        """
+        handle = None
+        try:
+            handle = ctypes.c_void_p(int(self.window.native.Handle.ToInt64()))
+            user32 = ctypes.windll.user32
+            user32.ShutdownBlockReasonCreate.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+            user32.ShutdownBlockReasonDestroy.argtypes = [ctypes.c_void_p]
+            user32.ShutdownBlockReasonCreate(handle, "Returning the switch lighting to UniFi")
+        except Exception:
+            handle = None
+        try:
+            self.server.stop()
+            log.info("lighting returned before the Windows session ended")
+        except Exception as exc:
+            log.warning("lighting cleanup was not confirmed before Windows closed EE: %s", exc)
+        finally:
+            if handle is not None:
+                with contextlib.suppress(Exception):
+                    ctypes.windll.user32.ShutdownBlockReasonDestroy(handle)
 
     # Lifecycle
 

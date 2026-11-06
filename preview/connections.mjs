@@ -24,7 +24,7 @@ const messages = {
   connect_failed: 'The switch could not be reached. Check its address and that SSH is enabled.',
   ssh_error: 'SSH could not connect. Check the switch address and SSH settings.',
   no_etherlighting: 'The switch connected, but its lighting service is unavailable. Check that this model and firmware support Etherlighting.',
-  output_recovery_required: 'EE could not confirm the previous lighting session stopped. Keep output stopped until its ownership record has been reviewed.',
+  output_recovery_required: 'An earlier lighting session did not stop cleanly and EE could not return the switch lighting to its defaults yet. Check that the switch is reachable, then connect again to retry the recovery.',
   handoff_unconfirmed: 'Handoff could not be confirmed. Automatic switch connection is paused. Choose Retry handoff to complete cleanup before reconnecting.',
   handoff_recovery_required: 'The previous handoff needs a recovery review before reconnecting. Keep EE disconnected until that review is complete.',
   handoff_save_failed: 'Your lighting setup or handoff preference could not be saved. Retry handoff before closing EE.',

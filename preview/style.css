@@ -1408,3 +1408,16 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .library-save .button { flex:1 1 auto; white-space:normal; }
   .port-search-result { flex-direction:column; align-items:flex-start; }
 }
+
+.port-names { width: min(460px, calc(100vw - 32px)); }
+.port-name-fields { display: grid; gap: 12px; margin-block: 16px; }
+.port-name-fields .field { display: grid; grid-template-columns: 70px minmax(0, 1fr); align-items: center; }
+.port-names .form-error { color: var(--danger); overflow-wrap: anywhere; }
+.port-details .dialog-header { flex-wrap: wrap; gap: 10px; }
+
+.port-names[open] { display: flex; overflow: hidden; }
+.port-names form { display: flex; flex-direction: column; gap: 12px; min-height: 0; width: 100%; }
+.port-names .dialog-header, .port-names .dialog-footer { position: static; flex: none; margin: 0; }
+.port-names .dialog-footer { padding: 12px 0 0; }
+.port-names .help-text, .port-names .form-error { margin: 0; }
+.port-name-fields { min-height: 0; overflow-y: auto; margin: 0; padding-right: 4px; }

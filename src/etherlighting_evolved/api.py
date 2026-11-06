@@ -30,6 +30,7 @@ from .effects import list_effects
 from .engine import Engine, NotFound
 from .guard import LOOPBACK_BINDS, RequestGuard
 from .lighting_library import attach_library_routes
+from .port_names import attach_port_name_routes
 from .presets import PresetStore, ProfileConflict, ProfileStoreError
 from .rules import FIELDS, STYLES, TEMPLATES, Rule
 from .scene_history import attach_routes as attach_history_routes
@@ -357,6 +358,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
     controller.routes(api)
     attach_library_routes(api, engine, sessions, config)
+    attach_port_name_routes(api, engine, sessions, controller.port_names)
 
     # About and login
 

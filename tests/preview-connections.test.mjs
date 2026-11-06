@@ -263,7 +263,7 @@ test('scene recovery errors keep new output blocked and do not blame credentials
   const result=showSceneChoice(async(_path,method,body)=>{if(!method)return session;if(body.choice==='cancel')return {logged_in:false,pending_scene_choice:null};throw Object.assign(new Error('private details'),{code:'output_recovery_required'});},session,{signal:dom.lifecycle.signal});
   dom.button('Start new setup').click();await flush();
   assert.equal(dom.button('Start new setup').disabled,true);assert.equal(dom.button('Use saved lighting').disabled,true);
-  assert.match(dom.byClass(dom.dialog(),'connection-notice')[0].textContent,/Keep output stopped/);
+  assert.match(dom.byClass(dom.dialog(),'connection-notice')[0].textContent,/connect again to retry the recovery/);
   dom.button('Cancel').click();await result;
   assert.doesNotMatch(connectionError({code:'output_recovery_required'}),/password|reconnect/i);
   assert.match(connectionError({code:'instance_running'}),/already running/);

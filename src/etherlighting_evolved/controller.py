@@ -469,8 +469,10 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
             metadata[port] = {"name": f"{len(records)} clients", "controller": details}
     for override in _rows(switch.get("port_overrides")):
         port, name = _port(override.get("port_idx")), _name(override.get("name"))
-        if port in valid_ports and port not in metadata and name:
-            metadata[port] = {"name": name, "controller": {"source": "unifi", "kind": "port_label", "count": 0}}
+        if port in valid_ports and name:
+            item = metadata.setdefault(port, {"name": name, "controller": {
+                "source": "unifi", "kind": "port_label", "count": 0}})
+            item["controller"]["port_name"] = name
     return metadata
 
 

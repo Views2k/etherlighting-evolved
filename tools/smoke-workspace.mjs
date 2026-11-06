@@ -1,4 +1,5 @@
 import {checkProductWorkflows} from './product-workspace-checks.mjs';
+import {checkPortNameWorkflows} from './port-name-workspace-checks.mjs';
 import {checkThemeWorkflows} from './theme-workspace-checks.mjs';
 import {checkTopologyWorkflows} from './topology-workspace-checks.mjs';
 import assert from 'node:assert/strict';
@@ -514,6 +515,7 @@ try {
   assert.deepEqual(restored.sfp_sync, original.sfp_sync);
   report.sfp_activity = {included: assigned.ports, restored: 9};
   report.product_workflows=await checkProductWorkflows({evaluate,until,send,screenshot,url});
+  report.port_names=await checkPortNameWorkflows({evaluate,until,send,screenshot,url});
   report.themes=await checkThemeWorkflows({evaluate,until,send,screenshot,url});
   report.topologies=await checkTopologyWorkflows({evaluate,until,send,screenshot,url,root});
   assert.deepEqual(report.errors, []);

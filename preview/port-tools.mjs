@@ -63,9 +63,10 @@ function trendMarkup(samples){
   if(line.length>1)paths.push(line.join(' '));
   return `<svg viewBox="0 0 300 56" role="img" aria-label="Combined traffic over the last minute">${paths.map(points=>`<polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2"/>`).join('')}</svg>`;
 }
-export function openLivePortDetails({ports,getState,effects,history,request,onRefresh,onError,isDisconnected=()=>false}){
+export function openLivePortDetails({ports,getState,effects,history,request,onRefresh,onError,isDisconnected=()=>false,onEditNames}){
   const dialog=node('dialog','dialog port-details');dialog.setAttribute('aria-label','Selected port details');
   const header=node('header','dialog-header'),close=node('button','button quiet','Done');header.append(node('h2','','Port details'),close);close.onclick=()=>dialog.close();
+  if(onEditNames){const actions=node('div','dialog-actions'),edit=node('button','button','Edit names');edit.type='button';edit.onclick=onEditNames;actions.append(edit,close);header.append(actions);}
   const content=node('div','port-details-content'),rows=new Map();let pending=false,sampleKey='',sampleReceived=performance.now(),sampleAge=0;
   for(const id of ports){
     const section=node('section'),title=node('h3'),dl=node('dl','settings-details'),fields={};

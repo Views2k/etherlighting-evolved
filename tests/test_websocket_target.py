@@ -55,6 +55,9 @@ class Sessions:
         self.workspace = "fixture-workspace"
         self.mailboxes = set()
 
+    def schedule_identity(self):
+        return self.workspace_id() if not self.handoff_pending else None
+
     def workspace_id(self):
         return self.workspace if self.engine is not None else None
 

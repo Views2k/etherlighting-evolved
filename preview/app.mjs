@@ -1,5 +1,6 @@
 import {sceneFromState,reviewSceneConflict} from './scene-review.mjs';
 import {createPortHistory,openFindPorts,openLivePortDetails} from './port-tools.mjs';
+import {openPortNames} from './port-names.mjs';
 import {openSavedLibrary,openSceneHistory} from './saved-library.mjs';
 import {profileLayoutNotice} from './profile-preview.mjs';
 import {previewDraftColors} from './draft-preview.mjs';
@@ -451,7 +452,9 @@ function openPortDetails(){
   if(!selected.size)return;
   livePortDetails?.close();
   livePortDetails=openLivePortDetails({ports:[...selected].sort((a,b)=>a-b),getState:()=>state,effects,
-    history:portHistory,request:workspaceRequest(),onRefresh:()=>refresh(false),onError:notify,isDisconnected:()=>disconnected});
+    history:portHistory,request:workspaceRequest(),onRefresh:()=>refresh(false),onError:notify,isDisconnected:()=>disconnected,
+    onEditNames:()=>openPortNames({ports:[...selected].sort((a,b)=>a-b),getState:()=>state,
+      request:workspaceRequest(),onRefresh:()=>refresh(false),onSaved:()=>notify('Port names saved')})});
 }
 function openEffectSettings(){
   return openSavedLibrary({kind:'effect',request:workspaceRequest(),getState:()=>state,
@@ -516,6 +519,10 @@ function poeIcon(poe) {
   return `<span class="poe-mark" role="img" aria-label="${tier.name}" title="${tier.name}"><svg class="poe-icon" viewBox="0 0 26 24" aria-hidden="true"><path d="M12.5 2 4 13h6l-1 9 8-12h-6l1.5-8Z" fill="currentColor"/>${plus}</svg></span>`;
 }
 function uplinkIcon(){return '<svg class="uplink-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 15 9-9 9 9"/></svg>';}
+function portOptionLabel(port){
+  const name=portLabel(port).text,number=`Port ${port.port}`;
+  return name===number?number:`${number} · ${name}`;
+}
 function portAccessibleName(port,sfp=false){
   const name=portLabel(port,sfp).text,id=`${sfp?'SFP':'Port'} ${port.port}`,power=portPower(port);
   return [id,name===id?'':name,linkStatus(port).label,!sfp&&power.delivering?`${poeTier(port.poe).name}, ${power.description}`:''].filter(Boolean).join(', ');
@@ -594,6 +601,8 @@ function updateLive() {
       if(cached.badgeKey!==badgeKey&&cached.badge){cached.badge.innerHTML=uplink?uplinkIcon():powered?poeIcon(port.poe):'';cached.badge.title=uplink?'Uplink':powered?poeTier(port.poe).name:'';}
       if(cached.aria!==aria)tile.setAttribute('aria-label',aria);
       tile.querySelector('.port-label')?.classList.toggle('uplink-label',uplink);
+      const sourceOption=document.querySelector(`#sfp-source option[value="${port.port}"]`);
+      if(sourceOption&&sourceOption.textContent!==portOptionLabel(port))sourceOption.textContent=portOptionLabel(port);
       if(cached.deviceName!==deviceName){
         const field=tile.querySelector('.port-label');
         field.title=name.text;
@@ -838,7 +847,7 @@ function sfpSyncControls(sync) {
   const targets=(state.sfp||[]).filter(light=>!portEffect(state,draft,light.port));
   const group=targets.length===(state.sfp||[]).length?(targets.length===2?'both SFP lights':`all ${targets.length} SFP lights`):`SFP ${portRanges(targets.map(light=>light.port))}`;
   const mode=`<div class="parameter parameter-inline"><label for="sfp-sync">Mode</label><select id="sfp-sync">${modes.map(([value,text])=>`<option value="${value}" ${value===sync.mode?'selected':''}>${text}</option>`).join('')}</select></div>`;
-  const source=sync.mode==='ethernet'?`<div class="parameter parameter-inline"><label for="sfp-source">Follow port</label><select id="sfp-source">${(state.ports||[]).map(port=>`<option value="${port.port}" ${port.port===sync.source_port?'selected':''}>Port ${port.port}${port.name?' · '+escape(port.name):''}</option>`).join('')}</select></div><p class="help-text">The SFP lights track this port’s color and brightness with smooth fades. SFP automations can override the shared lighting.</p>`:sync.mode==='together'?`<p class="help-text">Use these controls to set ${group}. Independent returns each indicator to its separate controls.</p>`:'';
+  const source=sync.mode==='ethernet'?`<div class="parameter parameter-inline"><label for="sfp-source">Follow port</label><select id="sfp-source">${(state.ports||[]).map(port=>`<option value="${port.port}" ${port.port===sync.source_port?'selected':''}>${escape(portOptionLabel(port))}</option>`).join('')}</select></div><p class="help-text">The SFP lights track this port’s color and brightness with smooth fades. SFP automations can override the shared lighting.</p>`:sync.mode==='together'?`<p class="help-text">Use these controls to set ${group}. Independent returns each indicator to its separate controls.</p>`:'';
   return controlSection('Synchronization',mode+source,'link','sfp-sync-controls');
 }
 function bindSfpSync(host){
@@ -987,7 +996,7 @@ window.addEventListener('popstate',()=>{const historyEntry=routeHistory.observe(
 
 function resetWorkspace() {
   navigationVersion++;
-  document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog,.saved-library,.scene-history,.port-finder,.scene-conflict').forEach(dialog=>dialog.close('stay'));
+  document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog,.saved-library,.scene-history,.port-finder,.port-names,.scene-conflict').forEach(dialog=>dialog.close('stay'));
   activeColorPopover?.();secondaryCleanup?.();secondaryCleanup=undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
   livePortDetails?.close();livePortDetails=null;portHistory.clear();
   state={};selected=new Set();draft={};draftBaseline=null;draftBaseScene=null;edits.clear();pendingPlan=null;lastApplied=null;copiedAppearance=null;compareApplied=false;

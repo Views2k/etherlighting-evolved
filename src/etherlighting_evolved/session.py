@@ -341,8 +341,7 @@ class SessionManager:
             simulated = isinstance(transport, SimulatedTransport)
             if not simulated:
                 try:
-                    self.output_journal.check(host, port, transport.host_key_fingerprint,
-                                              current=self.engine.switch.output_lease if self.engine else None)
+                    await self._recover_retained_output(switch, host, port, transport.host_key_fingerprint)
                 except OutputOwnershipError as exc:
                     await self._close_switch(switch)
                     raise self._fail(exc.code, str(exc), 409) from exc
@@ -376,6 +375,41 @@ class SessionManager:
                     await self._close_switch(switch)
                 raise
             return await self._activate(candidate)
+
+    async def _recover_retained_output(self, switch: EtherlightSwitch, host: str, port: int,
+                                       fingerprint: str) -> None:
+        """Resolve ownership records left by a session whose shutdown was never confirmed.
+
+        The same authenticated switch: take the record over, return its lighting to the defaults with
+        acknowledged commands, then remove the record. A different switch at a known address: drop only the
+        endpoint record. Anything unconfirmed keeps the record and refuses the login as before.
+        """
+        current = self.engine.switch.output_lease if self.engine else None
+        retained = self.output_journal.retained(host, port, fingerprint, current=current)
+        if retained["endpoint"] is None and retained["device"] is None:
+            return
+        if retained["device"] is None:
+            self.output_journal.release_endpoint(host, port, fingerprint)
+            log.info("removed the stale lighting ownership record for %s:%s; the switch there is not the one it "
+                     "described", host, port)
+            return
+        lease = self.output_journal.adopt(host, port, fingerprint)
+        switch.output_lease = lease
+        try:
+            await switch.restore_defaults()
+            lease.uncertain = False
+            lease.finish()
+        except OutputOwnershipError:
+            raise
+        except Exception as exc:
+            raise OutputOwnershipError(
+                "An earlier lighting session has no confirmed shutdown and its recovery did not finish "
+                f"({exc}). Connect again to retry. The record is kept in {self.output_journal.directory}."
+            ) from exc
+        finally:
+            switch.output_lease = None
+        log.info("recovered the unconfirmed earlier lighting session on %s:%s; the switch lighting is back at "
+                 "its defaults", host, port)
 
     def _device_store(self, switch: EtherlightSwitch) -> DeviceSceneStore:
         hardware = switch.hardware_profile or PRO_XG8

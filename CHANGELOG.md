@@ -1,7 +1,12 @@
 # Changelog
 
+## 0.4.21
+
+- Rename Ethernet and SFP ports in Port details, or use UniFi port names automatically. Manual names stay saved when switching modes and appear across the map, search, details and SFP source selector.
+
 ## Unreleased
 
+- A lighting session that ended without a confirmed shutdown (power loss, a forced restart, a stopped process) no longer locks the switch out of EE. The next login takes over the retained ownership record, returns the switch lighting to its defaults with acknowledged commands, and clears the record; a record left by a different switch at the same address is dropped without any command. When Windows signs out or shuts down, the desktop app asks Windows to wait while it returns the lighting first.
 - Choose from nine dark themes and three light themes in Settings, including Silver and Midnight. Each device remembers its selection.
 
 - Find ports by number or device name, inspect live traffic and link changes, and identify a socket for ten seconds.

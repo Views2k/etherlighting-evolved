@@ -663,3 +663,15 @@ def test_reconnect_retains_same_origin_pin_and_failed_replacement_keeps_session(
         assert manager._pending.pin is None
         await manager.disconnect()
     asyncio.run(case())
+
+
+def test_configured_port_names_are_kept_alongside_client_and_uplink_names():
+    devices = topology()
+    devices[0]["port_overrides"] += [{"port_idx": 1, "name": "Desk socket"},
+                                     {"port_idx": 5, "name": "Router link"}]
+    mapping = port_metadata(devices[0], devices, [client("02:00:00:01:00:01", 1)])
+    assert mapping[1]["controller"]["port_name"] == "Desk socket"
+    assert mapping[1]["controller"]["clients"][0]["name"] == "Desk"
+    assert mapping[5]["controller"]["port_name"] == "Router link"
+    assert mapping[5]["name"] == "Gateway"
+    assert mapping[9]["controller"]["port_name"] == "Spare fiber"

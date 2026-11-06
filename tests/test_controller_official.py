@@ -553,3 +553,18 @@ def test_console_discovery_does_not_follow_redirect_or_return_raw_error(monkeypa
     with pytest.raises(ControllerError) as error:
         client.consoles()
     assert KEY not in json.dumps(error.value.detail()) and len(connections[0].calls) == 1
+
+
+@pytest.mark.anyio
+async def test_reported_integration_port_name_is_available_for_automatic_naming(monkeypatch):
+    reported = detail()
+    reported["interfaces"]["ports"][0]["name"] = "Office socket"
+    queued_connections(monkeypatch, IntegrationClient, [
+        reply(page([{"id": SITE, "name": "Site"}])), reply(page([device()])), reply(reported)])
+    manager = ControllerManager()
+    await manager.connect(url="https://console.invalid", controller_kind="unifi_os", auth_method="api_key",
+                          api_key=KEY, switch_host=HOST)
+    ports = manager.enrich_ports([{"port": 1}, {"port": 2}], HOST)
+    assert ports[0]["controller"]["port_name"] == "Office socket"
+    assert "port_name" not in ports[1]["controller"]
+    await manager.disconnect()

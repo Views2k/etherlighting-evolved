@@ -835,6 +835,38 @@ class EtherlightSwitch:
         for port in tuple(set(self._sfp_owned) | self._sfp_uncertain):
             await self.release_sfp(port)
 
+    async def restore_defaults(self) -> None:
+        """Return the LED controller to its shared defaults after a session whose shutdown was never confirmed.
+
+        The behavior goes back to steady and every qualified optical port is darkened and handed back to the
+        switch's own service, the same acknowledged sequence a normal release uses. The caller provides the
+        output lease; a connection change or a missing acknowledgment raises and leaves the lease uncertain.
+        """
+        self.require_output_profile()
+        generation = self.transport.lighting_generation
+
+        def valid() -> bool:
+            return generation is self.transport.lighting_generation and (self.native_breathing or self.scoped_sfp)
+
+        async with self._send_lock:
+            if not (self.native_breathing or self.scoped_sfp):
+                return
+            if not await self._paced_call(lambda: self.transport.write_behavior("steady"), valid=valid):
+                raise TransportError("The lighting connection changed during recovery")
+            self._steady_generation = generation
+            if self.scoped_sfp:
+                for port in self.sfp_ports:
+                    for operation in (lambda port=port: self._rgb_write(port, BLACK, 100),
+                                      lambda port=port: self.transport.write_sfp_mode(port, False)):
+                        if not await self._paced_call(operation, valid=valid):
+                            raise TransportError("The lighting connection changed during recovery")
+            self._native_active.clear()
+            self._sfp_owned.clear()
+            self._sfp_uncertain.clear()
+            self._sfp_transitions.clear()
+            self.native_uncertain = False
+            self.forget()
+
     def forget(self) -> None:
         """Drop the memory of what was last sent, so the next write re-sends every port."""
         self._last.clear()

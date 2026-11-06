@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from .controller import ControllerError, ControllerManager
 from .controller_credentials import ControllerLoginStore
 from .credentials import CredentialStoreError
+from .port_names import PortNameStore
 
 
 class ControllerLogin(BaseModel):
@@ -46,6 +47,7 @@ class ControllerIntegration:
 
     def __init__(self, sessions, manager=None, *, data_dir: Path, store=None, clock=time.monotonic):
         self.sessions = sessions
+        self.port_names = PortNameStore(data_dir / "port-names")
         self.manager = manager or ControllerManager()
         self.store = store or ControllerLoginStore(data_dir / "controller-login.json")
         self._clock = clock
@@ -86,7 +88,8 @@ class ControllerIntegration:
                 "reconnect_state": phase, "saved_login_error": self._saved_error}
 
     def ports(self, ports):
-        return self.manager.enrich_ports(ports, self.switch_host())
+        enriched = self.manager.enrich_ports(ports, self.switch_host())
+        return self.port_names.decorate(enriched, self.sessions.schedule_identity())
 
     def state(self, state):
         return {**state, "sfp": self.ports(state.get("sfp", [])), "controller": self.status()}
