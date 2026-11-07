@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "etherlighting-evolved"
-version = "0.4.21"
+version = "0.4.22"
 description = "Open-source controller for UniFi Etherlighting switches. Unofficial; not affiliated with Ubiquiti."
 readme = "README.md"
 license = { text = "MIT" }
@@ -39,7 +39,7 @@ etherlighting-evolved-app = "etherlighting_evolved.desktop:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-etherlighting_evolved = ["assets/*"]
+etherlighting_evolved = ["assets/*", "resident/*.sh", "resident/*.awk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

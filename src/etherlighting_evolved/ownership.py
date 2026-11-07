@@ -96,6 +96,24 @@ class OutputJournal:
             raise OutputOwnershipError("Could not remove the stale lighting ownership record. Keep EE output "
                                        "stopped and review the ownership records before retrying.") from exc
 
+    def player_lease(self, host: str, port: int, fingerprint: str, owner: str) -> OutputLease:
+        """Claim or reopen only this recorded switch player's two local ownership files."""
+        lease = OutputLease(self.paths(host, port, fingerprint), device_identity(fingerprint))
+        lease.owner = owner
+        if any(path.exists() and not lease.owns(path) for path in lease.paths):
+            raise OutputOwnershipError("Another lighting session owns this output.")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        for path in lease.paths:
+            try:
+                with path.open("x", encoding="utf-8") as stream:
+                    json.dump({"version": 1, "owner": owner}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except FileExistsError:
+                if not lease.owns(path):
+                    raise OutputOwnershipError("Another lighting session owns this output.") from None
+        return lease
+
     def claim(self, host: str, port: int, fingerprint: str) -> OutputLease:
         paths = self.paths(host, port, fingerprint)
         self.check(host, port, fingerprint)

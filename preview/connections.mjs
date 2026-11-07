@@ -53,8 +53,8 @@ export function connectionError(error, fallback = 'The connection could not be c
 }
 
 function handoffNeedsReview(session) {return session?.error?.code==='handoff_recovery_required';}
-function handoffBlocked(session) {return ['pending','unconfirmed'].includes(session?.handoff_state)||handoffNeedsReview(session);}
-function handoffRetryable(session) {return session?.handoff_state==='unconfirmed'&&!handoffNeedsReview(session);}
+function handoffBlocked(session) {return Boolean(session?.switch_playback)||['pending','unconfirmed'].includes(session?.handoff_state)||handoffNeedsReview(session);}
+function handoffRetryable(session) {return (Boolean(session?.switch_playback)||session?.handoff_state==='unconfirmed')&&!handoffNeedsReview(session);}
 
 export function handoffComplete(session) {
   return session?.handed_off===true&&session.handoff_state==='complete'&&session.logged_in===false&&session.connected===false&&session.connecting!==true&&session.automatic_connect_paused===true&&!handoffNeedsReview(session);
@@ -62,6 +62,17 @@ export function handoffComplete(session) {
 
 export function handoffStatus(session) {
   if(handoffNeedsReview(session))return {message:messages.handoff_recovery_required,error:true,tone:''};
+  if(session?.switch_playback){
+    const descriptions={
+      playing:'Your saved scene is playing on the switch. You can quit EE.',
+      handoff:'Handoff requested. EE will retry when the switch is reachable.',
+      absent:'The switch has no saved player running. Complete handoff to reconnect.',
+      preparing:'Switch playback was requested. Check playback or choose Handoff to UniFi.',
+      retrying:'The switch player is retrying its lighting output.',
+      unreachable:'The switch is unreachable. The last playback state could not be checked.',
+    };
+    return {message:descriptions[session.switch_playback]||'Check switch playback to see its current state.',tone:session.switch_playback==='playing'?'online':'waiting',error:false};
+  }
   if(session?.handoff_state==='pending')return {message:'Handing lighting back to UniFi…',error:false,tone:'waiting'};
   if(session?.handoff_state==='unconfirmed')return {message:messages.handoff_unconfirmed,error:true,tone:''};
   if(handoffComplete(session))return {message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'};
@@ -515,7 +526,9 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   host.replaceChildren();
   const panel = node('section', 'connection-panel panel');
   const logo = node('img', 'connection-logo'); logo.src = '/assets/logo.png'; logo.alt = '';
-  panel.append(logo, node('h1', '', 'Connect your switch'), node('p', 'help-text', 'Enter the switch’s SSH login to open its lighting workspace.'));
+  const heading=node('h1','','Connect your switch');
+  const intro=node('p','help-text','Enter the switch’s SSH login to open its lighting workspace.');
+  panel.append(logo,heading,intro);
   const [message, status] = notice();
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
   const address = input('host'); address.required = true; address.maxLength = 253;
@@ -531,7 +544,15 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const retryHandoff = button('Retry handoff','primary');retryHandoff.hidden=true;
   const actions = node('div', 'connection-actions'); actions.append(submit);
   if (restoreSaved) actions.append(restore);
-  actions.append(forget,retryHandoff);
+  const checkPlayback=button('Check playback','quiet');
+  checkPlayback.addEventListener('click',async()=>{
+    if(!active||pending)return;
+    checkPlayback.disabled=true;
+    try{const next=await request('/api/session/switch-playback/check','POST');if(active)update(next);}
+    catch{if(active)status('Could not check playback. Try again when the switch is reachable.',true);}
+    finally{if(active)setBusy();}
+  });
+  actions.append(forget,retryHandoff,checkPlayback);
   form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
   panel.append(message, form);
   if (onDemo) {
@@ -556,11 +577,17 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     form.setAttribute('aria-busy', String(waiting));
     for (const control of form.elements) control.disabled = waiting||recovering;
     retryHandoff.hidden=!handoffRetryable(saved);retryHandoff.disabled=waiting||!handoffRetryable(saved);
-    retryHandoff.textContent=retryingHandoff?'Handing off…':'Retry handoff';
+    checkPlayback.hidden=!saved.switch_playback;checkPlayback.disabled=waiting||!saved.switch_playback;
+    retryHandoff.textContent=retryingHandoff?'Handing off…':saved.switch_playback?'Handoff to UniFi':'Retry handoff';
     submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting ? 'Connecting…' : 'Connect to switch';
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
-    restore.hidden = !restoreSaved || !saved.has_saved_login;
-    forget.hidden = !saved.has_saved_login;
+    const resident=Boolean(saved.switch_playback);
+    heading.textContent=resident?'Switch playback':'Connect your switch';
+    intro.hidden=resident;
+    for(const child of form.children)if(child!==actions)child.hidden=resident;
+    submit.hidden=resident;
+    restore.hidden = resident || !restoreSaved || !saved.has_saved_login;
+    forget.hidden = resident || !saved.has_saved_login;
     panel.querySelector(':scope > button')?.toggleAttribute('disabled', waiting);
   };
   const enter = async value => {
@@ -631,7 +658,9 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     retryingHandoff=true;
     pending=(async()=>{
       try{
-        if(!await confirmAction(host,'Retry handoff to UniFi?','Retry stopping EE’s switch helpers and closing its SSH connection. Automatic connection stays paused and your saved setup is kept.','Retry handoff',lifecycle.signal)||!active)return;
+        const title=saved.switch_playback?'Handoff to UniFi?':'Retry handoff to UniFi?';
+        const action=saved.switch_playback?'Handoff to UniFi':'Retry handoff';
+        if(!await confirmAction(host,title,'Stop EE lighting and return control to UniFi. Your saved setup is kept.',action,lifecycle.signal)||!active)return;
         status('Handing lighting back to UniFi…');
         const result=await requestHandoff(request,()=>active);if(!result)return;
         if(result.session){update(result.session);await onSessionChange?.(result.session,result.error?{message:result.error,error:true}:undefined);}

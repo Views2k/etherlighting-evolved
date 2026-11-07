@@ -31,7 +31,7 @@ version_file.write_text(f"""VSVersionInfo(
 a = Analysis(
     [str(root / "packaging" / "native_service.py")],
     pathex=[str(root / "src")],
-    datas=[],
+    datas=[(str(root / "src/etherlighting_evolved/resident"), "etherlighting_evolved/resident")],
     hiddenimports=collect_submodules("uvicorn"),
     excludes=["tkinter", "pytest", "_pytest", "IPython", "webview", "pystray"],
 )

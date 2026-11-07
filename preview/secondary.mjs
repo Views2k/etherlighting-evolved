@@ -794,6 +794,19 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       content.append(node('h2','','Connection'),switchState);
       if (session.simulated) content.append(node('p','muted','Use this preview to review the lighting workspace, effects, rules, and profiles.'));
       else {
+        if (session.can_save_to_switch) {
+          const save=button('Save playback to switch',()=>gate.run(async()=>{
+            if(!await confirmAction(host,'Play this scene on the switch?','Activity Glow will respond to live port traffic. Other supported animations play a 30-second loop. Playback continues while the switch is powered. Use Handoff to UniFi to stop it.','Save to switch',lifecycle.signal)||!gate.active)return;
+            save.disabled=true;status('Saving the scene to your switch…');
+            try {
+              const result=await request('/api/session/switch-playback','POST');
+              if(gate.active)await onSessionChange?.(result);
+            } catch(error) {
+              if(gate.active)status(error.message||'The switch could not confirm playback.',true);
+            } finally {if(gate.active)save.disabled=false;}
+          }));
+          content.append(save);
+        }
         const handoff=button('Handoff to UniFi',()=>gate.run(async()=>{
           const unsaved=controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges();
           const message='Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.'+(unsaved?' Unapplied connection changes will be discarded.':'');

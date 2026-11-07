@@ -155,6 +155,22 @@ test('a refreshed handoff login keeps saved credentials available without restor
   assert.deepEqual(calls.map(call=>call[0]),['/api/private-access']);
 });
 
+test('resident playback offers a status check and hands off only on confirmation',async context=>{
+  const ui=uiDom(context),calls=[],saved={...complete(),handed_off:false,handoff_state:'none',switch_playback:'playing'};
+  const cleanup=renderSwitchConnection(ui.host,{session:saved,request:async(path,method)=>{
+    if(path==='/api/private-access')return privateStatus;
+    calls.push([path,method]);return path.endsWith('/check')?saved:complete();
+  }});ui.after(cleanup);await flush();
+  assert.ok(ui.button('Connect to switch').hidden);
+  ui.button('Check playback').click();await flush();
+  assert.deepEqual(calls,[['/api/session/switch-playback/check','POST']]);
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Cancel',ui.dialog()).click();await flush();
+  assert.equal(calls.length,1);
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Handoff to UniFi',ui.dialog()).click();await flush();
+  assert.deepEqual(calls.at(-1),['/api/session/handoff','POST']);
+  assert.ok(ui.button('Check playback').hidden);
+});
+
 test('pending handoff blocks manual, saved and demo reconnect attempts',async context=>{
   const ui=uiDom(context),actions=[],session={...complete(),handed_off:false,handoff_state:'pending'};
   const cleanup=renderSwitchConnection(ui.host,{request:async()=>privateStatus,session,restoreSaved:async()=>actions.push('restore'),onDemo:()=>actions.push('demo')});ui.after(cleanup);await flush();

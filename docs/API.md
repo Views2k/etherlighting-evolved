@@ -13,6 +13,18 @@ This document describes the API used by the EE workspace and other clients.
   ports are not lighting targets. Optical-only models have an empty copper `ports` array.
 - Times use the local time of the machine running EE, in 24-hour `"HH:MM"` format.
 
+## Switch playback
+
+On a qualified Pro XG 8 PoE, `POST /api/session/switch-playback` transfers the current scene to switch RAM
+using the saved SSH login. The desktop writer drains before the switch starts. A successful response requires
+an acknowledged LED frame. Activity Glow uses local port counters. Decorative effects use a 30-second loop.
+Enabled rules and other desktop time/data effects must be removed from the scene before transfer.
+
+Session info includes `can_save_to_switch` and `switch_playback`. Use `POST /api/session/switch-playback/check`
+for a fresh reading. Quit and logout leave the player running. The existing handoff endpoint stops the player
+and restores the lighting controller. An unreachable switch leaves handoff pending for retry when EE is open.
+A switch reboot clears the scene from RAM.
+
 ## UI flow
 
 State and frame messages include `uplink_bandwidth`, measured from the existing physical-port byte counters.

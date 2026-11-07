@@ -405,6 +405,19 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         except LoginError as exc:
             return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
 
+    @api.post("/session/switch-playback")
+    async def save_switch_playback():
+        require_workspace()
+        try:
+            return await sessions.save_to_switch()
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @api.post("/session/switch-playback/check")
+    async def check_switch_playback():
+        require_workspace()
+        return await sessions.check_playback()
+
     @api.post("/session/handoff")
     async def handoff_to_unifi():
         require_workspace()
