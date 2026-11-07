@@ -18,6 +18,7 @@ import logging
 import secrets
 from dataclasses import dataclass, field
 
+from . import device_playback as playback
 from .config import Config
 from .credentials import CredentialStoreError, SavedLogin
 from .engine import Engine
@@ -105,7 +106,11 @@ class SessionManager:
         self._pending_expiry: asyncio.Task | None = None
         self._scene_store: SceneStore | None = None
         self._handoff = HandoffIntent(config.data_dir / "switch-connection-intent.json")
-        self._historic_handoff_unknown = self._handoff.state == "unconfirmed"
+        self._playback = playback.PlaybackRecord(config.data_dir / "switch-playback.json")
+        self._playback_status = "last_confirmed" if self._playback.data else None
+        self._playback_retry: asyncio.Task | None = None
+        self._closing = False
+        self._historic_handoff_unknown = self._handoff.state == "unconfirmed" and not self._playback.data
         self._handoff_task: asyncio.Task | None = None
         self._handoff_generation = 0
         self._cleanup_engines: list[Engine] = []
@@ -140,6 +145,9 @@ class SessionManager:
             "pending_scene_choice": self._pending.public() if self._pending and not self.handoff_pending else None,
             "automatic_connect_paused": self._handoff.paused,
             "handoff_state": self._handoff.state,
+            "switch_playback": self._playback_status if self._playback.data else None,
+            "can_save_to_switch": bool(engine and not self.simulated and not self._playback.data
+                                       and playback.supported(engine.switch) and saved),
             "handed_off": self._handoff.state == "complete" and engine is None and not self._owned_switches,
         }
 
@@ -186,6 +194,8 @@ class SessionManager:
 
     async def restore_saved(self, *, resume: bool = False) -> dict:
         """Reconnect with the protected saved login; simultaneous retries share one attempt."""
+        if self._playback.data:
+            return self.info()
         if self._handoff.paused and not resume:
             return self.info()
         if self._pending is not None or self.engine is not None and not self.simulated:
@@ -258,6 +268,8 @@ class SessionManager:
         if not 1 <= int(port) <= 65535:
             raise LoginError("bad_port", "SSH port must be 1-65535", 400)
         async with self._lock:
+            if self._playback.data:
+                raise self._fail("switch_playback_reserved", "Use Handoff to UniFi before connecting again.", 409)
             if automatic and self._handoff.paused:
                 return self.info()
             if generation != self._handoff_generation:
@@ -341,6 +353,10 @@ class SessionManager:
             simulated = isinstance(transport, SimulatedTransport)
             if not simulated:
                 try:
+                    if (isinstance(transport, SSHTransport) and playback.supported(switch)
+                            and not await playback.available(transport)):
+                        raise self._fail("switch_playback_reserved",
+                                         "Return switch playback to UniFi from the PC that saved it.", 409)
                     await self._recover_retained_output(switch, host, port, transport.host_key_fingerprint)
                 except OutputOwnershipError as exc:
                     await self._close_switch(switch)
@@ -578,12 +594,115 @@ class SessionManager:
             except TransportError as exc:
                 raise self._fail("output_unconfirmed", str(exc), 409) from exc
             if forget:
+                if self._playback.data:
+                    raise self._fail("switch_playback_reserved", "Finish playback before removing its login.", 409)
                 try:
                     self.saved.clear()
                 except CredentialStoreError as exc:
                     raise self._fail("saved_login_forget_failed", str(exc), 500) from exc
             self._notify()
             return self.info()
+
+    def _playback_switch(self, identity):
+        saved = self.saved.load()
+        if not saved:
+            raise ValueError("Save the switch login before using switch playback.")
+        host, port = saved["host"], saved.get("port", 22)
+        if device_identity(self.host_keys.get(host, port)) != identity:
+            raise ValueError("The saved login belongs to a different switch.")
+        transport = self._make_transport(host, port, saved["username"], saved["password"], "")
+        return EtherlightSwitch(transport, auto_detect=True)
+
+    async def _open_player(self, switch, identity):
+        await switch.connect()
+        if device_identity(switch.transport.host_key_fingerprint) != identity:
+            raise ValueError("The connected switch does not match the saved scene.")
+        await switch.probe()
+        if not playback.supported(switch):
+            raise ValueError("The switch firmware needs playback verification.")
+
+    async def save_to_switch(self) -> dict:
+        async with self._lock:
+            engine = self.engine
+            if self._playback.data or self.handoff_pending or self.simulated or not engine or not engine.connected:
+                raise self._fail("playback_unavailable", "Connect to the switch before saving its scene.", 409)
+            try:
+                config, palette = playback.compile_scene(engine)
+                identity = device_identity(engine.switch.transport.host_key_fingerprint)
+                switch = self._playback_switch(identity)
+                owner = secrets.token_hex(24)
+                revision = engine.revision
+                try:
+                    await self._open_player(switch, identity)
+                    if not await playback.available(switch.transport):
+                        raise ValueError("Another switch player already holds this switch.")
+                    lease = engine.switch.output_lease
+                    if lease is None or lease.closed or lease.uncertain or not all(lease.owns(p) for p in lease.paths):
+                        raise OutputOwnershipError("The desktop no longer owns the current scene.")
+                    self._playback.save({"state": "preparing", "device": identity, "owner": owner,
+                                         "desktop_owner": lease.owner})
+                    self._playback_status = "preparing"
+                    await playback.stage(switch.transport, owner, config, palette)
+                    if self.handoff_pending or engine.revision != revision or engine.mode != "running":
+                        raise ValueError("The scene changed during transfer. Use Handoff to UniFi before retrying.")
+                    # Desktop shutdown drains in-flight writes and releases its optical ports first.
+                    await self._disconnect_locked()
+                    if self._unsaved_scenes:
+                        raise ValueError("Your scene could not be saved on this PC. Retry handoff before closing EE.")
+                    self._reserve_player_output(switch, owner)
+                    await playback.start(switch.transport, owner)
+                    self._playback.save({**self._playback.data, "state": "last_playing"})
+                    self._playback_status = "playing"
+                    self.last_error = None
+                finally:
+                    await switch.close()
+            except (OSError, TransportError, ValueError, CredentialStoreError) as exc:
+                raise self._fail("playback_unavailable", str(exc), 409) from exc
+            self._notify()
+            return self.info()
+
+    def _reserve_player_output(self, switch, owner):
+        transport = switch.transport
+        switch.output_lease = self.output_journal.player_lease(transport.host, transport.port,
+                                                               transport.host_key_fingerprint, owner)
+
+    async def _stop_player(self):
+        record = self._playback.data
+        if record.get("state") == "unreadable":
+            raise ValueError("The switch playback recovery record could not be read.")
+        self._playback.save({**record, "state": "handoff"})
+        self._playback_status = "handoff"
+        switch = self._playback_switch(record["device"])
+        try:
+            await self._open_player(switch, record["device"])
+            staged = await playback.drain(switch.transport, record["owner"])
+            t = switch.transport
+            paths = self.output_journal.paths(t.host, t.port, t.host_key_fingerprint)
+            if staged or any(p.exists() for p in paths):
+                # A crash during upload can leave the original desktop lease in place.
+                try:
+                    owners = {json.loads(p.read_text("utf-8"))["owner"] for p in paths if p.exists()}
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise OutputOwnershipError("The saved lighting ownership could not be verified.") from exc
+                if owners and owners == {record.get("desktop_owner")}:
+                    await self._recover_retained_output(switch, t.host, t.port, t.host_key_fingerprint)
+                self._reserve_player_output(switch, record["owner"])
+                await switch.restore_defaults()
+                if staged:
+                    await playback.remove(t, record["owner"])
+                switch.output_lease.finish()
+        finally:
+            await switch.close()
+
+    def _retry_playback_handoff(self):
+        if not self._closing and (self._playback_retry is None or self._playback_retry.done()):
+            self._playback_retry = asyncio.create_task(self._retry_until_released())
+
+    async def _retry_until_released(self):
+        while self._playback.data and self._playback.data.get("state") == "handoff":
+            await asyncio.sleep(30)
+            with contextlib.suppress(LoginError):
+                await self.handoff()
 
     async def handoff(self) -> dict:
         """Release EE output and close its owned connections without forgetting saved data."""
@@ -631,6 +750,12 @@ class SessionManager:
                     await self._close_switch(switch)
                 except Exception as exc:
                     cleanup_error = cleanup_error or exc
+            if self._playback.data and not cleanup_error:
+                try:
+                    await self._stop_player()
+                except (OSError, TransportError, ValueError, CredentialStoreError) as exc:
+                    cleanup_error = exc
+                    self._retry_playback_handoff()
             if self._historic_handoff_unknown:
                 cleanup_error = cleanup_error or TransportError("The previous process did not confirm cleanup")
             if self._unsaved_scenes:
@@ -639,6 +764,9 @@ class SessionManager:
             self._handoff.state = state
             try:
                 self._handoff.save(state)
+                if state == "complete" and self._playback.data:
+                    self._playback.clear()
+                    self._playback_status = None
             except OSError as exc:
                 save_error = save_error or exc
                 self._handoff.state = "unconfirmed"
@@ -658,6 +786,8 @@ class SessionManager:
     async def forget_saved_login(self) -> dict:
         """Remove the saved login while keeping the current controller session connected."""
         async with self._lock:
+            if self._playback.data:
+                raise self._fail("switch_playback_reserved", "Finish switch playback before removing its login.", 409)
             try:
                 self.saved.clear()
             except CredentialStoreError as exc:
@@ -730,6 +860,13 @@ class SessionManager:
 
     async def auto_connect(self) -> None:
         """At start-up: use the [switch] config / EE_* env vars, else the remembered login, if any."""
+        if self._playback.data:
+            if self._playback.data.get("state") == "handoff" or self.handoff_pending:
+                with contextlib.suppress(LoginError):
+                    await self.handoff()
+            else:
+                await self.check_playback()
+            return
         if self._handoff.paused:
             self._notify()
             return
@@ -765,10 +902,33 @@ class SessionManager:
         except LoginError as exc:
             log.warning("automatic login to %s failed: %s", target["host"], exc.message)
 
+    async def check_playback(self):
+        async with self._lock:
+            record = self._playback.data
+            if record and record.get("state") not in {"handoff", "unreadable"}:
+                try:
+                    switch = self._playback_switch(record["device"])
+                    try:
+                        await self._open_player(switch, record["device"])
+                        self._playback_status = await playback.status(switch.transport, record["owner"])
+                    finally:
+                        await switch.close()
+                except (OSError, TransportError, ValueError, CredentialStoreError):
+                    self._playback_status = "unreachable"
+            self._notify()
+            return self.info()
+
     def forget_host_key(self, host: str, port: int = 22) -> bool:
+        if self._playback.data:
+            return False
         return self.host_keys.forget(host, port)
 
     async def close(self) -> None:
+        self._closing = True
+        if self._playback_retry:
+            self._playback_retry.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._playback_retry
         handoff = self._handoff_task
         if handoff is not None and not handoff.done():
             with contextlib.suppress(LoginError):

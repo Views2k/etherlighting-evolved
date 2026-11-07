@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.22
+
+- Save lighting to a Pro XG 8 PoE from Settings → Connection. Activity Glow follows port traffic on the switch, including while EE is closed. Choose Handoff to UniFi to stop playback.
+
 ## 0.4.21
 
 - Rename Ethernet and SFP ports in Port details, or use UniFi port names automatically. Manual names stay saved when switching modes and appear across the map, search, details and SFP source selector.
