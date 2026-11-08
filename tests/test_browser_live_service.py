@@ -76,9 +76,11 @@ async def test_demo_and_live_are_mutually_exclusive(service):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("browser_live,autoconnect", [(True, False), (False, True)])
+@pytest.mark.parametrize("browser_live,desktop,autoconnect",
+                         [(True, False, False), (False, False, True), (True, True, True)])
 async def test_live_browser_waits_for_explicit_restore_and_keeps_production_config(
-        service, config, monkeypatch, browser_live, autoconnect):
+        service, config, monkeypatch, browser_live, desktop, autoconnect):
+    monkeypatch.setenv("EE_DESKTOP_HOST", "1" if desktop else "0")
     captured = {}
 
     def create_app(settings, **kwargs):

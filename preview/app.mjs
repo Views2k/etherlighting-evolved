@@ -104,8 +104,7 @@ function updateConnection() {
   controllerField.hidden=!workspaceReady||session.simulated;
   showConnectionStatus(controllerField,controllerConnectionStatus(state.controller,disconnected));
   document.querySelectorAll('[data-page]').forEach(button => {
-    const playbackEffects=button.dataset.page==='Effects'&&session.switch_playback==='playing'&&session.handoff_state==='none';
-    button.disabled=!workspaceReady&&button.dataset.page!=='Help'&&!playbackEffects;
+    button.disabled=!workspaceReady&&button.dataset.page!=='Help';
   });
 }
 function notify(message, error = false) {
@@ -302,7 +301,6 @@ function stageEffect(config){
 async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}={}) {
   if(!workspaceReady){
     if(target==='Help')showLoginHelp();
-    if(target==='Effects')secondaryCleanup?.editPlayback?.();
     return;
   }
   const version=++navigationVersion;

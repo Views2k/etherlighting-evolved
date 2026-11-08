@@ -8,11 +8,13 @@ import os
 import re
 import secrets
 import shlex
+import time
 from pathlib import Path
 
 from .color import BLACK
 from .effects import create_effect
 from .effects.base import RenderContext
+from .effects.library import DAYLIGHT_PALETTES
 from .hardware import PRO_XG8
 from .transport import TransportError
 
@@ -36,18 +38,31 @@ def supported(switch):
 def compile_scene(engine) -> tuple[str, str]:
     if not supported(engine.switch) or engine.mode != "running":
         raise ValueError("Start lighting on the verified Pro XG 8 PoE before saving to the switch.")
-    if any(rule.enabled for rule in engine.rules):
-        raise ValueError("Turn off active rules before saving this scene to the switch.")
     settings = {p: [0, p, 0, 0, 1, engine.brightness, engine.gamma] for p in range(1, 11)}
+    inputs = {}
     groups = []
     for group, zone in enumerate(engine.zones, 1):
         fx = create_effect(zone.effect.id, len(zone.ports), zone.effect.params_json())
-        if fx.category in {"time", "data"} and fx.id != "activity_glow":
-            raise ValueError(f"{fx.name} needs desktop playback. Choose Activity Glow for live switch traffic.")
         groups.append((zone.ports, fx, RenderContext(len(zone.ports))))
-        for p in zone.ports:
+        for i, p in enumerate(zone.ports):
             if fx.id == "activity_glow":
                 settings[p][:5] = [group, p, fx.p["minimum_mbps"], int(fx.p["include_uplinks"]), fx.p["speed"]]
+            elif fx.id == "traffic":
+                settings[p][3:5] = [int(fx.p["include_uplinks"]), fx.p["smoothing"]]
+                inputs[p] = [1, int(fx.p["custom_uplink"])]
+            elif fx.id == "traffic_trails":
+                settings[p][2:5] = [fx.p["max_mbps"], int(fx.p["include_uplinks"]), fx.p["speed"]]
+                inputs[p] = [2, i, len(zone.ports), fx.p["width"]]
+            elif fx.id == "poe_usage":
+                settings[p][4] = fx.p["speed"]
+                inputs[p] = [3]
+            elif fx.id == "daylight":
+                stops = DAYLIGHT_PALETTES[fx.p["palette"]]
+                inputs[p] = [4, fx.p["night_brightness"], len(stops)]
+                for hour, color in stops:
+                    inputs[p].extend([hour, *color.precise_channels])
+            elif fx.category in {"time", "data"}:
+                raise ValueError(f"{fx.name} has no offline sensor mapping.")
             if p in engine.sfp:
                 settings[p][5] *= engine.sfp[p].brightness / 100
     grouped = {p for ports, _, _ in groups for p in ports}
@@ -65,6 +80,8 @@ def compile_scene(engine) -> tuple[str, str]:
                 independent[p] = light
                 settings[p][5] *= light.brightness / 100
     for p, override in engine.overrides.items():
+        inputs.pop(p, None)
+        settings[p][:2] = [0, p]
         if override.brightness is not None:
             settings[p][5] = override.brightness
     for p in engine.sfp.keys() - grouped:
@@ -74,12 +91,22 @@ def compile_scene(engine) -> tuple[str, str]:
     for index in range(120):
         t = index / 4
         colors = {p: (BLACK, BLACK) for p in settings}
+        extra = {p: (BLACK, BLACK) for p in settings}
         for ports, fx, ctx in groups:
             if fx.id == "activity_glow":
                 palette = fx.colors(t)
                 for p in ports:
                     colors[p] = palette["idle_color"], palette["active_color"]
-            else:
+            elif fx.id in {"traffic", "traffic_trails", "poe_usage"}:
+                palette = fx.colors(t)
+                for p in ports:
+                    if fx.id == "poe_usage":
+                        colors[p] = palette["no_power_color"], palette["low_color"]
+                        extra[p] = palette["high_color"], BLACK
+                    else:
+                        colors[p] = palette["idle_color"], palette["busy_color"]
+                        extra[p] = palette["offline_color"], palette.get("uplink_color", BLACK)
+            elif fx.id != "daylight":
                 for p, color in zip(ports, fx.render(t, ctx), strict=True):
                     colors[p] = color, color
         for p, light in independent.items():
@@ -87,12 +114,16 @@ def compile_scene(engine) -> tuple[str, str]:
             colors[p] = color, color
         for p, override in engine.overrides.items():
             colors[p] = override.color, override.color
-        channels = (c for pair in colors.values() for col in pair for c in col.precise_channels)
+        pairs = list(colors.values())
+        if any(fields[0] in {1, 2, 3} for fields in inputs.values()):
+            pairs.extend(extra.values())
+        channels = (c for pair in pairs for col in pair for c in col.precise_channels)
         rows.append(" ".join(format(c, ".7g") for c in channels))
     if all(row == rows[0] for row in rows):
         rows = rows[:1]
     limit = max(1, min(10, int(engine.max_commands)))
-    config = "".join(" ".join(str(n) for n in [p, *values, limit]) + "\n" for p, values in settings.items())
+    config = "".join(" ".join(str(n) for n in [p, *values, limit, *inputs.get(p, [])]) + "\n"
+                     for p, values in settings.items())
     return config, "\n".join(rows) + "\n"
 
 
@@ -191,6 +222,72 @@ async def edit_scene(transport, owner, content, previous):
         raise TransportError("The switch could not confirm applying the effect.")
 
 
+class DesktopOutput:
+    """Allow normal desktop rendering while an acknowledged switch-side deadline is live."""
+
+    def __init__(self, transport, owner):
+        self.transport = transport
+        self.owner = owner
+        self.ticket = secrets.token_hex(16)
+        self.until = 0.0
+        self.generation = None
+        self.lock = asyncio.Lock()
+        self.fingerprint = transport.host_key_fingerprint
+
+    async def renew(self):
+        async with self.lock:
+            generation = self.transport.lighting_generation
+            if generation is None or self.transport.host_key_fingerprint != self.fingerprint:
+                raise TransportError("The lighting connection closed.")
+            if self.generation is generation and time.monotonic() < self.until:
+                return
+            started = time.monotonic()
+            # The local grant expires well before the switch-side deadline.
+            # Rotate the ticket after a lapse so an earlier ACK cannot grant output.
+            if self.generation is not generation or started >= self.until + 4:
+                self.ticket = secrets.token_hex(16)
+            command = _owned(self.owner) + f"""[ ! -e stop ] || exit 1
+read -r now unused < /proc/uptime || exit 1
+born=$(cut -d' ' -f22 /proc/$$/stat) && [ -n "$born" ] || exit 1
+printf '%s %s %s %s\\n' {self.ticket} "$((${{now%.*}}+24))" "$$" "$born" > desktop.next &&
+mv -f desktop.next desktop.request || exit 1
+for n in 1 2 3 4 5 6; do
+    [ "$(cat desktop.ack 2>/dev/null)" = {self.ticket} ] && {{ echo granted; break; }}
+    sleep 1
+done"""
+            if (await _run(self.transport, command) != "granted"
+                    or self.transport.lighting_generation is not generation or time.monotonic() >= started + 10):
+                self.until = 0
+                raise TransportError("The switch did not acknowledge desktop lighting control.")
+            self.generation, self.until = generation, started + 10
+
+    async def release(self):
+        self.until = 0
+        command = _owned(self.owner) + (
+            f'if read -r ticket expiry < desktop.request && [ "$ticket" = {self.ticket} ]; '
+            'then rm -f desktop.request; fi')
+        await _run(self.transport, command)
+
+
+async def upgrade_player(transport, owner):
+    """Upgrade an earlier RAM player in its own directory, keeping its committed scene."""
+    script = (_RUNTIME / "player.sh").read_text("ascii")
+    digest = hashlib.sha256(script.encode("ascii")).hexdigest()
+    command = _owned(owner) + 'sha256sum player.sh | cut -d" " -f1'
+    if await _run(transport, command) == digest and await status(transport, owner) == "playing":
+        return
+    renderer = (_RUNTIME / "frames.awk").read_text("ascii")
+    await _upload(transport, owner, {"player.next": script, "frames.edit": renderer})
+    if not await drain(transport, owner):
+        raise TransportError("The saved lighting process changed.")
+    command = _owned(owner) + """mv -f frames.edit frames.awk && mv -f player.next player.sh &&
+rm -f launched/pid stop status desktop.ack desktop.request &&
+{ [ ! -d launched ] || rmdir launched; } && echo ready"""
+    if await _run(transport, command) != "ready":
+        raise TransportError("The switch could not restart its saved lighting.")
+    await start(transport, owner)
+
+
 async def start(transport, owner):
     command = _owned(owner) + """[ ! -e stop ] && mkdir launched || exit 1
 nohup sh player.sh </dev/null >/dev/null 2>&1 &
@@ -233,6 +330,7 @@ fi"""
 
 async def remove(transport, owner):
     files = " ".join((*_FILES, "frames.edit", "scene.edit", "scene.active", "previous", "next", "ports",
+                      "player.next", "desktop.request", "desktop.next", "desktop.ack", "desktop.ack.new",
                       "output", "status", "status.new", "stop", "launched/pid"))
     command = _owned(owner) + f"""rm -f {files} || exit 1
 if [ -d launched ]; then rmdir launched || exit 1; fi

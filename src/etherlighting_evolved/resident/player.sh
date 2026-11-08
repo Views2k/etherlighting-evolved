@@ -24,7 +24,8 @@ optical() {
 prepare() {
     set_led '{"behavior":"steady"}' || return 1
     for p in 9 10; do
-        if awk -v p="$p" '$1==p && $3>0 {found=1} END{exit !found}' config; then
+        if { if [ -f scene.active ]; then sed -n '2,11p' scene.active; else cat config; fi; } |
+            awk -v p="$p" '$1==p && $3>0 {found=1} END{exit !found}'; then
             [ ! -e stop ] && pwm "$p" 0 0 0 && optical "$p" || return 1
         fi
     done
@@ -32,12 +33,32 @@ prepare() {
 read -r start unused < /proc/uptime || exit 1
 : > previous
 : > ports
-reactive=$(awk '$2>0{found=1} END{print found+0}' config)
+reactive=$(awk '$2>0 || $10==1 || $10==2 {found=1} END{print found+0}' config)
 count=$(wc -l < palette)
 [ "$count" -gt 0 ] || exit 1
 initialized=0
 mark starting || exit 1
 while [ ! -e stop ]; do
+    # Give the desktop exclusive output after the preceding frame has finished.
+    # A dead desktop cannot renew this deadline on the switch's monotonic clock.
+    if [ -s desktop.request ]; then
+        read -r ticket expires holder born < desktop.request
+        read -r now unused < /proc/uptime || break
+        case "$expires" in ''|*[!0-9]*) expires=0;; esac
+        case "$holder" in ''|*[!0-9]*) holder=0;; esac
+        if [ "$expires" -gt "${now%.*}" ] && [ -r "/proc/$holder/stat" ] &&
+            [ "$(cut -d' ' -f22 "/proc/$holder/stat" 2>/dev/null)" = "$born" ]; then
+            printf '%s\n' "$ticket" > desktop.ack.new && mv -f desktop.ack.new desktop.ack || break
+            initialized=0
+            sleep 1
+            continue
+        fi
+    fi
+    if [ -e desktop.ack ]; then
+        rm -f desktop.ack || break
+        : > previous
+        mark starting || break
+    fi
     read -r tag u n s idle wait irq soft steal rest < /proc/stat || break
     total=$((u+n+s+idle+wait+irq+soft+steal))
     if [ -n "$last_total" ] && [ $((total-last_total)) -gt 0 ]; then

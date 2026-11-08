@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,12 +38,13 @@ def test_player_scene_uses_actual_settings_and_qualified_ports():
     assert len(lines) == 10 and lines[8][0:3] == ["9", "1", "9"] and float(lines[8][6]) == 50
     assert len(palette.splitlines()) == 1 and len(palette.split()) == 60
     assert len(player.compile_scene(scene("rainbow"))[1].splitlines()) == 120
-    with pytest.raises(ValueError, match="desktop playback"):
-        player.compile_scene(scene("daylight"))
+    for effect, mode in (("traffic", 1), ("traffic_trails", 2), ("poe_usage", 3), ("daylight", 4)):
+        rows, colors = player.compile_scene(scene(effect))
+        assert all(int(row.split()[9]) == mode for row in rows.splitlines())
+        assert len(colors.splitlines()[0].split()) == (60 if mode == 4 else 120)
     changed = scene()
     changed.rules = [SimpleNamespace(enabled=True)]
-    with pytest.raises(ValueError, match="rules"):
-        player.compile_scene(changed)
+    assert player.compile_scene(changed) == (config, palette)
 
 
 def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
@@ -89,6 +91,35 @@ def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
     assert len(rows) == 10 and rows[1] == [2, 65280, 0, 0] and rows[8] == [9, 32640, 0, 0]
 
 
+@pytest.mark.parametrize("effect", ["traffic", "traffic_trails", "poe_usage", "daylight"])
+def test_offline_sensor_effects_read_their_live_input(tmp_path, effect):
+    awk = shutil.which("awk") or "C:/Program Files/Git/usr/bin/awk.exe"
+    if not Path(awk).exists():
+        pytest.skip("awk unavailable")
+    config, palette = player.compile_scene(scene(effect))
+    runtime = Path(player.__file__).with_name("resident") / "frames.awk"
+    script = runtime.read_text().replace("timeout -t 3 swctrl poe show", "cat power").replace(
+        "date '+%H %M %S'", "cat clock")
+    files = {"config": config, "palette": palette, "frames.awk": script, "previous": ""}
+    for name, data in files.items():
+        (tmp_path / name).write_text(data, encoding="ascii", newline="\n")
+    samples = []
+    env = {**os.environ, "PATH": str(Path(awk).parent) + os.pathsep + os.environ["PATH"]}
+    for t in range(1, 5):
+        data = "".join(f"{p} U/U 1000F 0 0 {125000000 * (t - 1)} 0\n" for p in range(1, 11))
+        (tmp_path / "ports").write_text(data, encoding="ascii", newline="\n")
+        (tmp_path / "power").write_text("1 Auto On Good 15.0 50.0 300.0\n", encoding="ascii")
+        (tmp_path / "clock").write_text("12 00 00\n" if t >= 2 else "02 00 00\n", encoding="ascii")
+        result = subprocess.run([awk, "-v", f"stamp={t}", "-v", "frame=0", "-f", "frames.awk",
+                                 "config", "palette", "previous", "ports"], cwd=tmp_path,
+                                capture_output=True, check=True, text=True, env=env)
+        (tmp_path / "next").replace(tmp_path / "previous")
+        ports = [list(map(int, row.split())) for row in result.stdout.splitlines()]
+        assert len(ports) == 10 and all(0 <= value <= 65280 for row in ports for value in row[1:])
+        samples.append(ports[0][1:])
+    assert samples[0] != samples[-1]
+
+
 @pytest.mark.anyio
 async def test_edit_without_desktop_writer_and_recover_lost_reply(config, monkeypatch):
     manager = SessionManager(config)
@@ -127,48 +158,26 @@ async def test_edit_without_desktop_writer_and_recover_lost_reply(config, monkey
 @pytest.mark.anyio
 async def test_exit_reconnect_and_offline_handoff(config: Config, monkeypatch):
     manager = SessionManager(config)
-    engine = scene()
-    engine.switch.transport = SimpleNamespace(host_key_fingerprint=KEY)
-    engine.connected, engine.revision = True, 7
-    manager.engine = engine
-    engine.switch_info, engine.error = {}, None
-    engine.switch.output_lease = manager.output_journal.claim("switch.invalid", 22, KEY)
+    owner = "a" * 48
+    manager._playback.save({"state": "last_playing", "device": IDENTITY, "owner": owner})
+    manager.output_journal.player_lease("switch.invalid", 22, KEY, owner)
     transport = SimpleNamespace(host="switch.invalid", port=22, host_key_fingerprint=KEY)
     switch = SimpleNamespace(transport=transport, close=AsyncMock(), restore_defaults=AsyncMock())
-    calls = []
-
-    async def disconnect():
-        manager.engine = None
-        engine.switch.output_lease.finish()
-        calls.append("desktop stopped")
-
-    async def stage(*args):
-        calls.append("staged")
-
-    async def start(*args):
-        assert manager.engine is None
-        calls.append("started")
-
     monkeypatch.setattr(SessionManager, "_playback_switch", lambda self, identity: switch)
     monkeypatch.setattr(SessionManager, "_open_player", AsyncMock())
-    monkeypatch.setattr(manager, "_disconnect_locked", disconnect)
-    monkeypatch.setattr(player, "available", AsyncMock(return_value=True))
-    monkeypatch.setattr(player, "stage", stage)
-    monkeypatch.setattr(player, "start", start)
-    monkeypatch.setattr(player, "status", AsyncMock(return_value="playing"))
     drain = AsyncMock(side_effect=[TransportError("offline"), True])
     monkeypatch.setattr(player, "drain", drain)
     cleared = AsyncMock()
     monkeypatch.setattr(player, "remove", cleared)
-    assert (await manager.save_to_switch())["switch_playback"] == "playing"
-    assert calls == ["staged", "desktop stopped", "started"]
     await manager.close()
     drain.assert_not_awaited()
 
     restarted = SessionManager(config)
+    reconnect = AsyncMock()
+    monkeypatch.setattr(restarted, "_auto_connect", reconnect)
     await restarted.auto_connect()
-    assert restarted.engine is None and restarted.info()["switch_playback"] == "playing"
-    with pytest.raises(LoginError, match="Handoff"):
+    reconnect.assert_awaited_once()
+    with pytest.raises(LoginError, match="Reconnect"):
         await restarted.connect("demo")
     with pytest.raises(LoginError):
         await restarted.handoff()
@@ -202,3 +211,66 @@ async def test_unacknowledged_transfer_never_starts_a_second_writer(tmp_path, mo
     assert player.PlaybackRecord(record.path).data["state"] == "preparing"
     with pytest.raises(ValueError, match="owner"):
         await player.start(None, "invalid")
+
+
+@pytest.mark.anyio
+async def test_normal_editor_reopens_and_commits_to_existing_switch_scene(config, monkeypatch):
+    manager = SessionManager(config)
+    transport = SimpleNamespace(host="switch.invalid", port=22, host_key_fingerprint=KEY, direct_rgb=True,
+                                lighting_generation=object())
+    switch = EtherlightSwitch(transport, num_ports=8)
+    switch.hardware_profile = PRO_XG8
+    monkeypatch.setattr(type(switch), "native_breathing", property(lambda self: True))
+    monkeypatch.setattr(type(switch), "sfp_precise", property(lambda self: True))
+    engine = Engine(switch, rules=[])
+    engine.connected = True
+    store = manager._device_store(switch)
+    store.save(engine.snapshot())
+    manager._playback.save({"state": "last_playing", "device": IDENTITY, "owner": "b" * 48})
+    monkeypatch.setattr(player, "available", AsyncMock(return_value=False))
+    upgrade = AsyncMock()
+    monkeypatch.setattr(player, "upgrade_player", upgrade)
+    remote = AsyncMock(return_value="original")
+    monkeypatch.setattr(player, "edit_revision", remote)
+    grant = AsyncMock(return_value="granted")
+    monkeypatch.setattr(player, "_run", grant)
+    await manager._prepare_offline_lighting(SimpleNamespace(engine=engine, fingerprint=KEY, store=store))
+    upgrade.assert_awaited_once()
+    grant.assert_awaited_once()
+    engine.set_effect("rainbow", {}, clear_overrides=False)
+    manager.engine, manager._scene_store = engine, store
+    assert manager.info()["logged_in"] and manager.info()["connected"]
+
+    async def accept(transport, owner, content, previous):
+        import hashlib
+        assert previous == "original" and content.startswith("120\n")
+        remote.return_value = hashlib.sha256(content.encode("ascii")).hexdigest()
+
+    send = AsyncMock(side_effect=accept)
+    monkeypatch.setattr(player, "edit_scene", send)
+    assert (await manager.save_to_switch())["logged_in"]
+    await manager.sync_offline_lighting(engine)
+    send.assert_awaited_once()
+    assert manager._playback.data["applied_edit"] == remote.return_value
+    switch.output_lease.finish()
+    assert all(path.is_file() for path in switch.output_lease.paths)
+
+
+@pytest.mark.anyio
+async def test_desktop_output_requires_a_fresh_ack_and_the_same_switch(monkeypatch):
+    transport = SimpleNamespace(host_key_fingerprint=KEY, lighting_generation=object())
+    grant = player.DesktopOutput(transport, "a" * 48)
+    run = AsyncMock(side_effect=["", "granted", ""])
+    monkeypatch.setattr(player, "_run", run)
+    with pytest.raises(TransportError, match="acknowledge"):
+        await grant.renew()
+    await grant.renew()
+    await grant.renew()
+    assert run.await_count == 2
+    transport.lighting_generation = object()
+    with pytest.raises(TransportError):
+        await grant.renew()
+    transport.host_key_fingerprint = "different"
+    with pytest.raises(TransportError):
+        await grant.renew()
+    assert run.await_count == 3

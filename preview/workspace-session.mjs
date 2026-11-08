@@ -6,7 +6,6 @@ export function workspaceStorageKey(session) {
 export function connectionLabel(session, disconnected = false, busy = false) {
   if (disconnected) return 'Reconnecting…';
   if (session?.connecting) return 'Connecting…';
-  if (session?.switch_playback==='playing' && session.handoff_state==='none') return 'Playing on switch';
   if (!session?.logged_in) return 'Not connected';
   if (session.reconnect_required) return 'Switch connection needs attention';
   if (busy) return 'Saving…';
@@ -20,7 +19,7 @@ export function switchConnectionStatus(session, disconnected = false, busy = fal
   if (!session?.simulated) {
     if (session?.reconnect_required && !disconnected) tone = 'error';
     else if (disconnected || session?.connecting || (session?.logged_in && session.connected !== true)) tone = 'waiting';
-    else if (label==='Playing on switch' || (session?.logged_in === true && session.connected === true)) tone = 'online';
+    else if (session?.logged_in === true && session.connected === true) tone = 'online';
   }
   return {label, tone};
 }

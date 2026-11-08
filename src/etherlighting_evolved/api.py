@@ -699,6 +699,13 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         accepted = scene_envelope(e.snapshot())
         if body.confirm_output:
             await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in affected_sfp})
+        if getattr(e.switch.transport, "desktop_output", None):
+            sessions._save_scene(e, sessions.simulated, retain_failure=True)
+            try:
+                await sessions.sync_offline_lighting(e)
+            except (OSError, ValueError, TransportError) as exc:
+                raise HTTPException(503, detail={"code": "offline_scene_unconfirmed",
+                    "message": "Lighting applied in EE. The switch has not confirmed its offline copy."}) from exc
         return accepted
 
     async def restore_history_scene(scene, revision):

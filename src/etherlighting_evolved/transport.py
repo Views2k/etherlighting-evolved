@@ -197,6 +197,7 @@ class SSHTransport(Transport):
         self.key_file = key_file or None
         self.host_keys = host_keys
         self.connect_timeout = connect_timeout
+        self.desktop_output = None
         self.host_key_fingerprint: str | None = None
         self.host_key_pinned_now = False
         self._conn = None
@@ -322,6 +323,10 @@ class SSHTransport(Transport):
         if client is None:
             raise TransportError("the lighting socket needs to reconnect")
         try:
+            if self.desktop_output is not None:
+                await self.desktop_output.renew()
+                if self._rgb_client is not client:
+                    raise TransportError("The switch connection changed before lighting was applied.")
             if behavior is not None:
                 await client.set_behavior(behavior)
             elif sfp_direct is not None:

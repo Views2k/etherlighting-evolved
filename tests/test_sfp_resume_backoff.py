@@ -25,7 +25,6 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
     with shutdown as shutdown_error, TestClient(app, base_url="http://127.0.0.1:8787") as client:
         assert client.post("/api/session/login", json={"host": "demo"}).status_code == 200
         assert client.post("/api/release").status_code == 200
-        assert client.put("/api/sfp/9", json={"mode": "color", "color": "blue"}).status_code == 200
         engine = app.state.sessions.engine
         switch = engine.switch
         original_rgb = switch._rgb_write
@@ -78,7 +77,7 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
                 after_ack("mode")
 
         async def send(*args, **kwargs):
-            if backoff_after == "before" and not injected:
+            if backoff_after == "before" and not injected and engine.sfp[9].mode == "color":
                 after_ack("before")
             return await original_send(*args, **kwargs)
 
@@ -94,6 +93,8 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
         monkeypatch.setattr(engine_module, "timing", SimpleNamespace(monotonic=original_timing.monotonic, wait=wait))
         assert client.post("/api/resume").status_code == 200
         try:
+            # Issue one acquisition. A duplicate PUT can cancel a frame mid-write and
+            # legitimately add cleanup independent of the backoff being tested.
             response = client.put("/api/sfp/9", json={"mode": "color", "color": "blue"})
             capture("API response")
             evidence = {"backoff_after": backoff_after, "cleanup_failure": cleanup_failure,

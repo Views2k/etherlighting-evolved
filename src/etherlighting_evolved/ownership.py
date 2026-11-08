@@ -138,6 +138,7 @@ class OutputLease:
         self.owner = secrets.token_hex(24)
         self.uncertain = False
         self.closed = False
+        self.keep_for_player = False
 
     def owns(self, path: Path) -> bool:
         try:
@@ -156,6 +157,9 @@ class OutputLease:
         if self.uncertain or not all(self.owns(path) for path in self.paths):
             raise OutputOwnershipError("Lighting shutdown could not be confirmed. The output ownership "
                                        "record has been retained for recovery review.")
+        if self.keep_for_player:
+            self.closed = True
+            return
         try:
             for path in self.paths:
                 path.unlink()

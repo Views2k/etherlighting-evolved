@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.24
+
+- Open the regular Lighting workspace with the saved switch login. Applying a supported effect also saves it for when the desktop goes offline.
+
 ## 0.4.23
 
 - Change a port group's effect and settings while the switch keeps playing its saved scene.
