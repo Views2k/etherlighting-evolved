@@ -1,18 +1,43 @@
 # Numeric scene rows: port, group, target port, threshold, uplink, speed,
 # brightness, gamma. Each palette row holds two RGB triples per port.
-FILENAME == "config" {
+function configuration() {
     group[$1]=$2; source[$1]=$3; threshold[$1]=$4; uplink[$1]=$5
-    speed[$1]=$6; brightness[$1]=$7; gamma[$1]=$8; next
+    speed[$1]=$6; brightness[$1]=$7; gamma[$1]=$8
+}
+# Open the replacement once per frame. A rename during a read leaves this frame
+# on the old complete scene. Original RAM players pass the same four filenames.
+BEGIN {
+    scene="scene.active"
+    if ((getline < scene)>0) {
+        edited=1
+        if (NF!=1 || ($1!=1 && $1!=120)) {bad=1; exit 2}
+        count=$1
+        for (row=1;row<=10;row++) {
+            if ((getline < scene)!=1 || NF!=9 || $1!=row) {bad=1; exit 2}
+            configuration()
+            if ($2>0) reactive=1
+        }
+        wanted=int(stamp*4)%count+1
+        for (row=1;row<=wanted;row++) if ((getline < scene)!=1 || NF!=60) {bad=1; exit 2}
+        for (i=1;i<=60;i++) color[i]=$i
+    }
+    close(scene)
+}
+FILENAME == "config" {
+    if ($2>0) originalReactive=1
+    if (edited) gamma[$1]=$8
+    if (!edited) configuration()
+    next
 }
 FILENAME == "palette" {
-    if (FNR == frame+1) for (i=1; i<=NF; i++) color[i]=$i
+    if (!edited && FNR == frame+1) for (i=1; i<=NF; i++) color[i]=$i
     next
 }
 FILENAME == "previous" {
     oldtime=$2; oldbytes[$1]=$3; oldvalid[$1]=$4; level[$1]=$5; target[$1]=$6
     next
 }
-{
+function traffic() {
     for (i=1; i<NF; i++) {
         if ($i !~ /^[1-9][0-9]*$/ || $(i+1) !~ /^[UD]\/[UD]$/) continue
         p=$i+0
@@ -27,7 +52,14 @@ FILENAME == "previous" {
         break
     }
 }
+{traffic()}
 END {
+    # The original player polls traffic only if the initial scene needed it.
+    if (edited && reactive && !originalReactive && !bad) {
+        poll="timeout -t 3 swctrl port show"
+        while ((poll | getline)>0) traffic()
+        if (close(poll)!=0) bad=1
+    }
     if (bad || !(1 in color) || !(60 in color)) exit 2
     dt=oldtime ? stamp-oldtime : 0
     if (dt<0) exit 2

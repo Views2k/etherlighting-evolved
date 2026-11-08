@@ -103,7 +103,10 @@ function updateConnection() {
   const controllerField=document.querySelector('#controller-connection');
   controllerField.hidden=!workspaceReady||session.simulated;
   showConnectionStatus(controllerField,controllerConnectionStatus(state.controller,disconnected));
-  document.querySelectorAll('[data-page]').forEach(button => {button.disabled=button.dataset.page==='Help'?false:!workspaceReady;});
+  document.querySelectorAll('[data-page]').forEach(button => {
+    const playbackEffects=button.dataset.page==='Effects'&&session.switch_playback==='playing'&&session.handoff_state==='none';
+    button.disabled=!workspaceReady&&button.dataset.page!=='Help'&&!playbackEffects;
+  });
 }
 function notify(message, error = false) {
   status(message, error);
@@ -297,7 +300,11 @@ function stageEffect(config){
 }
 
 async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}={}) {
-  if(!workspaceReady){if(target==='Help')showLoginHelp();return;}
+  if(!workspaceReady){
+    if(target==='Help')showLoginHelp();
+    if(target==='Effects')secondaryCleanup?.editPlayback?.();
+    return;
+  }
   const version=++navigationVersion;
   await routeHistory.ready();if(version!==navigationVersion)return;
   if(fromHistory&&historyEntry){if(!await routeHistory.reach(historyEntry))return;}

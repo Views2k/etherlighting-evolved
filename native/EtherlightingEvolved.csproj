@@ -8,7 +8,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>EtherlightingEvolved</AssemblyName>
     <RootNamespace>EtherlightingEvolved</RootNamespace>
-    <Version>0.4.22</Version>
+    <Version>0.4.23</Version>
     <Authors>Views2k</Authors>
     <Company>Views2k</Company>
     <Product>Etherlighting Evolved</Product>
