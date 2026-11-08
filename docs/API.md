@@ -25,6 +25,13 @@ for a fresh reading. Quit and logout leave the player running. The existing hand
 and restores the lighting controller. An unreachable switch leaves handoff pending for retry when EE is open.
 A switch reboot clears the scene from RAM.
 
+While the switch is playing, open **Effects** or **Edit effects** to change a port group's effect
+and settings. The switch keeps playing while the editor is open. Applying an edit replaces the
+complete group configuration and palette together. Handoff to UniFi remains a separate action.
+`GET /api/session/switch-playback/effects` returns the saved groups and an edit revision.
+`PUT /api/session/switch-playback/effects` accepts `zone`, `id`, `params` and `expected_revision`.
+A stale revision returns 409. Closing the editor discards unapplied changes.
+
 ## UI flow
 
 State and frame messages include `uplink_bandwidth`, measured from the existing physical-port byte counters.

@@ -9,11 +9,12 @@ import pytest
 from etherlighting_evolved import device_playback as player
 from etherlighting_evolved.config import Config
 from etherlighting_evolved.effects import create_effect
-from etherlighting_evolved.engine import Zone
+from etherlighting_evolved.engine import Engine, Zone
 from etherlighting_evolved.hardware import PRO_XG8
 from etherlighting_evolved.ownership import device_identity
 from etherlighting_evolved.session import LoginError, SessionManager
 from etherlighting_evolved.sfp import SfpLight, SfpSync
+from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import TransportError
 
 KEY = "SHA256:playback-fixture-identity"
@@ -74,6 +75,53 @@ def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
     assert rows[8] == [9, 32042, 32042, 32042]
     assert rows[9] == [10, 0, 0, 0]
     assert 0 < tick(4, 0)[0][1] < rows[0][1]
+
+    # A 0.4.22 player keeps the original files open by name on each tick.
+    # Staging must be invisible; publishing a complete numeric scene changes all ports together.
+    replacement = scene("static")
+    replacement.zones[0].effect = create_effect("static", 10, {"color": "#ff0000"})
+    cfg, colors = player.compile_scene(replacement)
+    pending = tmp_path / "scene.edit"
+    pending.write_text("1\n" + cfg + colors, encoding="ascii")
+    assert tick(5, 0)[1][1] == 0
+    pending.replace(tmp_path / "scene.active")
+    rows = tick(6, 0)
+    assert len(rows) == 10 and rows[1] == [2, 65280, 0, 0] and rows[8] == [9, 32640, 0, 0]
+
+
+@pytest.mark.anyio
+async def test_edit_without_desktop_writer_and_recover_lost_reply(config, monkeypatch):
+    manager = SessionManager(config)
+    transport = SimpleNamespace(host_key_fingerprint=KEY, direct_rgb=True)
+    switch = EtherlightSwitch(transport, num_ports=8)
+    switch.hardware_profile = PRO_XG8
+    monkeypatch.setattr(type(switch), "native_breathing", property(lambda self: True))
+    monkeypatch.setattr(type(switch), "sfp_precise", property(lambda self: True))
+    store = manager._device_store(switch)
+    store.save(Engine(switch, rules=[]).snapshot())
+    record = {"state": "last_playing", "device": IDENTITY, "owner": "a"*48}
+    manager._playback.save(record)
+    monkeypatch.setattr(player, "status", AsyncMock(return_value="playing"))
+    revision = AsyncMock(return_value="original")
+    monkeypatch.setattr(player, "edit_revision", revision)
+    original = await manager._read_or_edit_effects(switch, record, None)
+    change = SimpleNamespace(expected_revision="stale", zone="all", id="rainbow", params={})
+    with pytest.raises(LoginError, match="changed"):
+        await manager._read_or_edit_effects(switch, record, change)
+
+    async def lost_reply(*args):
+        revision.return_value = manager._playback.data["pending_edit"]["to"]
+        raise TransportError("lost reply")
+
+    change.expected_revision = original["revision"]
+    monkeypatch.setattr(player, "edit_scene", lost_reply)
+    with pytest.raises(TransportError):
+        await manager._read_or_edit_effects(switch, record, change)
+    assert store.load()["zones"][0]["effect"]["id"] == "static"
+    recovered = await manager._read_or_edit_effects(switch, manager._playback.data, None)
+    assert manager.engine is None and recovered["zones"][0]["effect"]["id"] == "rainbow"
+    assert "pending_edit" not in manager._playback.data
+    assert store.load()["zones"] == recovered["zones"]
 
 
 @pytest.mark.anyio

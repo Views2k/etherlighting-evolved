@@ -155,6 +155,26 @@ test('a refreshed handoff login keeps saved credentials available without restor
   assert.deepEqual(calls.map(call=>call[0]),['/api/private-access']);
 });
 
+test('a resident effect change uses the current revision and never requests handoff or a desktop login',async context=>{
+  const ui=uiDom(context),calls=[];
+  const scene={revision:'a'.repeat(64),zones:[{id:'all',name:'All ports',effect:{id:'activity_glow',params:{}}}]};
+  const effects=['activity_glow','rainbow'].map(id=>({id,name:id,params:[]}));
+  const cleanup=renderSwitchConnection(ui.host,{session:{...complete(),handoff_state:'none',switch_playback:'playing'},
+    request:async(path,method,body)=>{
+      if(path==='/api/private-access')return privateStatus;
+      calls.push({path,method,body});return path==='/api/effects'?effects:scene;
+    }});
+  ui.after(cleanup);await flush();
+  ui.button('Edit effects').click();await flush();
+  const pickers=ui.dialog().querySelectorAll('select');
+  assert.equal(pickers[1].value,'activity_glow');
+  pickers[1].value='rainbow';pickers[1].listeners.get('change')();
+  ui.button('Apply to switch').click();await flush();
+  assert.deepEqual(calls.at(-1),{path:'/api/session/switch-playback/effects',method:'PUT',
+    body:{zone:'all',id:'rainbow',params:{},expected_revision:scene.revision}});
+  assert.equal(calls.length,3);
+});
+
 test('resident playback offers a status check and hands off only on confirmation',async context=>{
   const ui=uiDom(context),calls=[],saved={...complete(),handed_off:false,handoff_state:'none',switch_playback:'playing'};
   const cleanup=renderSwitchConnection(ui.host,{session:saved,request:async(path,method)=>{

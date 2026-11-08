@@ -75,6 +75,13 @@ class EffectRequest(BaseModel):
     clear_overrides: bool = False
 
 
+class PlaybackEffectRequest(BaseModel):
+    zone: str = Field(min_length=1, max_length=128)
+    id: str = Field(min_length=1, max_length=128)
+    params: dict[str, Any] = Field(default_factory=dict)
+    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class ParamsRequest(BaseModel):
     params: dict[str, Any]
 
@@ -417,6 +424,21 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     async def check_switch_playback():
         require_workspace()
         return await sessions.check_playback()
+
+    async def playback_effect_response(body=None):
+        require_workspace()
+        try:
+            return await sessions.playback_effects(body)
+        except LoginError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @api.get("/session/switch-playback/effects")
+    async def playback_effects():
+        return await playback_effect_response()
+
+    @api.put("/session/switch-playback/effects")
+    async def edit_playback_effect(body: PlaybackEffectRequest):
+        return await playback_effect_response(body)
 
     @api.post("/session/handoff")
     async def handoff_to_unifi():

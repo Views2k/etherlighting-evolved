@@ -153,6 +153,10 @@ async def stage(transport, owner, config, palette):
         raise TransportError("The switch could not reserve its RAM playback directory.")
     files = {name: (_RUNTIME / name).read_text("ascii") for name in _FILES[:2]}
     files.update(config=config, palette=palette)
+    await _upload(transport, owner, files)
+
+
+async def _upload(transport, owner, files):
     for name, source in files.items():
         for offset in range(0, len(source), 8192):
             redirect = ">" if offset == 0 else ">>"
@@ -163,6 +167,28 @@ async def stage(transport, owner, config, palette):
         verify = f'[ "$(sha256sum {name} | cut -d" " -f1)" = {digest} ] && echo verified'
         if await _run(transport, _owned(owner) + verify) != "verified":
             raise TransportError("The saved switch scene did not pass its integrity check.")
+
+
+async def edit_revision(transport, owner):
+    command = _owned(owner) + ('if [ -f scene.active ]; then sha256sum scene.active | cut -d" " -f1; '
+                               'elif [ ! -e scene.active ]; then echo original; fi')
+    digest = await _run(transport, command)
+    if digest != "original" and not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise TransportError("The switch could not confirm its current scene.")
+    return digest
+
+
+async def edit_scene(transport, owner, content, previous):
+    if await status(transport, owner) != "playing" or await edit_revision(transport, owner) != previous:
+        raise ValueError("Switch playback changed. Reopen the effect editor.")
+    renderer = (_RUNTIME / "frames.awk").read_text("ascii")
+    await _upload(transport, owner, {"frames.edit": renderer, "scene.edit": content})
+    # Upgrade the reader first. It renders the original scene until the data
+    # rename succeeds. The resident process keeps ownership throughout.
+    command = _owned(owner) + ('[ ! -e stop ] && mv -f frames.edit frames.awk && '
+                               'mv -f scene.edit scene.active && echo applied')
+    if await _run(transport, command) != "applied":
+        raise TransportError("The switch could not confirm applying the effect.")
 
 
 async def start(transport, owner):
@@ -206,7 +232,8 @@ fi"""
 
 
 async def remove(transport, owner):
-    files = " ".join((*_FILES, "previous", "next", "ports", "output", "status", "status.new", "stop", "launched/pid"))
+    files = " ".join((*_FILES, "frames.edit", "scene.edit", "scene.active", "previous", "next", "ports",
+                      "output", "status", "status.new", "stop", "launched/pid"))
     command = _owned(owner) + f"""rm -f {files} || exit 1
 if [ -d launched ]; then rmdir launched || exit 1; fi
 rm owner && cd / && rmdir "$d" && echo removed"""

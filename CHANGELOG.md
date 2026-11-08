@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.23
+
+- Change a port group's effect and settings while the switch keeps playing its saved scene.
+
 ## 0.4.22
 
 - Save lighting to a Pro XG 8 PoE from Settings → Connection. Activity Glow follows port traffic on the switch, including while EE is closed. Choose Handoff to UniFi to stop playback.

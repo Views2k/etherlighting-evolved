@@ -666,6 +666,68 @@ class SessionManager:
         switch.output_lease = self.output_journal.player_lease(transport.host, transport.port,
                                                                transport.host_key_fingerprint, owner)
 
+    async def playback_effects(self, change=None):
+        """Edit the verified player's group effects without acquiring desktop output."""
+        async with self._lock:
+            record = self._playback.data
+            if self.handoff_pending or not record or record.get("state") != "last_playing":
+                raise self._fail("playback_unavailable", "Check switch playback before editing effects.", 409)
+            try:
+                switch = self._playback_switch(record["device"])
+                try:
+                    await self._open_player(switch, record["device"])
+                    return await self._read_or_edit_effects(switch, record, change)
+                finally:
+                    await switch.close()
+            except (OSError, TransportError, ValueError, KeyError, CredentialStoreError) as exc:
+                raise self._fail("playback_edit_failed", "Could not confirm the switch scene. "
+                                 "Reopen the editor to check its current settings.", 409) from exc
+
+    async def _read_or_edit_effects(self, switch, record, change):
+        transport, owner = switch.transport, record["owner"]
+        if await playback.status(transport, owner) != "playing":
+            raise ValueError("player is not running")
+        current = await playback.edit_revision(transport, owner)
+        store = self._device_store(switch)
+        pending = record.get("pending_edit")
+        if pending:
+            self._reconcile_effect(store, pending, current)
+            record = {k: v for k, v in record.items() if k != "pending_edit"}
+            record["applied_edit"] = current
+            self._playback.save(record)
+        if current != record.get("applied_edit", "original"):
+            raise ValueError("switch scene changed")
+        snapshot = store.load()
+        if not snapshot:
+            raise ValueError("missing scene")
+        revision = hashlib.sha256((owner + current).encode("ascii")).hexdigest()
+        if change is None:
+            return {"revision": revision, "zones": snapshot["zones"]}
+        if change.expected_revision != revision:
+            raise self._fail("scene_changed", "The effect changed. Reopen the editor before applying.", 409)
+        # Construct a model for validation and compilation, without starting its output loop.
+        engine = Engine(switch, gamma=self.config.engine.gamma, max_commands=self.config.engine.max_commands)
+        engine.apply_snapshot(snapshot)
+        engine.set_effect(change.id, change.params, change.zone, clear_overrides=False)
+        config, palette = playback.compile_scene(engine)
+        content = f"{len(palette.splitlines())}\n{config}{palette}"
+        digest = hashlib.sha256(content.encode("ascii")).hexdigest()
+        updated = engine.snapshot()
+        self._playback.save({**record, "pending_edit": {"from": current, "to": digest, "scene": updated}})
+        await playback.edit_scene(transport, owner, content, current)
+        if await playback.edit_revision(transport, owner) != digest:
+            raise ValueError("update unconfirmed")
+        store.save(updated)
+        self._playback.save({**record, "applied_edit": digest})
+        return {"revision": hashlib.sha256((owner + digest).encode("ascii")).hexdigest(), "zones": updated["zones"]}
+
+    @staticmethod
+    def _reconcile_effect(store, pending, current):
+        if current == pending["to"]:
+            store.save(pending["scene"])
+        elif current != pending["from"]:
+            raise ValueError("unknown scene revision")
+
     async def _stop_player(self):
         record = self._playback.data
         if record.get("state") == "unreadable":
@@ -675,6 +737,9 @@ class SessionManager:
         switch = self._playback_switch(record["device"])
         try:
             await self._open_player(switch, record["device"])
+            if record.get("pending_edit") and not await playback.available(switch.transport):
+                current = await playback.edit_revision(switch.transport, record["owner"])
+                self._reconcile_effect(self._device_store(switch), record["pending_edit"], current)
             staged = await playback.drain(switch.transport, record["owner"])
             t = switch.transport
             paths = self.output_journal.paths(t.host, t.port, t.host_key_fingerprint)

@@ -227,6 +227,85 @@ function button(text, className = '') {
   control.type = 'button'; return control;
 }
 
+function openPlaybackEditor(request, lifecycle, trigger) {
+  if (document.querySelector('.playback-editor')) return;
+  const dialog=node('dialog','dialog playback-editor');
+  dialog.setAttribute('aria-label','Switch effects');
+  const form=node('form','connection-form'), title=node('h2','','Switch effects');
+  const group=node('select'), effect=node('select'), params=node('div','connection-form');
+  const feedback=node('p','help-text','Loading switch effects…');
+  feedback.setAttribute('role','status');
+  const apply=button('Apply to switch','primary'), close=button('Close','quiet');
+  const footer=node('footer','dialog-footer');
+  footer.append(close,apply);
+  form.append(title,field('Port group',group),field('Effect',effect),params,feedback,footer);
+  dialog.append(form);
+  document.body.append(dialog); dialog.showModal();
+  let saved, catalog=[], controls=[], saving=false;
+  const busy=value=>{
+    group.disabled=value; effect.disabled=value; apply.disabled=value;
+    for(const {input} of controls) input.disabled=value;
+  };
+  const option=(id,name)=>{const el=node('option','',name);el.value=id;return el;};
+  const zone=()=>saved?.zones.find(item=>item.id===group.value);
+  function renderParams(){
+    const def=catalog.find(item=>item.id===effect.value);
+    params.replaceChildren(); controls=[];
+    if(!def) return;
+    const values=zone()?.effect.id===def.id?zone().effect.params:{};
+    for(const spec of def.params){
+      const input=node(spec.type==='choice'?'select':'input');
+      const current=values[spec.key]??spec.default;
+      if(spec.type==='choice'){
+        for(const item of spec.choices) input.append(option(item,item));
+        input.value=current;
+      }else if(spec.type==='bool'){input.type='checkbox';input.checked=current;}
+      else {
+        input.type=spec.type==='color'?'color':'number';
+        if(spec.min!=null)input.min=String(spec.min);
+        if(spec.max!=null)input.max=String(spec.max);
+        if(input.type==='number'){input.step=String(spec.step??(spec.type==='int'?1:'any'));input.required=true;}
+        input.value=String(current);
+      }
+      controls.push({spec,input});
+      params.append(field(spec.unit?spec.label+' ('+spec.unit+')':spec.label,input));
+    }
+  }
+  function selectGroup(){effect.value=zone().effect.id;renderParams();}
+  group.addEventListener('change',selectGroup);
+  effect.addEventListener('change',renderParams);
+  close.addEventListener('click',()=>dialog.close());
+  dialog.addEventListener('cancel',event=>{if(saving) event.preventDefault();});
+  const dismiss=()=>dialog.close();
+  lifecycle.addEventListener('abort',dismiss,{once:true});
+  dialog.addEventListener('close',()=>{lifecycle.removeEventListener('abort',dismiss);dialog.remove();trigger?.focus();},{once:true});
+  async function save(){
+    if(saving||apply.disabled||!form.reportValidity()) return;
+    const values={};
+    for(const {spec,input} of controls) values[spec.key]=spec.type==='bool'?input.checked:
+      (spec.type==='int'||spec.type==='float'?input.valueAsNumber:input.value);
+    saving=true;busy(true);close.disabled=true;feedback.textContent='Applying to switch…';
+    try{
+      saved=await request('/api/session/switch-playback/effects','PUT',
+        {zone:group.value,id:effect.value,params:values,expected_revision:saved.revision});
+      if(dialog.open){selectGroup();feedback.textContent='Effect saved on the switch.';}
+    }catch(error){if(dialog.open)feedback.textContent=error?.message||'Could not confirm the change. Reopen the editor to check the switch.';}
+    finally{saving=false;close.disabled=false;if(dialog.open)busy(false);}
+  }
+  apply.addEventListener('click',save);
+  form.addEventListener('submit',event=>{event.preventDefault();void save();});
+  busy(true);
+  Promise.all([request('/api/session/switch-playback/effects'),request('/api/effects')]).then(([scene,effects])=>{
+    if(!dialog.open)return;
+    saved=scene;catalog=effects.filter(item=>item.id==='activity_glow'||!['time','data'].includes(item.category));
+    for(const item of saved.zones)group.append(option(item.id,item.name));
+    for(const item of catalog)effect.append(option(item.id,item.name));
+    if(!saved.zones.length){feedback.textContent='This scene has no port groups.';return;}
+    group.value=saved.zones[0].id;
+    selectGroup();busy(false);feedback.textContent='';group.focus();
+  }).catch(()=>{if(dialog.open)feedback.textContent='Could not load switch effects. Check playback and try again.';});
+}
+
 function passwordField(label, control) {
   const wrapper = node('div', 'field');
   const title = node('label', '', label);
@@ -545,6 +624,10 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const actions = node('div', 'connection-actions'); actions.append(submit);
   if (restoreSaved) actions.append(restore);
   const checkPlayback=button('Check playback','quiet');
+  const editPlayback=button('Edit effects','primary');
+  const edit=()=>{if(active&&!pending&&saved.switch_playback==='playing'&&saved.handoff_state==='none')
+    openPlaybackEditor(request,lifecycle.signal,editPlayback);};
+  editPlayback.addEventListener('click',edit);
   checkPlayback.addEventListener('click',async()=>{
     if(!active||pending)return;
     checkPlayback.disabled=true;
@@ -552,7 +635,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     catch{if(active)status('Could not check playback. Try again when the switch is reachable.',true);}
     finally{if(active)setBusy();}
   });
-  actions.append(forget,retryHandoff,checkPlayback);
+  actions.append(forget,editPlayback,retryHandoff,checkPlayback);
   form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
   panel.append(message, form);
   if (onDemo) {
@@ -578,6 +661,9 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     for (const control of form.elements) control.disabled = waiting||recovering;
     retryHandoff.hidden=!handoffRetryable(saved);retryHandoff.disabled=waiting||!handoffRetryable(saved);
     checkPlayback.hidden=!saved.switch_playback;checkPlayback.disabled=waiting||!saved.switch_playback;
+    editPlayback.hidden=saved.switch_playback!=='playing'||saved.handoff_state!=='none';
+    editPlayback.disabled=waiting||editPlayback.hidden;
+    retryHandoff.classList.toggle('primary',editPlayback.hidden);
     retryHandoff.textContent=retryingHandoff?'Handing off…':saved.switch_playback?'Handoff to UniFi':'Retry handoff';
     submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting ? 'Connecting…' : 'Connect to switch';
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
@@ -688,6 +774,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   update(session);
   const cleanup = () => { active = false; lifecycle.abort(); password.value = ''; };
   cleanup.update = update;
+  cleanup.editPlayback = edit;
   cleanup.hasChanges = () => dirty || privateAccess.hasChanges();
   cleanup.canLeave = async () => { if (pending) await pending; await privateAccess.canLeave(); return true; };
   return cleanup;
