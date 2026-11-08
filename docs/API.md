@@ -13,24 +13,18 @@ This document describes the API used by the EE workspace and other clients.
   ports are not lighting targets. Optical-only models have an empty copper `ports` array.
 - Times use the local time of the machine running EE, in 24-hour `"HH:MM"` format.
 
-## Switch playback
+## Offline lighting
 
-On a qualified Pro XG 8 PoE, `POST /api/session/switch-playback` transfers the current scene to switch RAM
-using the saved SSH login. The desktop writer drains before the switch starts. A successful response requires
-an acknowledged LED frame. Activity Glow uses local port counters. Decorative effects use a 30-second loop.
-Enabled rules and other desktop time/data effects must be removed from the scene before transfer.
-
-Session info includes `can_save_to_switch` and `switch_playback`. Use `POST /api/session/switch-playback/check`
-for a fresh reading. Quit and logout leave the player running. The existing handoff endpoint stops the player
-and restores the lighting controller. An unreachable switch leaves handoff pending for retry when EE is open.
-A switch reboot clears the scene from RAM.
-
-While the switch is playing, open **Effects** or **Edit effects** to change a port group's effect
-and settings. The switch keeps playing while the editor is open. Applying an edit replaces the
-complete group configuration and palette together. Handoff to UniFi remains a separate action.
-`GET /api/session/switch-playback/effects` returns the saved groups and an edit revision.
-`PUT /api/session/switch-playback/effects` accepts `zone`, `id`, `params` and `expected_revision`.
-A stale revision returns 409. Closing the editor discards unapplied changes.
+The desktop opens the saved switch in the usual Lighting workspace. Apply uses the
+normal scene revision and `PUT /api/scene`. On a qualified Pro XG 8 PoE with a
+saved login, EE also commits supported scenes to the switch. The desktop keeps
+exclusive live output while connected. When it closes, or its grant expires after
+connection loss, the powered switch resumes the committed scene from RAM.
+Activity Glow, Live Traffic and Traffic Trails read port counters, PoE Usage reads
+switch power measurements, and Daylight follows the switch clock. The base effects
+continue offline. The desktop evaluates automation rules and schedules when running.
+Session info exposes an offline copy error when the switch could not save a scene.
+Use the existing handoff endpoint to return lighting to UniFi.
 
 ## UI flow
 

@@ -53,8 +53,8 @@ export function connectionError(error, fallback = 'The connection could not be c
 }
 
 function handoffNeedsReview(session) {return session?.error?.code==='handoff_recovery_required';}
-function handoffBlocked(session) {return Boolean(session?.switch_playback)||['pending','unconfirmed'].includes(session?.handoff_state)||handoffNeedsReview(session);}
-function handoffRetryable(session) {return (Boolean(session?.switch_playback)||session?.handoff_state==='unconfirmed')&&!handoffNeedsReview(session);}
+function handoffBlocked(session) {return ['pending','unconfirmed'].includes(session?.handoff_state)||handoffNeedsReview(session);}
+function handoffRetryable(session) {return session?.handoff_state==='unconfirmed'&&!handoffNeedsReview(session);}
 
 export function handoffComplete(session) {
   return session?.handed_off===true&&session.handoff_state==='complete'&&session.logged_in===false&&session.connected===false&&session.connecting!==true&&session.automatic_connect_paused===true&&!handoffNeedsReview(session);
@@ -62,17 +62,6 @@ export function handoffComplete(session) {
 
 export function handoffStatus(session) {
   if(handoffNeedsReview(session))return {message:messages.handoff_recovery_required,error:true,tone:''};
-  if(session?.switch_playback){
-    const descriptions={
-      playing:'Your saved scene is playing on the switch. You can quit EE.',
-      handoff:'Handoff requested. EE will retry when the switch is reachable.',
-      absent:'The switch has no saved player running. Complete handoff to reconnect.',
-      preparing:'Switch playback was requested. Check playback or choose Handoff to UniFi.',
-      retrying:'The switch player is retrying its lighting output.',
-      unreachable:'The switch is unreachable. The last playback state could not be checked.',
-    };
-    return {message:descriptions[session.switch_playback]||'Check switch playback to see its current state.',tone:session.switch_playback==='playing'?'online':'waiting',error:false};
-  }
   if(session?.handoff_state==='pending')return {message:'Handing lighting back to UniFi…',error:false,tone:'waiting'};
   if(session?.handoff_state==='unconfirmed')return {message:messages.handoff_unconfirmed,error:true,tone:''};
   if(handoffComplete(session))return {message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'};
@@ -225,85 +214,6 @@ function field(label, control, help) {
 function button(text, className = '') {
   const control = node('button', `button ${className}`, text);
   control.type = 'button'; return control;
-}
-
-function openPlaybackEditor(request, lifecycle, trigger) {
-  if (document.querySelector('.playback-editor')) return;
-  const dialog=node('dialog','dialog playback-editor');
-  dialog.setAttribute('aria-label','Switch effects');
-  const form=node('form','connection-form'), title=node('h2','','Switch effects');
-  const group=node('select'), effect=node('select'), params=node('div','connection-form');
-  const feedback=node('p','help-text','Loading switch effects…');
-  feedback.setAttribute('role','status');
-  const apply=button('Apply to switch','primary'), close=button('Close','quiet');
-  const footer=node('footer','dialog-footer');
-  footer.append(close,apply);
-  form.append(title,field('Port group',group),field('Effect',effect),params,feedback,footer);
-  dialog.append(form);
-  document.body.append(dialog); dialog.showModal();
-  let saved, catalog=[], controls=[], saving=false;
-  const busy=value=>{
-    group.disabled=value; effect.disabled=value; apply.disabled=value;
-    for(const {input} of controls) input.disabled=value;
-  };
-  const option=(id,name)=>{const el=node('option','',name);el.value=id;return el;};
-  const zone=()=>saved?.zones.find(item=>item.id===group.value);
-  function renderParams(){
-    const def=catalog.find(item=>item.id===effect.value);
-    params.replaceChildren(); controls=[];
-    if(!def) return;
-    const values=zone()?.effect.id===def.id?zone().effect.params:{};
-    for(const spec of def.params){
-      const input=node(spec.type==='choice'?'select':'input');
-      const current=values[spec.key]??spec.default;
-      if(spec.type==='choice'){
-        for(const item of spec.choices) input.append(option(item,item));
-        input.value=current;
-      }else if(spec.type==='bool'){input.type='checkbox';input.checked=current;}
-      else {
-        input.type=spec.type==='color'?'color':'number';
-        if(spec.min!=null)input.min=String(spec.min);
-        if(spec.max!=null)input.max=String(spec.max);
-        if(input.type==='number'){input.step=String(spec.step??(spec.type==='int'?1:'any'));input.required=true;}
-        input.value=String(current);
-      }
-      controls.push({spec,input});
-      params.append(field(spec.unit?spec.label+' ('+spec.unit+')':spec.label,input));
-    }
-  }
-  function selectGroup(){effect.value=zone().effect.id;renderParams();}
-  group.addEventListener('change',selectGroup);
-  effect.addEventListener('change',renderParams);
-  close.addEventListener('click',()=>dialog.close());
-  dialog.addEventListener('cancel',event=>{if(saving) event.preventDefault();});
-  const dismiss=()=>dialog.close();
-  lifecycle.addEventListener('abort',dismiss,{once:true});
-  dialog.addEventListener('close',()=>{lifecycle.removeEventListener('abort',dismiss);dialog.remove();trigger?.focus();},{once:true});
-  async function save(){
-    if(saving||apply.disabled||!form.reportValidity()) return;
-    const values={};
-    for(const {spec,input} of controls) values[spec.key]=spec.type==='bool'?input.checked:
-      (spec.type==='int'||spec.type==='float'?input.valueAsNumber:input.value);
-    saving=true;busy(true);close.disabled=true;feedback.textContent='Applying to switch…';
-    try{
-      saved=await request('/api/session/switch-playback/effects','PUT',
-        {zone:group.value,id:effect.value,params:values,expected_revision:saved.revision});
-      if(dialog.open){selectGroup();feedback.textContent='Effect saved on the switch.';}
-    }catch(error){if(dialog.open)feedback.textContent=error?.message||'Could not confirm the change. Reopen the editor to check the switch.';}
-    finally{saving=false;close.disabled=false;if(dialog.open)busy(false);}
-  }
-  apply.addEventListener('click',save);
-  form.addEventListener('submit',event=>{event.preventDefault();void save();});
-  busy(true);
-  Promise.all([request('/api/session/switch-playback/effects'),request('/api/effects')]).then(([scene,effects])=>{
-    if(!dialog.open)return;
-    saved=scene;catalog=effects.filter(item=>item.id==='activity_glow'||!['time','data'].includes(item.category));
-    for(const item of saved.zones)group.append(option(item.id,item.name));
-    for(const item of catalog)effect.append(option(item.id,item.name));
-    if(!saved.zones.length){feedback.textContent='This scene has no port groups.';return;}
-    group.value=saved.zones[0].id;
-    selectGroup();busy(false);feedback.textContent='';group.focus();
-  }).catch(()=>{if(dialog.open)feedback.textContent='Could not load switch effects. Check playback and try again.';});
 }
 
 function passwordField(label, control) {
@@ -623,19 +533,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const retryHandoff = button('Retry handoff','primary');retryHandoff.hidden=true;
   const actions = node('div', 'connection-actions'); actions.append(submit);
   if (restoreSaved) actions.append(restore);
-  const checkPlayback=button('Check playback','quiet');
-  const editPlayback=button('Edit effects','primary');
-  const edit=()=>{if(active&&!pending&&saved.switch_playback==='playing'&&saved.handoff_state==='none')
-    openPlaybackEditor(request,lifecycle.signal,editPlayback);};
-  editPlayback.addEventListener('click',edit);
-  checkPlayback.addEventListener('click',async()=>{
-    if(!active||pending)return;
-    checkPlayback.disabled=true;
-    try{const next=await request('/api/session/switch-playback/check','POST');if(active)update(next);}
-    catch{if(active)status('Could not check playback. Try again when the switch is reachable.',true);}
-    finally{if(active)setBusy();}
-  });
-  actions.append(forget,editPlayback,retryHandoff,checkPlayback);
+  actions.append(forget,retryHandoff);
   form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
   panel.append(message, form);
   if (onDemo) {
@@ -660,20 +558,11 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     form.setAttribute('aria-busy', String(waiting));
     for (const control of form.elements) control.disabled = waiting||recovering;
     retryHandoff.hidden=!handoffRetryable(saved);retryHandoff.disabled=waiting||!handoffRetryable(saved);
-    checkPlayback.hidden=!saved.switch_playback;checkPlayback.disabled=waiting||!saved.switch_playback;
-    editPlayback.hidden=saved.switch_playback!=='playing'||saved.handoff_state!=='none';
-    editPlayback.disabled=waiting||editPlayback.hidden;
-    retryHandoff.classList.toggle('primary',editPlayback.hidden);
-    retryHandoff.textContent=retryingHandoff?'Handing off…':saved.switch_playback?'Handoff to UniFi':'Retry handoff';
+    retryHandoff.textContent=retryingHandoff?'Handing off…':'Retry handoff';
     submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting ? 'Connecting…' : 'Connect to switch';
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
-    const resident=Boolean(saved.switch_playback);
-    heading.textContent=resident?'Switch playback':'Connect your switch';
-    intro.hidden=resident;
-    for(const child of form.children)if(child!==actions)child.hidden=resident;
-    submit.hidden=resident;
-    restore.hidden = resident || !restoreSaved || !saved.has_saved_login;
-    forget.hidden = resident || !saved.has_saved_login;
+    restore.hidden=!restoreSaved || !saved.has_saved_login;
+    forget.hidden=!saved.has_saved_login;
     panel.querySelector(':scope > button')?.toggleAttribute('disabled', waiting);
   };
   const enter = async value => {
@@ -744,8 +633,8 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     retryingHandoff=true;
     pending=(async()=>{
       try{
-        const title=saved.switch_playback?'Handoff to UniFi?':'Retry handoff to UniFi?';
-        const action=saved.switch_playback?'Handoff to UniFi':'Retry handoff';
+        const title='Retry handoff to UniFi?';
+        const action='Retry handoff';
         if(!await confirmAction(host,title,'Stop EE lighting and return control to UniFi. Your saved setup is kept.',action,lifecycle.signal)||!active)return;
         status('Handing lighting back to UniFi…');
         const result=await requestHandoff(request,()=>active);if(!result)return;
@@ -774,7 +663,6 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   update(session);
   const cleanup = () => { active = false; lifecycle.abort(); password.value = ''; };
   cleanup.update = update;
-  cleanup.editPlayback = edit;
   cleanup.hasChanges = () => dirty || privateAccess.hasChanges();
   cleanup.canLeave = async () => { if (pending) await pending; await privateAccess.canLeave(); return true; };
   return cleanup;

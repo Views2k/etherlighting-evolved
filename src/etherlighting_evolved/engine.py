@@ -330,6 +330,10 @@ class Engine:
                 # Keep ownership records when reconnection or device cleanup is unconfirmed.
                 pass
         try:
+            desktop_output = getattr(self.switch.transport, "desktop_output", None)
+            if desktop_output is not None and self.connected:
+                with contextlib.suppress(TimeoutError, TransportError):
+                    await asyncio.wait_for(desktop_output.release(), timeout=2)
             await self.switch.close()
         except Exception:
             cleanup_error = cleanup_error or TransportError("The lighting connection did not close cleanly")

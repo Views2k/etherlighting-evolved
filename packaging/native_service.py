@@ -55,7 +55,8 @@ async def serve(options: dict, token: str, *, demo: bool, browser_live: bool) ->
             raise LoginError("preview_only", "Open the app normally to connect to a switch.", 409)
         return SimulatedTransport(lit_ports=config.switch.num_ports)
 
-    app = create_app(config, demo=demo, autoconnect=not demo and not browser_live,
+    desktop = os.environ.get("EE_DESKTOP_HOST") == "1"
+    app = create_app(config, demo=demo, autoconnect=not demo and (desktop or not browser_live),
                      transport_factory=preview_transport if demo else None)
     server = uvicorn.Server(uvicorn.Config(
         app, host="127.0.0.1", port=0, access_log=False, log_config=None,
