@@ -61,10 +61,11 @@ const server=http.createServer(async(req,res)=>{
       if(req.url==='/api/private-access'&&req.method==='PUT'){
         let body='';for await(const chunk of req){body+=chunk;if(body.length>1024){respond(413,{detail:'The setting is too large.'});return;}}
         let value;try{value=JSON.parse(body);}catch{respond(400,{detail:'Choose a valid access setting.'});return;}
-        if(!value||typeof value.enabled!=='boolean'||Object.keys(value).some(key=>!['enabled','https_port'].includes(key))
+        if(!value||typeof value.enabled!=='boolean'||Object.keys(value).some(key=>!['enabled','https_port','audience'].includes(key))
+          ||value.audience!==undefined&&!['owner','accounts'].includes(value.audience)
           ||value.https_port!==undefined&&(!Number.isSafeInteger(value.https_port)||value.https_port<1024||value.https_port>65535)){respond(400,{detail:'Choose a valid access setting and a port between 1024 and 65535.'});return;}
         if(workspaceClosing){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
-        await privateAccess.configure(value.enabled,{httpsPort:value.https_port});privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;
+        await privateAccess.configure(value.enabled,{httpsPort:value.https_port,audience:value.audience});privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;
       }
       respond(405,{detail:'This action is not supported.'});
     }catch{privateRetry.observe();respond(409,{detail:{code:'private_access_failed',message:'Private access could not be updated. Refresh status and try again.'},status:privateAccess.status()});}

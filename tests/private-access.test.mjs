@@ -7,7 +7,7 @@ import {createPrivateAccessManager} from '../preview/private-access.mjs';
 const ORIGIN='https://fixture.fixture-tailnet.ts.net:8444';
 const AUTHORITY='fixture.fixture-tailnet.ts.net:8444';
 const TARGET='http://127.0.0.1:4184';
-const fields={setup_action:null,action_url:null,https_port:8444,can_change_port:true};
+const fields={setup_action:null,action_url:null,audience:'owner',https_port:8444,can_change_port:true};
 const existing={TCP:{8443:{HTTPS:true}},Web:{'existing.fixture-tailnet.ts.net:8443':{Handlers:{'/':{Proxy:'http://127.0.0.1:4321'}}}}};
 
 async function fixture(t){
@@ -298,4 +298,63 @@ test('invalid ports and malformed persisted listener ports never reach the CLI',
   await writeFile(f.configPath,JSON.stringify(saved));f.calls=[];
   assert.equal((await createPrivateAccessManager(f.options).initialize()).error.code,'private_access_invalid_configuration');
   assert.deepEqual(f.calls,[]);
+});
+
+function visitor(login){
+  const headers={Host:AUTHORITY,'X-Forwarded-Host':AUTHORITY,'X-Forwarded-Proto':'https','X-Forwarded-For':'100.100.0.20',
+    ...(login?{'Tailscale-User-Login':login}:{})};
+  return {method:'GET',url:'/api/state',socket:{remoteAddress:'127.0.0.1'},rawHeaders:Object.entries(headers).flat()};
+}
+
+test('the accounts audience is explicit, saved without account details, and restored on restart',async t=>{
+  const f=await fixture(t);
+  assert.equal((await f.manager.configure(true)).audience,'owner');
+  assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,false);
+  assert.equal('audience' in JSON.parse(await readFile(f.configPath,'utf8')),false);
+  const shared=await f.manager.configure(true,{audience:'accounts'});
+  assert.equal(shared.ready,true);assert.equal(shared.audience,'accounts');assert.equal(shared.error,null);
+  assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,true);
+  assert.equal(f.active.authorize(visitor('owner@example.invalid')).ok,true);
+  assert.equal(f.active.authorize(visitor()).ok,false);
+  const saved=await readFile(f.configPath,'utf8');
+  assert.equal(JSON.parse(saved).audience,'accounts');
+  assert.equal(saved.includes('owner@example.invalid'),false);assert.equal(saved.includes('guest@example.invalid'),false);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
+  await f.manager.close();
+  const next=createPrivateAccessManager(f.options),restored=await next.initialize();
+  assert.equal(restored.ready,true);assert.equal(restored.audience,'accounts');
+  assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,true);
+  const owner=await next.configure(true,{audience:'owner'});
+  assert.equal(owner.ready,true);assert.equal(owner.audience,'owner');
+  assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,false);
+  assert.equal('audience' in JSON.parse(await readFile(f.configPath,'utf8')),false);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
+});
+
+test('turning access off keeps the chosen audience and an unknown or unsaved audience never takes effect',async t=>{
+  const f=await fixture(t);
+  await f.manager.configure(true,{audience:'accounts'});
+  const off=await f.manager.configure(false);
+  assert.equal(off.enabled,false);assert.equal(off.audience,'accounts');assert.equal(f.active,null);
+  assert.equal(JSON.parse(await readFile(f.configPath,'utf8')).audience,'accounts');
+  await assert.rejects(f.manager.configure(true,{audience:'everyone'}));
+  await f.manager.configure(true,{audience:'owner'});
+  f.identity.BackendState='Stopped';
+  const failed=await f.manager.configure(true,{audience:'accounts'});
+  assert.equal(failed.ready,false);assert.equal(failed.error.code,'tailscale_not_running');assert.equal(failed.audience,'owner');
+  assert.equal(f.active,null);assert.equal('audience' in JSON.parse(await readFile(f.configPath,'utf8')),false);
+  f.identity.BackendState='Running';
+  const retried=await f.manager.initialize();
+  assert.equal(retried.ready,true);assert.equal(retried.audience,'owner');
+  assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,false);
+});
+
+test('a saved audience outside the known values is an invalid configuration without Serve writes',async t=>{
+  const f=await fixture(t);
+  await f.manager.configure(true);await f.manager.close();
+  const saved=JSON.parse(await readFile(f.configPath,'utf8'));saved.audience='everyone';
+  await writeFile(f.configPath,JSON.stringify(saved));f.calls=[];
+  const next=createPrivateAccessManager(f.options),status=await next.initialize();
+  assert.equal(status.ready,false);assert.equal(status.error.code,'private_access_invalid_configuration');
+  assert.equal(f.active,null);assert.deepEqual(writes(f),[]);
 });

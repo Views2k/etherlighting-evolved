@@ -1,7 +1,7 @@
 import {createHash,randomBytes} from 'node:crypto';
 import {lstat,mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
 import path from 'node:path';
-import {createTailnetAccess} from './tailnet-access.mjs';
+import {createTailnetAccess,ACCESS_AUDIENCES} from './tailnet-access.mjs';
 import {runInstalledTailscale,tailscaleActionUrl} from './tailscale-cli.mjs';
 export {runInstalledTailscale} from './tailscale-cli.mjs';
 
@@ -39,7 +39,7 @@ function parseJSON(value){
   fail('private_access_invalid_configuration');
 }
 
-function identityFrom(status,httpsPort){
+function identityFrom(status,httpsPort,audience){
   const self=status.Self;
   if(status.BackendState!=='Running'||!object(self)||self.Online!==true||self.Expired===true
       ||(self.Tags!==undefined&&(!Array.isArray(self.Tags)||self.Tags.length)))fail('tailscale_signin_required');
@@ -51,7 +51,7 @@ function identityFrom(status,httpsPort){
   const name=self.DNSName.endsWith('.')?self.DNSName.slice(0,-1):self.DNSName;
   const origin=`https://${name}:${httpsPort}`;
   let gate;
-  try{gate=createTailnetAccess({origin,ownerLogin:user.LoginName});}catch{fail('tailscale_signin_required');}
+  try{gate=createTailnetAccess({origin,ownerLogin:user.LoginName,audience});}catch{fail('tailscale_signin_required');}
   return {origin,ownerHash:hash(user.LoginName),nodeHash:hash(self.ID),gate};
 }
 
@@ -63,7 +63,10 @@ function validateSaved(value){
   const httpsPort=value.version===1?PRIVATE_HTTPS_PORT:value.httpsPort;
   const listenerPort=value.version===1?PRIVATE_LISTENER_PORT:value.listenerPort;
   if(!validPort(httpsPort)||!validPort(listenerPort)||Number(new URL(value.origin).port)!==httpsPort)fail('private_access_invalid_configuration');
-  return {version:2,enabled:value.enabled,origin:value.origin,ownerHash:value.ownerHash,nodeHash:value.nodeHash,httpsPort,listenerPort};
+  if(value.audience!==undefined&&!ACCESS_AUDIENCES.includes(value.audience))fail('private_access_invalid_configuration');
+  // The audience is stored only when it differs from the owner-only default, so earlier records stay unchanged.
+  return {version:2,enabled:value.enabled,origin:value.origin,ownerHash:value.ownerHash,nodeHash:value.nodeHash,httpsPort,listenerPort,
+    ...(value.audience==='accounts'?{audience:'accounts'}:{})};
 }
 
 function portKey(key,port){return key===String(port)||key.endsWith(`:${port}`);}
@@ -103,9 +106,10 @@ function unrelatedRoutes(serve,port){
 export function createPrivateAccessManager({configPath,runTailscale=runInstalledTailscale,startListener,stopListener}={}){
   if(typeof configPath!=='string'||!path.isAbsolute(configPath)||typeof startListener!=='function'||typeof stopListener!=='function')
     throw new Error('Private access requires local configuration and listener callbacks.');
-  let saved=null,loaded=false,operation=Promise.resolve(),httpsPort=PRIVATE_HTTPS_PORT,listenerPort=PRIVATE_LISTENER_PORT;
+  let saved=null,loaded=false,operation=Promise.resolve(),httpsPort=PRIVATE_HTTPS_PORT,listenerPort=PRIVATE_LISTENER_PORT,audience='owner';
+  const record=value=>{const next={...value};delete next.audience;if(audience!=='owner')next.audience=audience;return next;};
   let state={available:false,enabled:false,ready:false,url:null,error:null,setup_action:null,action_url:null};
-  const status=()=>({...state,https_port:httpsPort,can_change_port:!state.enabled&&!state.ready&&!['private_access_cleanup_unconfirmed','private_access_shutdown_unconfirmed','private_access_invalid_configuration','private_access_identity_changed'].includes(state.error?.code),error:state.error?{...state.error}:null});
+  const status=()=>({...state,audience,https_port:httpsPort,can_change_port:!state.enabled&&!state.ready&&!['private_access_cleanup_unconfirmed','private_access_shutdown_unconfirmed','private_access_invalid_configuration','private_access_identity_changed'].includes(state.error?.code),error:state.error?{...state.error}:null});
   const serial=action=>{const result=operation.catch(()=>{}).then(action);operation=result;return result;};
   const setError=error=>{const code=Object.hasOwn(MESSAGES,error?.code)?error.code:'tailscale_unavailable';state.error={code,message:MESSAGES[code]};
     if(code==='tailscale_not_installed'){state.setup_action='install';state.action_url='https://tailscale.com/download';}
@@ -119,7 +123,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       const info=await lstat(configPath);
       if(!info.isFile()||info.isSymbolicLink()||info.size>8192)fail('private_access_invalid_configuration');
       saved=validateSaved(parseJSON(await readFile(configPath,'utf8')));
-      state.enabled=saved.enabled;httpsPort=saved.httpsPort;listenerPort=saved.listenerPort;
+      state.enabled=saved.enabled;httpsPort=saved.httpsPort;listenerPort=saved.listenerPort;audience=saved.audience??'owner';
     }catch(error){
       if(error.code!=='ENOENT'){
         if(Object.hasOwn(MESSAGES,error.code))throw error;
@@ -150,7 +154,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     }
     if(info.BackendState!=='Running'&&info.BackendState!=='NeedsLogin')fail('tailscale_not_running');
     if(info.BackendState==='Running'&&(info.Self?.Expired===true||Array.isArray(info.Self?.Tags)&&info.Self.Tags.length))fail('tailscale_device_identity_required');
-    const current=identityFrom(info,httpsPort);state.available=true;return current;
+    const current=identityFrom(info,httpsPort,audience);state.available=true;return current;
   }
   async function serve(){return parseJSON(await runTailscale(['serve','status','--json']));}
   async function close(){
@@ -192,7 +196,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       if(route==='public')fail('private_access_funnel_enabled');
       if(route!=='absent'&&!(route==='exact'&&saved&&matches(current)))fail('private_access_port_in_use');
       await openListener(current,route==='absent'?0:listenerPort);
-      await save({version:2,enabled:true,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort});
+      await save(record({version:2,enabled:true,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort}));
       if(route==='absent'){
         let setupError;
         try{await runTailscale(['serve','--bg',`--https=${httpsPort}`,targetFor(listenerPort)]);}catch(error){setupError=error;}
@@ -213,7 +217,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     try{
       await close();await load();
       if(!saved){state.enabled=false;return status();}
-      await save({...saved,enabled:false});
+      await save(record({...saved,enabled:false}));
       let before;
       try{before=await serve();}catch{fail('private_access_cleanup_unconfirmed');}
       const route=routeState(before,saved.origin,saved.listenerPort);
@@ -236,12 +240,15 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     catch(error){setError(error);return status();}
     return initialize();
   }
-  return Object.freeze({status,initialize:()=>serial(initialize),login:()=>serial(login),configure:(enabled,{httpsPort:requestedPort}={})=>{
+  return Object.freeze({status,initialize:()=>serial(initialize),login:()=>serial(login),configure:(enabled,{httpsPort:requestedPort,audience:requestedAudience}={})=>{
     if(typeof enabled!=='boolean')return Promise.reject(new Error('Choose whether to enable private access.'));
     if(requestedPort!==undefined&&!validPort(requestedPort))return Promise.reject(new Error('Choose a port between 1024 and 65535.'));
+    if(requestedAudience!==undefined&&!ACCESS_AUDIENCES.includes(requestedAudience))return Promise.reject(new Error('Choose who can use private access.'));
     return serial(async()=>{
+      const previous=audience;
       try{
       await load();
+      if(requestedAudience!==undefined)audience=requestedAudience;
       if(requestedPort!==undefined&&requestedPort!==httpsPort){
         if(saved?.enabled||state.enabled||state.ready)fail('private_access_port_change_requires_off');
         if(saved&&routeState(await serve(),saved.origin,saved.listenerPort)!=='absent')fail('private_access_cleanup_unconfirmed');
@@ -249,11 +256,15 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
         // Persist a new port only with a verified identity; preserve the previous ownership record until then.
         try{
           const current=await identity();
-          await save({version:2,enabled:false,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort});
+          await save(record({version:2,enabled:false,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort}));
         }catch(error){httpsPort=previousPort;throw error;}
       }
-      return enabled?enable():disable();
-      }catch(error){setError(error);return status();}
+      await (enabled?enable():disable());
+      }catch(error){setError(error);}
+      // An audience that was not saved does not stay in effect or in the reported status.
+      const kept=saved?.audience??(saved?'owner':previous);
+      if(!state.ready&&kept!==audience)audience=kept;
+      return status();
     });
   },close:()=>serial(close)});
 }

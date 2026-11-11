@@ -297,7 +297,7 @@ export function privateAccessSetupUrl(value, action) {
 }
 
 export function renderPrivateAccess(host, request, {signal} = {}) {
-  let active=!signal?.aborted,current=null,draft=null,portDraft=null,pending=null,completion=Promise.resolve();
+  let active=!signal?.aborted,current=null,draft=null,portDraft=null,audienceDraft=null,pending=null,completion=Promise.resolve();
   host.replaceChildren();
   if(!active)return ()=>{};
   const section=node('section','private-access automation-section'),header=node('div','connection-heading');
@@ -308,6 +308,9 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const setupActions=node('div','connection-actions'),setupLink=node('a','button'),signIn=button('Sign in to Tailscale','primary');
   setupLink.target='_blank';setupLink.rel='noopener noreferrer';setupActions.append(setupLink,signIn);setup.append(setupHelp,setupActions);setup.hidden=true;
   const toggle=input('private_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Use Tailscale'));
+  const audience=node('select');audience.name='private_audience';
+  for(const [value,text] of [['owner','Only my Tailscale account'],['accounts','Any Tailscale account that can reach this computer']]){const option=node('option','',text);option.value=value;audience.append(option);}
+  const audienceField=field('Who can open EE',audience,'Tailscale decides which accounts can reach this computer. Devices without an account stay blocked.');
   const readOnly=node('p','help-text','Change this setting in EE on the host computer.');readOnly.hidden=true;
   const apply=button('Apply setting','primary'),actions=node('div','connection-actions');actions.append(apply);
   const advanced=node('details','connection-options'),port=input('private_https_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
@@ -318,7 +321,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   open.target='_blank';open.rel='noopener noreferrer';address.append(open,copy);address.hidden=true;
   const install=node('p','help-text','iPhone or iPad: Share → Add to Home Screen. Android: browser menu → Install app.');install.hidden=true;
   const [message,status]=notice();
-  section.append(header,help,state,setup,label,advanced,readOnly,actions,address,install,message);host.append(section);
+  section.append(header,help,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
   const canConfigure=()=>current?.can_configure===true;
   const canRetry=()=>current?.enabled===true&&current?.available===true&&current?.ready!==true;
   const currentPort=()=>Number.isInteger(current?.https_port)&&current.https_port>=1024&&current.https_port<=65535?current.https_port:8444;
@@ -326,12 +329,15 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const canChangePort=()=>canConfigure()&&current?.can_change_port===true&&current?.enabled!==true&&current?.ready!==true;
   const validPort=()=>/^\d+$/.test(portDraft??String(currentPort()))&&Number(portDraft??currentPort())>=1024&&Number(portDraft??currentPort())<=65535;
   const hasPortChange=()=>portDraft!==null&&Number(portDraft)!==currentPort();
+  const currentAudience=()=>current?.audience==='accounts'?'accounts':'owner';
+  const hasAudienceChange=()=>audienceDraft!==null&&audienceDraft!==currentAudience();
   const render=()=>{
     if(!active)return;
     const enabled=current?.enabled===true,url=readyUrl(),ready=Boolean(url),chosen=draft??enabled;
     toggle.checked=chosen;toggle.disabled=Boolean(pending)||!canConfigure()||(!current?.available&&!enabled);
-    const portChange=hasPortChange(),portAllowed=!portChange||canChangePort();
-    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
+    const portChange=hasPortChange(),portAllowed=!portChange||canChangePort(),audienceChange=hasAudienceChange();
+    audience.value=audienceDraft??currentAudience();audience.disabled=Boolean(pending)||!canConfigure();audienceField.hidden=!current||!canConfigure();
+    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!audienceChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
     apply.textContent=pending==='apply'?'Applying…':chosen===enabled&&canRetry()?'Retry private access':'Apply setting';refresh.disabled=Boolean(pending);
     section.setAttribute('aria-busy',String(Boolean(pending)));readOnly.hidden=!current||canConfigure();
     port.value=portDraft??String(currentPort());port.disabled=Boolean(pending)||!canChangePort();advanced.hidden=!current||!canConfigure();
@@ -342,7 +348,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     signIn.hidden=setupAction!=='signin';signIn.disabled=Boolean(pending)||!canConfigure()||setupAction!=='signin';signIn.textContent=pending==='login'?'Starting sign-in…':'Sign in to Tailscale';
     setupHelp.textContent=setupAction==='approve'?'Complete the Tailscale approval in your browser, then refresh status here.':setupAction==='signin'?'Sign in with the same Tailscale account you use on your phone or other device.':'Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.';
     const firstSetup=!setup.hidden&&!current.available&&!enabled;
-    label.hidden=firstSetup;actions.hidden=firstSetup;advanced.hidden ||= firstSetup;
+    label.hidden=firstSetup;actions.hidden=firstSetup;advanced.hidden ||= firstSetup;audienceField.hidden ||= firstSetup;
     address.hidden=!ready;install.hidden=!ready;open.href=ready?url:'';copy.disabled=!ready||Boolean(pending);
     if(!current)showConnectionStatus(state,{label:pending?'Checking private access…':'Private access unavailable',tone:pending?'waiting':'is-disconnected'});
     else if(ready)showConnectionStatus(state,{label:'Private access connected',tone:'online'});
@@ -356,32 +362,35 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const update=value=>{
     if(!active)return;
     if(!value||typeof value.enabled!=='boolean'||typeof value.available!=='boolean'||typeof value.ready!=='boolean')throw new Error('invalid_private_status');
-    current=value;if(draft===current.enabled)draft=null;if(portDraft!==null&&Number(portDraft)===currentPort())portDraft=null;render();
+    current=value;if(draft===current.enabled)draft=null;if(portDraft!==null&&Number(portDraft)===currentPort())portDraft=null;
+    if(audienceDraft===currentAudience())audienceDraft=null;render();
   };
   const perform=async (operation,check=false)=>{
     if(!active||pending)return;
     const saving=operation==='apply',login=operation==='login';
     const wanted=draft??current?.enabled;
     const portChange=hasPortChange(),wantedPort=Number(portDraft??currentPort());
-    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||(wanted===current?.enabled&&!portChange&&!(wanted&&canRetry()))||wanted&&!current.available))return;
+    const audienceChange=hasAudienceChange(),wantedAudience=audienceDraft??currentAudience(),wasEnabled=current?.enabled;
+    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||(wanted===current?.enabled&&!portChange&&!audienceChange&&!(wanted&&canRetry()))||wanted&&!current.available))return;
     if(login&&(!canConfigure()||current?.setup_action!=='signin'))return;
     pending=operation;render();status();
     try{
-      const payload={enabled:wanted};if(portChange)payload.https_port=wantedPort;
+      const payload={enabled:wanted};if(portChange)payload.https_port=wantedPort;if(audienceChange)payload.audience=wantedAudience;
       const result=saving?await request('/api/private-access','PUT',payload):login?await request('/api/private-access/login','POST'):check&&canConfigure()
         ?await request('/api/private-access/refresh','POST'):await request('/api/private-access');
       if(!active)return;update(result);
       const approval=result.setup_action==='approve'&&privateAccessSetupUrl(result.action_url,'approve')&&['tailscale_signin_required','tailscale_approval_required'].includes(result.error?.code);
       if(approval||!saving&&!setup.hidden&&(result.setup_action==='signin'||result.setup_action==='install'&&privateAccessSetupUrl(result.action_url,'install')))status();
       else if(result.error)status(privateAccessError(result.error),true);
-      else if(saving&&(result.enabled!==wanted||portChange&&result.https_port!==wantedPort))status('The setting could not be confirmed. Refresh status before trying again.',true);
-      else if(saving)status(wanted?'Private access enabled.':'Private access disabled.');
+      else if(saving&&(result.enabled!==wanted||portChange&&result.https_port!==wantedPort||audienceChange&&result.audience!==wantedAudience))status('The setting could not be confirmed. Refresh status before trying again.',true);
+      else if(saving)status(audienceChange&&wanted===wasEnabled?'Private access updated.':wanted?'Private access enabled.':'Private access disabled.');
       else if(login&&result.setup_action==='approve')status('Continue in Tailscale to finish signing in, then refresh status.');
     }catch(error){if(active){status(privateAccessError(error),true);if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});}}
     finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});else if(login)(setupLink.hidden?refresh:setupLink).focus({preventScroll:true});}}
   };
   const start=(operation,check=false)=>{if(pending)return completion;completion=perform(operation,check);return completion;};
   toggle.addEventListener('change',()=>{if(!active||pending||!canConfigure())return;draft=toggle.checked===current.enabled?null:toggle.checked;status();render();});
+  audience.addEventListener('change',()=>{if(!active||pending||!canConfigure())return;audienceDraft=audience.value===currentAudience()?null:audience.value==='accounts'?'accounts':'owner';status();render();});
   port.addEventListener('input',()=>{if(!active||pending||!canChangePort())return;portDraft=port.value===String(currentPort())?null:port.value;status(validPort()?'':'Enter a whole-number port between 1024 and 65535.',!validPort());render();});
   resetPort.addEventListener('click',()=>{if(!active||pending||!canConfigure())return;portDraft=null;status();render();(port.disabled?refresh:port).focus({preventScroll:true});});
   apply.addEventListener('click',()=>{void start('apply');});refresh.addEventListener('click',()=>{void start('refresh',true);});signIn.addEventListener('click',()=>{void start('login');});
@@ -394,7 +403,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   });
   const cleanup=()=>{active=false;signal?.removeEventListener('abort',cleanup);};
   signal?.addEventListener('abort',cleanup,{once:true});
-  cleanup.update=update;cleanup.refresh=()=>start('refresh',true);cleanup.hasChanges=()=>draft!==null||portDraft!==null;
+  cleanup.update=update;cleanup.refresh=()=>start('refresh',true);cleanup.hasChanges=()=>draft!==null||portDraft!==null||audienceDraft!==null;
   cleanup.canLeave=async()=>{await completion;return true;};
   render();void start('refresh');
   return cleanup;

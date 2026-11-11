@@ -74,3 +74,25 @@ test('authorization never returns an identity and rejects malformed request meta
     {url:'https://foreign.example/api/state'},{url:'//foreign.example/api/state'}])
     assert.equal(gate.authorize(request({},extra)).ok,false);
 });
+
+test('the accounts audience admits any identified Tailscale account and nothing else',()=>{
+  const shared=createTailnetAccess({origin,ownerLogin,audience:'accounts'});
+  for(const login of [ownerLogin,'another@example.invalid','=?utf-8?q?fixtur=C3=A9@example.invalid?='])
+    assert.equal(shared.authorize(request({'Tailscale-User-Login':login})).ok,true);
+  assert.equal(shared.authorize(request({'Tailscale-User-Login':'another@example.invalid',Origin:origin},{method:'PUT'})).ok,true);
+  assert.equal(shared.authorize(request({'Tailscale-User-Login':'another@example.invalid',Origin:origin}),{websocket:true}).ok,true);
+  for(const change of [{'Tailscale-User-Login':undefined},{'Tailscale-User-Login':''},{'Tailscale-User-Login':'=?utf-8?q?two_words@example.invalid?='},
+    {'Tailscale-User-Login':'=?utf-8?q?fixtur=FF@example.invalid?='},{'Tailscale-Funnel-Request':'?1'},{Authorization:'Bearer forged'},
+    {'X-Forwarded-For':'192.0.2.1'},{'X-Forwarded-Proto':'http'},{Host:'other.fixture-tailnet.ts.net:8444'}])
+    assert.equal(shared.authorize(request({'Tailscale-User-Login':'another@example.invalid',...change})).ok,false);
+  assert.equal(shared.authorize(request({'Tailscale-User-Login':'another@example.invalid'},{socket:{remoteAddress:'100.100.0.20'}})).ok,false);
+  assert.equal(shared.authorize(request({'Tailscale-User-Login':'another@example.invalid'},{method:'POST'})).ok,false);
+});
+
+test('the owner audience is the default and unknown audiences are refused',()=>{
+  for(const access of [createTailnetAccess({origin,ownerLogin}),createTailnetAccess({origin,ownerLogin,audience:'owner'})]){
+    assert.equal(access.authorize(request()).ok,true);
+    assert.equal(access.authorize(request({'Tailscale-User-Login':'another@example.invalid'})).ok,false);
+  }
+  for(const audience of ['everyone','tailnet','',null,['accounts']])assert.throws(()=>createTailnetAccess({origin,ownerLogin,audience}));
+});

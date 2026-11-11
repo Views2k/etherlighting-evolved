@@ -215,3 +215,32 @@ test('the login section keeps SSH form values and uses separate explicit private
   assert.deepEqual(sent.map(item=>item[0]),['/api/private-access','/api/private-access']);
   const form=dom.findAll(dom.host,item=>item.tagName==='form')[0];assert.equal(form.contains(ui.toggle),false);
 });
+
+test('the audience is chosen explicitly, sent once with Apply, and confirmed from the reply',async context=>{
+  const dom=rendererDom(context),sent=[];let reply={...connected,audience:'accounts'};
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return args[1]==='PUT'?reply:connected;});dom.after(cleanup);
+  await flush();const ui=controls(dom),audience=dom.findAll(dom.host,item=>item.name==='private_audience')[0];
+  assert.equal(audience.value,'owner');assert.equal(audience.disabled,false);assert.equal(audience.parentNode.hidden,false);
+  assert.deepEqual(audience.children.map(option=>option.value),['owner','accounts']);
+  assert.equal(ui.button('Apply setting').disabled,true);
+  audience.value='accounts';audience.listeners.get('change')();
+  assert.equal(cleanup.hasChanges(),true);assert.equal(sent.length,1);
+  const apply=ui.button('Apply setting');assert.equal(apply.disabled,false);apply.click();await flush();
+  assert.deepEqual(sent[1],['/api/private-access','PUT',{enabled:true,audience:'accounts'}]);
+  assert.equal(audience.value,'accounts');assert.equal(cleanup.hasChanges(),false);
+  assert.equal(ui.notice.textContent,'Private access updated.');assert.equal(ui.status.textContent,'Private access connected');
+  reply={...connected,audience:'accounts'};
+  audience.value='owner';audience.listeners.get('change')();ui.button('Apply setting').click();await flush();
+  assert.deepEqual(sent[2],['/api/private-access','PUT',{enabled:true,audience:'owner'}]);
+  assert.equal(ui.notice.textContent,'The setting could not be confirmed. Refresh status before trying again.');
+  assert.equal(cleanup.hasChanges(),true);
+});
+
+test('a read-only client cannot see or change who may open the workspace',async context=>{
+  const dom=rendererDom(context),sent=[];
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return {...connected,audience:'accounts',can_configure:false};});dom.after(cleanup);
+  await flush();const ui=controls(dom),audience=dom.findAll(dom.host,item=>item.name==='private_audience')[0];
+  assert.equal(audience.parentNode.hidden,true);assert.equal(audience.disabled,true);
+  audience.value='owner';audience.listeners.get('change')();ui.button('Apply setting').click();await flush();
+  assert.equal(cleanup.hasChanges(),false);assert.deepEqual(sent,[['/api/private-access']]);
+});
