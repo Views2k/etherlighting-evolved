@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.26
+
+- Choose who can open the private workspace in Settings → Mobile & remote access: only your Tailscale account, or any Tailscale account that can reach this computer. The default stays your account only. Devices without an account identity, such as tagged servers, stay blocked.
+
 ## 0.4.25
 
 - Private access through Tailscale now comes back by itself after the computer restarts. When EE starts before Tailscale is connected, it checks again on a schedule and reopens the saved private address; no Tailscale setting is changed.

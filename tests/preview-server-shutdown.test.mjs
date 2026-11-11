@@ -6,12 +6,12 @@ import vm from 'node:vm';
 const source=readFileSync(new URL('../preview/server.mjs',import.meta.url),'utf8');
 function fixture(){
   let handler,finishClose,failClose;
-  const calls=[],retries=[];
+  const calls=[],retries=[],configured=[];
   const context={live:true,closing:undefined,workspaceClosing:false,permitted:()=>true,
     privateRetry:{observe:()=>retries.push('observe'),stop:()=>retries.push('stop')},
     diagnostics:{record(){}},
     child:{exitCode:null,stdin:{writableEnded:false}},
-    privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),configure:async()=>calls.push('configure')},
+    privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),configure:async(...args)=>{configured.push(JSON.stringify(args));calls.push('configure');}},
     closeWorkspace:()=>new Promise((resolve,reject)=>{finishClose=resolve;failClose=reject;}),
     http:{createServer:callback=>{handler=callback;return {close:()=>calls.push('close')};}}};
   vm.createContext(context);
@@ -21,7 +21,7 @@ function fixture(){
     const req={url,method,async *[Symbol.asyncIterator](){if(body)yield await body;}};
     await handler(req,response);return response;
   }
-  return {request,calls,retries,context,finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
+  return {request,calls,retries,configured,context,finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
 }
 
 test('shutdown rejects new private-access enable and refresh requests',async()=>{
@@ -61,4 +61,14 @@ test('private access results reach the retry watcher and only a confirmed close 
   assert.deepEqual(f.retries,['observe','observe']);
   const closing=f.request('/api/workspace/close','POST');f.finish();assert.equal((await closing).status,200);
   assert.deepEqual(f.retries,['observe','observe','stop']);assert.deepEqual(f.calls,['refresh','configure','close']);
+});
+
+test('private access accepts only known audiences and passes the choice to the manager',async()=>{
+  const f=fixture();
+  for(const body of ['{"enabled":true,"audience":"everyone"}','{"enabled":true,"audience":["accounts"]}','{"enabled":true,"audience":null}','{"enabled":true,"owner":true}'])
+    assert.equal((await f.request('/api/private-access','PUT',body)).status,400);
+  assert.deepEqual(f.calls,[]);
+  assert.equal((await f.request('/api/private-access','PUT','{"enabled":true,"audience":"accounts"}')).status,200);
+  assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}')).status,200);
+  assert.deepEqual(f.configured,['[true,{"audience":"accounts"}]','[true,{}]']);
 });
