@@ -10,7 +10,7 @@ export async function connectDesktopChrome(root = document, host = window) {
   controls.dataset.connected = 'true';
   controls.removeAttribute('aria-hidden');
   controls.setAttribute('aria-label', 'Window controls');
-  const labels = {close: 'Hide to notification area', minimize: 'Minimize', maximize: 'Maximize'};
+  const labels = {close: 'Hide to notification area', minimize: 'Minimize to tray', maximize: 'Maximize'};
   for (const [kind, label] of Object.entries(labels)) {
     const old = controls.querySelector(`.${kind}`), button = root.createElement('button');
     button.type = 'button'; button.className = `traffic-light ${kind}`;

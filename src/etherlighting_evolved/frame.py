@@ -19,6 +19,9 @@ from ctypes import wintypes
 
 log = logging.getLogger(__name__)
 
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
 GWLP_WNDPROC = -4
 WM_NCCALCSIZE = 0x0083
 WM_NCLBUTTONDOWN = 0x00A1
@@ -38,6 +41,10 @@ class NCCALCSIZE_PARAMS(ctypes.Structure):  # noqa: N801 (the Windows name)
 
 def _user32():
     dll = ctypes.WinDLL("user32", use_last_error=True)
+    dll.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    dll.GetWindowLongW.restype = wintypes.LONG
+    dll.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+    dll.SetWindowLongW.restype = wintypes.LONG
     dll.SetWindowLongPtrW.restype = ctypes.c_void_p
     dll.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
     dll.CallWindowProcW.restype = LRESULT
@@ -51,6 +58,32 @@ def _user32():
     dll.GetDpiForWindow.restype = wintypes.UINT
     dll.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, wintypes.UINT]
     return dll
+
+
+def keep_form_off_taskbar(form) -> None:
+    # Changing Form.ShowInTaskbar recreates the HWND during WebView2 initialization.
+    user32 = _user32()
+
+    def update(*_) -> None:
+        if not form.IsHandleCreated or form.Disposing:
+            return
+        hwnd = form.Handle.ToInt64()
+        ctypes.set_last_error(0)
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if not style and ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+        target = (style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
+        if style == target:
+            return
+        ctypes.set_last_error(0)
+        if not user32.SetWindowLongW(hwnd, GWL_EXSTYLE, target) and ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAME_CHANGED):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    # WinForms can reset these styles when a background window changes opacity.
+    form.VisibleChanged += update
+    update()
 
 
 class TitleBarRemover:

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.27
+
+- Open EE from its system tray icon. The workspace stays off the Windows taskbar while open. Minimize or close the window to return it to the tray.
+
 ## 0.4.26
 
 - Choose who can open the private workspace in Settings → Mobile & remote access: only your Tailscale account, or any Tailscale account that can reach this computer. The default stays your account only. Devices without an account identity, such as tagged servers, stay blocked.

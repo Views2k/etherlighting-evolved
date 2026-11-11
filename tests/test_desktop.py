@@ -66,7 +66,7 @@ def test_actions():
     frame._maximized = True
     app.window_action("toggle_maximize")
     app.window_action("drag")
-    assert app.window.calls == ["minimize", "maximize", "restore"]
+    assert app.window.calls == ["hide", "maximize", "restore"]
     assert frame.dragged == 1
 
 
@@ -109,3 +109,28 @@ def test_the_tray_icon_does_not_block_windows_shutdown():
     assert WM_QUERYENDSESSION not in icon._message_handlers  # so pystray on its own answers 0 and blocks shutdown
     allow_session_end(icon)
     assert icon._message_handlers[WM_QUERYENDSESSION](0, 1) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_open_workspace_keeps_its_native_handle_when_removed_from_taskbar():
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+
+    import clr
+
+    from etherlighting_evolved.desktop import hide_taskbar_button
+    from etherlighting_evolved.frame import GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW
+
+    clr.AddReference("System.Windows.Forms")
+    from System.Windows.Forms import Form
+
+    form = Form()
+    try:
+        handle = form.Handle.ToInt64()
+        hide_taskbar_button(SimpleNamespace(native=form))
+        assert form.Handle.ToInt64() == handle
+        style = ctypes.windll.user32.GetWindowLongW(wintypes.HWND(handle), GWL_EXSTYLE)
+        assert style & WS_EX_TOOLWINDOW and not style & WS_EX_APPWINDOW
+    finally:
+        form.Dispose()
