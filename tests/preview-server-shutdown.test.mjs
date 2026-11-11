@@ -6,8 +6,9 @@ import vm from 'node:vm';
 const source=readFileSync(new URL('../preview/server.mjs',import.meta.url),'utf8');
 function fixture(){
   let handler,finishClose,failClose;
-  const calls=[];
+  const calls=[],retries=[];
   const context={live:true,closing:undefined,workspaceClosing:false,permitted:()=>true,
+    privateRetry:{observe:()=>retries.push('observe'),stop:()=>retries.push('stop')},
     diagnostics:{record(){}},
     child:{exitCode:null,stdin:{writableEnded:false}},
     privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),configure:async()=>calls.push('configure')},
@@ -20,7 +21,7 @@ function fixture(){
     const req={url,method,async *[Symbol.asyncIterator](){if(body)yield await body;}};
     await handler(req,response);return response;
   }
-  return {request,calls,context,finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
+  return {request,calls,retries,context,finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
 }
 
 test('shutdown rejects new private-access enable and refresh requests',async()=>{
@@ -48,4 +49,16 @@ test('failed shutdown reopens admission only when the backend remains usable',as
     assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}')).status,writableEnded?503:200);
     assert.deepEqual(f.calls,writableEnded?[]:['configure']);
   }
+});
+
+test('private access results reach the retry watcher and only a confirmed close stops it',async()=>{
+  const f=fixture();
+  assert.equal((await f.request('/api/private-access/refresh','POST')).status,200);
+  assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}')).status,200);
+  assert.equal((await f.request('/api/private-access','GET')).status,200);
+  assert.deepEqual(f.retries,['observe','observe']);
+  const failed=f.request('/api/workspace/close','POST');f.fail();assert.equal((await failed).status,409);
+  assert.deepEqual(f.retries,['observe','observe']);
+  const closing=f.request('/api/workspace/close','POST');f.finish();assert.equal((await closing).status,200);
+  assert.deepEqual(f.retries,['observe','observe','stop']);assert.deepEqual(f.calls,['refresh','configure','close']);
 });

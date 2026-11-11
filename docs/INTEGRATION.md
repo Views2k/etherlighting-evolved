@@ -41,7 +41,7 @@ The workspace subscribes before restoring initial state so delayed connection re
 
 Source mode starts in an isolated simulator by default. Live mode uses the existing engine settings and credential store. Gateway preferences, engine data, and simulator data have separate locations described in [DEVELOPMENT.md](DEVELOPMENT.md#data-and-generated-files).
 
-Closing the web session uses `/api/workspace/close` to coordinate engine shutdown and private access cleanup. The gateway's Tailscale management routes are local administration endpoints. Remote access goes through the private gateway's access checks before reaching the workspace.
+Closing the web session uses `/api/workspace/close` to coordinate engine shutdown and private access cleanup. The gateway's Tailscale management routes are local administration endpoints. Remote access goes through the private gateway's access checks before reaching the workspace. When an enabled private address cannot be restored at startup because Tailscale is not connected yet, the gateway repeats the read-only startup check with increasing delays (5 seconds up to 5 minutes) until the address is ready or the setting is turned off. A retry never changes the Tailscale Serve configuration.
 
 ## Desktop host
 

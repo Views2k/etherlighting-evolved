@@ -1,7 +1,7 @@
 import {appendFileSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 
-const events=new Set(['engine_started','engine_exit','engine_failure','engine_log','workspace_close_failed','workspace_closed','parent_cleanup_exhausted']);
+const events=new Set(['engine_started','engine_exit','engine_failure','engine_log','workspace_close_failed','workspace_closed','parent_cleanup_exhausted','private_access_restored']);
 const reasons=new Set(['release_unconfirmed','release_timeout','shutdown_unconfirmed','shutdown_timeout','private_failed']);
 const identifier=value=>typeof value==='string'&&/^[A-Za-z_][\w.<>-]{0,79}$/.test(value)?value:undefined;
 
@@ -45,6 +45,7 @@ export function createServiceDiagnostics(directory,{maxBytes=65536,build=null}={
     if(!events.has(event))return false;
     const entry={time:new Date().toISOString(),event,build:buildNumber(build)};
     if(event==='parent_cleanup_exhausted'&&Number.isSafeInteger(details.attempts))entry.attempts=Math.min(10,Math.max(1,details.attempts));
+    if(event==='private_access_restored'&&Number.isSafeInteger(details.attempts))entry.attempts=Math.min(100000,Math.max(1,details.attempts));
     if(event==='engine_exit'){
       entry.exit_code=Number.isInteger(details.code)?details.code:null;
       if(typeof details.signal==='string'&&/^SIG[A-Z]{1,16}$/.test(details.signal))entry.signal=details.signal;

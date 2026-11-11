@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.25
+
+- Private access through Tailscale now comes back by itself after the computer restarts. When EE starts before Tailscale is connected, it checks again on a schedule and reopens the saved private address; no Tailscale setting is changed.
+
 ## 0.4.24
 
 - Open the regular Lighting workspace with the saved switch login. Applying a supported effect also saves it for when the desktop goes offline.
