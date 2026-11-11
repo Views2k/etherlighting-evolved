@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from etherlighting_evolved.desktop import hide_taskbar_button
 from etherlighting_evolved.workspace_desktop import WorkspaceDesktopApp, workspace_window_geometry
 
 
@@ -70,10 +71,10 @@ def test_desktop_creation_uses_available_bounds_without_starting_a_real_window(m
 
     class Event:
         def __iadd__(self, handler):
-            calls["closing"] = handler
+            self.handler = handler
             return self
 
-    window = SimpleNamespace(events=SimpleNamespace(closing=Event()))
+    window = SimpleNamespace(events=SimpleNamespace(before_show=Event(), closing=Event()))
 
     def create_window(*args, **kwargs):
         calls["window"] = kwargs
@@ -90,6 +91,7 @@ def test_desktop_creation_uses_available_bounds_without_starting_a_real_window(m
     assert calls["window"]["min_size"] == (400, 350)
     assert calls["start"]["gui"] == "edgechromium"
     assert app.window is window
+    assert window.events.before_show.handler is hide_taskbar_button
 
 
 def quit_fixture(tmp_path, server):

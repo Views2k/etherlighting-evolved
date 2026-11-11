@@ -66,6 +66,12 @@ SYNCHRONIZE = 0x00100000
 WM_QUERYENDSESSION = 0x0011
 
 
+def hide_taskbar_button(window) -> None:
+    from .frame import keep_form_off_taskbar
+
+    keep_form_off_taskbar(window.native)
+
+
 def package_dir() -> Path:
     return Path(__file__).resolve().parent
 
@@ -323,10 +329,8 @@ class DesktopApp:
         self.frame_ready.wait(10)
         if self.frame is None:
             raise RuntimeError("the window uses the normal Windows title bar")
-        if action == "close":
-            self.hide_to_tray()  # the lights keep running; Quit is in the notification area menu
-        elif action == "minimize":
-            self.window.minimize()
+        if action in {"close", "minimize"}:
+            self.hide_to_tray()
         elif action == "toggle_maximize":
             if self.frame.maximized():
                 self.window.restore()
@@ -355,7 +359,12 @@ class DesktopApp:
             pystray.MenuItem("Quit", lambda icon, item: self.quit()),
         )
         image = Image.open(package_dir() / "assets" / "ee.png")
-        icon = pystray.Icon(APP_ID, image, PROJECT_NAME, menu)
+        icon_type = pystray.Icon
+        if getattr(sys, "frozen", False) and not getattr(self, "demo", False):
+            from .windows_tray import WindowsTrayIcon
+
+            icon_type = WindowsTrayIcon
+        icon = icon_type(APP_ID, image, PROJECT_NAME, menu)
         allow_session_end(icon)
         return icon
 
@@ -465,6 +474,7 @@ class DesktopApp:
         self.window = webview.create_window(PROJECT_NAME, self.url, width=1200, height=800, min_size=(900, 600),
                                            hidden=self.background, background_color="#151618",
                                            js_api=window_bridge(self), easy_drag=False)
+        self.window.events.before_show += hide_taskbar_button
         self.window.events.closing += self.on_closing
         webview.start(self.after_window_start, private_mode=False, storage_path=str(data_dir() / "webview"))
 

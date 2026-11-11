@@ -24,6 +24,7 @@ from .desktop import (
     DesktopApp,
     error_box,
     free_port,
+    hide_taskbar_button,
     instance_file,
     quit_running_copy,
     setup_logging,
@@ -238,6 +239,7 @@ class WorkspaceDesktopApp(DesktopApp):
             PROJECT_NAME, self.url, **geometry,
             hidden=self.background, background_color="#1b1923", js_api=window_bridge(self), easy_drag=False,
         )
+        self.window.events.before_show += hide_taskbar_button
         self.window.events.closing += self.on_closing
         webview.start(self.after_window_start, gui="edgechromium", private_mode=False,
                       storage_path=str(self.directory / "webview"))
