@@ -6,6 +6,7 @@ import {randomBytes} from 'node:crypto';
 import path from 'node:path';
 import {createPrivateGateway} from './private-gateway.mjs';
 import {createPrivateAccessManager} from './private-access.mjs';
+import {keepPrivateAccessAvailable} from './private-access-retry.mjs';
 import {resolveRuntimeConfig} from './runtime-config.mjs';
 import {createWorkspaceCloser} from './workspace-close.mjs';
 import {watchDesktopParent} from './parent-lifetime.mjs';
@@ -37,6 +38,8 @@ function permitted(req) {return allowed.has(req.headers.host) && (!req.headers.o
 const privateGateway=createPrivateGateway({targetPort:port,status:()=>privateAccess.status()});
 const privateAccess=createPrivateAccessManager({configPath:path.join(directory,'private-access.json'),startListener:(gate,listenPort)=>privateGateway.start(gate,listenPort),stopListener:()=>privateGateway.stop()});
 let closing,workspaceClosing=false;
+const privateRetry=keepPrivateAccessAvailable({manager:privateAccess,active:()=>!workspaceClosing,
+  restored:({attempts})=>diagnostics.record('private_access_restored',{attempts})});
 const closeWorkspace = createWorkspaceCloser({child, closePrivate:()=>privateAccess.close(), release:()=>
   new Promise((resolve,reject)=>{
     const upstream=http.request({host:'127.0.0.1',port:backendPort,path:'/api/session/logout',method:'POST',headers:{authorization:`Bearer ${token}`}},response=>{
@@ -52,8 +55,8 @@ const server=http.createServer(async(req,res)=>{
     if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing});return;}
     try{
       if(workspaceClosing&&req.method!=='GET'){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
-      if(req.url.endsWith('/refresh')&&req.method==='POST'){await privateAccess.initialize();respond(200,{...privateAccess.status(),can_configure:true});return;}
-      if(req.url.endsWith('/login')&&req.method==='POST'){await privateAccess.login();respond(200,{...privateAccess.status(),can_configure:true});return;}
+      if(req.url.endsWith('/refresh')&&req.method==='POST'){await privateAccess.initialize();privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;}
+      if(req.url.endsWith('/login')&&req.method==='POST'){await privateAccess.login();privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;}
       if(req.url==='/api/private-access'&&req.method==='GET'){respond(200,{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing});return;}
       if(req.url==='/api/private-access'&&req.method==='PUT'){
         let body='';for await(const chunk of req){body+=chunk;if(body.length>1024){respond(413,{detail:'The setting is too large.'});return;}}
@@ -61,10 +64,10 @@ const server=http.createServer(async(req,res)=>{
         if(!value||typeof value.enabled!=='boolean'||Object.keys(value).some(key=>!['enabled','https_port'].includes(key))
           ||value.https_port!==undefined&&(!Number.isSafeInteger(value.https_port)||value.https_port<1024||value.https_port>65535)){respond(400,{detail:'Choose a valid access setting and a port between 1024 and 65535.'});return;}
         if(workspaceClosing){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
-        await privateAccess.configure(value.enabled,{httpsPort:value.https_port});respond(200,{...privateAccess.status(),can_configure:true});return;
+        await privateAccess.configure(value.enabled,{httpsPort:value.https_port});privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;
       }
       respond(405,{detail:'This action is not supported.'});
-    }catch{respond(409,{detail:{code:'private_access_failed',message:'Private access could not be updated. Refresh status and try again.'},status:privateAccess.status()});}
+    }catch{privateRetry.observe();respond(409,{detail:{code:'private_access_failed',message:'Private access could not be updated. Refresh status and try again.'},status:privateAccess.status()});}
     return;
   }
   if(req.url==='/api/last-session'){
@@ -75,7 +78,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.url==='/api/workspace/close'){
     if(req.method!=='POST'){res.writeHead(405);res.end();return;}
     workspaceClosing=true;
-    try{closing??=closeWorkspace();await closing;diagnostics.record('workspace_closed');res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({closed:true}));server.close();}
+    try{closing??=closeWorkspace();await closing;privateRetry.stop();diagnostics.record('workspace_closed');res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({closed:true}));server.close();}
     catch(error){diagnostics.record('workspace_close_failed',{reason:error.message});closing=undefined;if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;res.writeHead(409,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The service has not confirmed shutdown. Wait and try again.'}));}
     return;
   }
@@ -112,14 +115,14 @@ server.on('upgrade',(req,socket,head)=>{
   });
   upstream.on('error',()=>socket.destroy()); upstream.on('response',()=>socket.destroy()); upstream.end();
 });
-server.on('error',()=>{workspaceClosing=true;void privateAccess.close();child.stdin.end('quit\n');process.exitCode=1;});
+server.on('error',()=>{workspaceClosing=true;privateRetry.stop();void privateAccess.close();child.stdin.end('quit\n');process.exitCode=1;});
 if(process.env.EE_DESKTOP_HOST==='1') watchDesktopParent({input:process.stdin,close:async()=>{
   workspaceClosing=true;closing??=closeWorkspace();
-  try{await closing;diagnostics.record('workspace_closed');server.close();process.stdin.destroy();}
+  try{await closing;privateRetry.stop();diagnostics.record('workspace_closed');server.close();process.stdin.destroy();}
   catch(error){diagnostics.record('workspace_close_failed',{reason:error.message});closing=undefined;throw error;}
 },exhausted:({attempts})=>{
   diagnostics.record('parent_cleanup_exhausted',{attempts});
   if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;
 }});
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{workspaceClosing=true;void privateAccess.close();server.close();child.stdin.end('quit\n');});
-server.listen(port,'127.0.0.1',()=>{console.log(`Browser preview: http://127.0.0.1:${port}`);if(live)void privateAccess.initialize().catch(()=>{});});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{workspaceClosing=true;privateRetry.stop();void privateAccess.close();server.close();child.stdin.end('quit\n');});
+server.listen(port,'127.0.0.1',()=>{console.log(`Browser preview: http://127.0.0.1:${port}`);if(live)void privateAccess.initialize().catch(()=>{}).then(()=>privateRetry.observe());});
