@@ -10,6 +10,8 @@ EE 0.5.0 brings Lighting, Effects, Automation, Profiles, Settings and Help into 
 
 The macOS and Linux desktop clients connect to a running EE workspace. Open the app on macOS or run `./EtherlightingEvolved` from the extracted folder on Linux. Choose **Change workspace address** to enter the private HTTPS address of your EE workspace. See the [desktop guide](desktop/README.md) for platform packages and startup options.
 
+If your computer uses a Tailscale device tag, the workspace owner can approve that individual computer. The [desktop guide](desktop/README.md) explains how to grant and revoke access.
+
 ## Lighting controls
 
 - Set colors and brightness for individual ports or groups.

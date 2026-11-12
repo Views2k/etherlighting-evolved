@@ -16,7 +16,7 @@ function requestPath(value) {
   return decoded.length>1&&decoded.endsWith('/')?decoded.slice(0,-1):decoded;
 }
 
-export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})}) {
+export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({}),deviceRecheckMs=15000}) {
   let server=null,closing=null;
   const sockets=new Set();
   function headers(request,upgrade=false) {
@@ -38,8 +38,26 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
   }
   async function start(access,requestedPort=listenPort) {
     await stop();
-    const next=http.createServer((request,response)=>{
-      if(!access.authorize(request).ok){json(response,403,{detail:{code:'private_access_denied',message:'Use your approved Tailscale account to open EE.'}});return;}
+    async function authorize(request,websocket=false){
+      try{return await access.authorize(request,{websocket});}
+      catch{return null;}
+    }
+    // Revocation also closes an already subscribed device. Only one recheck runs per socket at a time.
+    function watchDevice(request,socket){
+      let timer;
+      async function check(){
+        const result=await authorize(request,true);
+        if(server!==next||socket.destroyed)return;
+        if(result?.ok!==true||result.device!==true){socket.destroy();return;}
+        timer=setTimeout(check,deviceRecheckMs).unref();
+      }
+      timer=setTimeout(check,deviceRecheckMs).unref();
+      socket.once('close',()=>clearTimeout(timer));
+    }
+    const next=http.createServer(async(request,response)=>{
+      const result=await authorize(request);
+      if(server!==next||response.destroyed||request.socket.destroyed)return;
+      if(result?.ok!==true){json(response,403,{detail:{code:'private_access_denied',message:'Private access requires an approved Tailscale account or device.'}});return;}
       const pathname=requestPath(request.url);
       if(pathname===null){json(response,403,{detail:{code:'private_access_denied',message:'This request cannot be opened through private access.'}});return;}
       if(pathname==='/api/private-access'&&request.method==='GET'){json(response,200,{...status(),can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null});return;}
@@ -49,22 +67,28 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
       });
       upstream.setTimeout(30000,()=>upstream.destroy());
       upstream.on('error',()=>{if(!response.headersSent)json(response,503,{detail:'EE is reconnecting. Try again shortly.'});else response.destroy();});
-      request.on('aborted',()=>upstream.destroy());
+      response.once('close',()=>upstream.destroy());
       request.pipe(upstream);
     });
     next.requestTimeout=30000;next.headersTimeout=10000;
     next.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));});
-    next.on('upgrade',(request,socket,head)=>{
-      if(request.url!=='/api/ws'||!access.authorize(request,{websocket:true}).ok){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
+    next.on('upgrade',async(request,socket,head)=>{
+      socket.on('error',()=>socket.destroy());
+      socket.once('end',()=>socket.destroy());
+      const result=request.url==='/api/ws'&&await authorize(request,true);
+      if(server!==next||socket.destroyed)return;
+      if(result?.ok!==true){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
       const upstream=http.request({host:'127.0.0.1',port:targetPort,path:'/api/ws',headers:headers(request,true)});
       upstream.setTimeout(10000,()=>upstream.destroy());
       upstream.on('upgrade',(response,remote,remoteHead)=>{
+        if(server!==next||socket.destroyed){remote.destroy();return;}
         upstream.setTimeout(0);sockets.add(remote);remote.on('close',()=>sockets.delete(remote));
         socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers).map(([key,value])=>`${key}: ${value}`).join('\r\n')}\r\n\r\n`);
         if(head.length)remote.write(head);if(remoteHead.length)socket.write(remoteHead);
         remote.pipe(socket);socket.pipe(remote);
-        remote.on('error',()=>socket.destroy());socket.on('error',()=>remote.destroy());
+        remote.on('error',()=>socket.destroy());
         socket.on('close',()=>remote.destroy());remote.on('close',()=>socket.destroy());
+        if(result.device===true)watchDevice(request,socket);
       });
       upstream.on('error',()=>socket.destroy());upstream.on('response',()=>socket.destroy());socket.on('close',()=>upstream.destroy());upstream.end();
     });

@@ -211,10 +211,7 @@ public sealed class Workspace : IAsyncDisposable
         try
         {
             using var socket = new ClientWebSocket();
-            socket.Options.SetRequestHeader("Origin", Api.BaseUri.GetLeftPart(UriPartial.Authority));
-            socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-            var address = new UriBuilder(Api.BaseUri) { Scheme = Api.BaseUri.Scheme == "https" ? "wss" : "ws", Path = "/api/ws" }.Uri;
-            await socket.ConnectAsync(address, token).ConfigureAwait(false);
+            await Api.ConnectStreamAsync(socket, token).ConfigureAwait(false);
             Dispatcher.UIThread.Post(() => { if (socketStop == stop && !token.IsCancellationRequested) Opened(); });
             var buffer = new byte[64 * 1024];
             using var message = new MemoryStream();

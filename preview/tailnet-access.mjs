@@ -1,4 +1,4 @@
-import {isIP} from 'node:net';
+import {canonicalTailnetAddress} from './approved-device.mjs';
 
 const SAFE_METHODS=new Set(['GET','HEAD','OPTIONS']);
 const LOOPBACK=new Set(['127.0.0.1','::1','::ffff:127.0.0.1']);
@@ -7,6 +7,7 @@ const IDENTITY_HEADERS=new Set(['host','origin','x-forwarded-host','x-forwarded-
 export const ACCESS_AUDIENCES=Object.freeze(['owner','accounts']);
 const DENIED=Object.freeze({ok:false,status:403,code:'private_access_denied'});
 const ALLOWED=Object.freeze({ok:true});
+const DEVICE_ALLOWED=Object.freeze({ok:true,device:true});
 
 function singleHeaders(request){
   if(!Array.isArray(request.rawHeaders)||request.rawHeaders.length%2)return null;
@@ -40,15 +41,8 @@ function decodeLogin(value){
   catch{return null;}
 }
 
-function tailnetAddress(value){
-  if(typeof value!=='string'||value.includes('%'))return false;
-  if(isIP(value)===4){const octets=value.split('.').map(Number);return octets[0]===100&&octets[1]>=64&&octets[1]<=127;}
-  return isIP(value)===6&&new URL(`http://[${value}]/`).hostname.startsWith('[fd7a:115c:a1e0:');
-}
-
-// 'owner' admits only the account that set private access up. 'accounts' admits any Tailscale account that the
-// tailnet lets reach this computer; requests without an account identity (tagged devices, Funnel) stay denied.
-export function createTailnetAccess({origin,ownerLogin,audience='owner'}={}){
+// An accountless request can use only a separately approved device identity.
+export function createTailnetAccess({origin,ownerLogin,audience='owner',verifyDevice}={}){
   let url;
   try{url=new URL(origin);}catch{throw new Error('Private access requires an exact Tailscale HTTPS origin.');}
   if(typeof origin!=='string'||url.protocol!=='https:'||url.origin!==origin
@@ -61,14 +55,19 @@ export function createTailnetAccess({origin,ownerLogin,audience='owner'}={}){
     if(!LOOPBACK.has(request?.socket?.remoteAddress))return DENIED;
     const headers=singleHeaders(request);
     if(!headers||headers.has('tailscale-funnel-request')||headers.has('authorization')||headers.has('forwarded'))return DENIED;
-    const login=decodeLogin(headers.get('tailscale-user-login'));
+    const sourceIp=canonicalTailnetAddress(headers.get('x-forwarded-for'));
     if(headers.get('host')!==url.host||headers.get('x-forwarded-host')!==url.host
-        ||headers.get('x-forwarded-proto')!=='https'||!tailnetAddress(headers.get('x-forwarded-for'))
-        ||login===null||/[\s\x00-\x1f\x7f]/u.test(login)||audience==='owner'&&login!==ownerLogin)return DENIED;
+        ||headers.get('x-forwarded-proto')!=='https'||!sourceIp)return DENIED;
     const suppliedOrigin=headers.get('origin');
     if(suppliedOrigin!==undefined&&suppliedOrigin!==origin)return DENIED;
     if(typeof request.method!=='string'||(!SAFE_METHODS.has(request.method)||websocket)&&suppliedOrigin!==origin)return DENIED;
     if(typeof request.url!=='string'||!request.url.startsWith('/')||request.url.startsWith('//'))return DENIED;
-    return ALLOWED;
+    if(headers.has('tailscale-user-login')){
+      const login=decodeLogin(headers.get('tailscale-user-login'));
+      if(!login||/[\s\x00-\x1f\x7f]/u.test(login)||audience==='owner'&&login!==ownerLogin)return DENIED;
+      return ALLOWED;
+    }
+    if(typeof verifyDevice!=='function')return DENIED;
+    return Promise.resolve().then(()=>verifyDevice(sourceIp)).then(ok=>ok===true?DEVICE_ALLOWED:DENIED,()=>DENIED);
   }});
 }

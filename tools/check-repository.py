@@ -21,6 +21,7 @@ def inspect(root):
         "login.json",
         "controller-login.json",
         "private-access.json",
+        "approved-device.json",
         "known_hosts",
         "ee.toml",
     }
