@@ -2,12 +2,21 @@ param(
     [ValidateSet('win-x64', 'win-arm64', 'osx-arm64', 'osx-x64', 'linux-x64', 'linux-arm64')]
     [string[]]$Runtime = @('win-x64', 'osx-arm64', 'osx-x64', 'linux-x64'),
     [string]$PythonExe,
-    [string]$OutputRoot
+    [string]$OutputRoot,
+    [switch]$AllowUnsignedMac
 )
 # Standalone builds of the desktop program for Windows, macOS and Linux. Each build includes the .NET runtime.
 # macOS builds become an application bundle (EtherlightingEvolved.app, zipped) and Linux builds a tar.gz with a
 # desktop entry and icon. Packages must already be restored (see README.md); nothing is downloaded.
 $ErrorActionPreference = 'Stop'
+# Apple Silicon refuses to run programs that are not signed. The bundles are signed here only on a Mac.
+$macRuntimes = @($Runtime | Where-Object { $_ -like 'osx-*' })
+if ($macRuntimes.Count -and -not $IsMacOS) {
+    if (-not $AllowUnsignedMac) {
+        throw 'Build macOS bundles on a Mac so they are signed. Use -AllowUnsignedMac to build them here; each bundle then needs "codesign --force --deep --sign - EtherlightingEvolved.app" on a Mac before it opens.'
+    }
+    Write-Warning 'The macOS bundles are not signed. Run "codesign --force --deep --sign - EtherlightingEvolved.app" on a Mac before opening them.'
+}
 $root = Split-Path $PSScriptRoot -Parent
 $project = Join-Path $PSScriptRoot 'EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj'
 if (-not $PythonExe) {

@@ -57,6 +57,10 @@ SelectDirLabel3=Choose where to install the app.
 Name: "autostart"; Description: "Start the app when I sign in to Windows"; Flags: unchecked
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
+[InstallDelete]
+; The Python runtime of the 0.4 desktop program. The native desktop program does not use it.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
@@ -66,7 +70,9 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Registry]
 Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --background"; Tasks: autostart
-Root: HKCU; Subkey: "{#RunKey}"; ValueType: none; ValueName: "{#AppName}"; Flags: deletevalue; Tasks: not autostart
+; Removed only when someone chose so: on the tasks page or with /TASKS. A silent upgrade keeps the current setting,
+; which the app's notification area menu can also change.
+Root: HKCU; Subkey: "{#RunKey}"; ValueType: none; ValueName: "{#AppName}"; Flags: deletevalue; Tasks: not autostart; Check: TasksChosen
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Open lighting controls"; Flags: nowait postinstall skipifsilent
@@ -74,6 +80,33 @@ Filename: "{app}\{#AppExe}"; Description: "Open lighting controls"; Flags: nowai
 [Code]
 const
   AppMutex = 'EtherlightingEvolved';
+
+var
+  TasksPrepared: Boolean;
+
+function TasksOnCommandLine(): Boolean;
+var
+  Tail: String;
+begin
+  Tail := Uppercase(GetCmdTail);
+  Result := (Pos('/TASKS=', Tail) > 0) or (Pos('/MERGETASKS=', Tail) > 0);
+end;
+
+function TasksChosen(): Boolean;
+begin
+  Result := (not WizardSilent) or TasksOnCommandLine();
+end;
+
+{ The tasks page starts from the current Start with Windows setting. }
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpSelectTasks) and not TasksPrepared then
+  begin
+    TasksPrepared := True;
+    if not TasksOnCommandLine() and RegValueExists(HKCU, '{#RunKey}', '{#AppName}') then
+      WizardSelectTasks('autostart');
+  end;
+end;
 
 procedure InitializeWizard();
 begin

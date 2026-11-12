@@ -14,6 +14,26 @@ import sys
 
 NOTICE_WORDS = ('license', 'licence', 'copying', 'notice')
 
+# The MIT license text, for packages that state "MIT" in their manifest without shipping a license file.
+MIT_TEXT = '''Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+'''
+
 
 def collect_python(app: Path, destination: Path, index: list[str]) -> int:
     from PyInstaller.archive.readers import CArchiveReader
@@ -69,9 +89,14 @@ def collect_dotnet(assets: Path, destination: Path, index: list[str], runtime: s
         nuspec = next(folder.glob('*.nuspec'), None)
         text = nuspec.read_text('utf-8') if nuspec else ''
         license_name = nuspec_field(text, 'license') or nuspec_field(text, 'licenseUrl')
-        details = [f'{name} {version}', f'License: {license_name}', f"Copyright: {nuspec_field(text, 'copyright')}",
-                   f"Project: {nuspec_field(text, 'projectUrl')}"]
+        copyright_line = nuspec_field(text, 'copyright').replace('&amp;', '&')
+        details = [f'{name} {version}', f'License: {license_name}', f'Copyright: {copyright_line}',
+                   f"Project: {nuspec_field(text, 'projectUrl').replace('&amp;', '&')}"]
         (output / 'PACKAGE-NOTICE.txt').write_text('\n'.join(details) + '\n', encoding='utf-8')
+        if not files:
+            if license_name != 'MIT':
+                raise SystemExit(f'{name} {version} ships no license file and is not MIT licensed. Review its license.')
+            (output / 'LICENSE.txt').write_text(f'MIT License\n\n{copyright_line}\n\n{MIT_TEXT}', encoding='utf-8')
         index.append(f'{name} {version} ({license_name or "see notice"})')
         count += 1
     # The .NET runtime carried by the self-contained build is a runtime pack, listed with the downloads.
