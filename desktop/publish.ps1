@@ -43,7 +43,10 @@ foreach ($rid in $Runtime) {
         $macos = Join-Path $bundle 'Contents/MacOS'
         $resources = Join-Path $bundle 'Contents/Resources'
         New-Item -ItemType Directory -Path $macos, $resources -Force | Out-Null
-        Get-ChildItem -LiteralPath $build | Copy-Item -Destination $macos -Recurse -Force
+        foreach ($item in (Get-ChildItem -LiteralPath $build -Force)) {
+            $destination = if ($item.Name -eq 'LICENSE.txt' -or $item.Name -eq 'licenses') { $resources } else { $macos }
+            Copy-Item -LiteralPath $item.FullName -Destination $destination -Recurse
+        }
         & $PythonExe -I -c "import sys; from PIL import Image; Image.open(sys.argv[1]).convert('RGBA').save(sys.argv[2], sizes=[(16,16),(32,32),(64,64),(128,128),(256,256)])" $icon (Join-Path $resources 'ee.icns')
         if ($LASTEXITCODE) { throw 'The macOS icon could not be made.' }
         $plist = @"
@@ -65,6 +68,18 @@ foreach ($rid in $Runtime) {
 </plist>
 "@
         [IO.File]::WriteAllText((Join-Path $bundle 'Contents/Info.plist'), $plist.Replace("`r`n", "`n"))
+        if ($IsMacOS) {
+            # The .NET apphost's original signature covers the executable before the bundle exists.
+            # Sign nested code first, then seal the finished application and its resources.
+            foreach ($library in (Get-ChildItem -LiteralPath $macos -File -Filter '*.dylib')) {
+                & /usr/bin/codesign --force --sign - --timestamp=none $library.FullName
+                if ($LASTEXITCODE) { throw "Signing the $rid library $($library.Name) failed." }
+            }
+            & /usr/bin/codesign --force --sign - --timestamp=none $bundle
+            if ($LASTEXITCODE) { throw "Signing the $rid application bundle failed." }
+            & /usr/bin/codesign --verify --deep --strict --verbose=2 $bundle
+            if ($LASTEXITCODE) { throw "The $rid application bundle failed signature verification." }
+        }
         $archive = Join-Path $OutputRoot "EtherlightingEvolved-$version-$rid.zip"
         & $PythonExe -I (Join-Path $PSScriptRoot 'make_archive.py') zip $bundle $archive EtherlightingEvolved
         if ($LASTEXITCODE) { throw 'The macOS archive could not be made.' }

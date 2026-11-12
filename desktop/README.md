@@ -8,7 +8,7 @@ The Windows installer includes the desktop app, gateway and lighting engine. Sta
 
 For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime. Start an EE workspace service on the same computer, or connect to an existing one using its private HTTPS workspace address. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address. The default local address is `http://127.0.0.1:4180/`.
 
-The macOS packaging script produces an application bundle with the executable permission set. Signing and notarization are separate distribution steps.
+On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
 
 ### Add EE to the Linux applications menu
 

@@ -171,6 +171,7 @@ jobs:
               test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Info.plist")" = EtherlightingEvolved
               test -s "$bundle/Resources/ee.icns"
               folder="$bundle/MacOS"
+              notices="$bundle/Resources"
               test -s "$folder/libAvaloniaNative.dylib"
               test -s "$folder/libSkiaSharp.dylib"
               test -s "$folder/libHarfBuzzSharp.dylib"
@@ -179,12 +180,14 @@ jobs:
               for library in libAvaloniaNative.dylib libSkiaSharp.dylib libHarfBuzzSharp.dylib; do
                 lipo "$folder/$library" -verify_arch "$cpu"
               done
-              if [[ "$arch" == arm64 ]]; then codesign --verify --verbose "$folder/EtherlightingEvolved"; fi
+              codesign --verify --deep --strict --verbose "$root/EtherlightingEvolved.app"
+              original="outputs/native/$rid-app/EtherlightingEvolved.app/Contents/MacOS/EtherlightingEvolved"
             else
               archives=(outputs/native/EtherlightingEvolved-*-"$rid".tar.gz)
               test "${#archives[@]}" = 1
               tar -xzf "${archives[0]}" -C "$root"
               folder="$root"
+              notices="$folder"
               grep -Fxq 'Exec=EtherlightingEvolved' "$folder/etherlighting-evolved.desktop"
               grep -Fxq 'Icon=etherlighting-evolved' "$folder/etherlighting-evolved.desktop"
               test -s "$folder/etherlighting-evolved.png"
@@ -194,11 +197,12 @@ jobs:
               for binary in EtherlightingEvolved libSkiaSharp.so libHarfBuzzSharp.so; do
                 readelf -h "$folder/$binary" | grep -Fq "$machine"
               done
+              original="outputs/native/$rid/EtherlightingEvolved"
             fi
             test -x "$folder/EtherlightingEvolved"
-            cmp "outputs/native/$rid/EtherlightingEvolved" "$folder/EtherlightingEvolved"
+            cmp "$original" "$folder/EtherlightingEvolved"
             for notice in LICENSE.txt licenses/COMPONENTS.txt licenses/DotNet-LICENSE.txt licenses/DotNet-THIRD-PARTY-NOTICES.txt; do
-              test -s "$folder/$notice"
+              test -s "$notices/$notice"
             done
             if [[ "$arch" == "$native" ]]; then client="$folder/EtherlightingEvolved"; fi
           done
