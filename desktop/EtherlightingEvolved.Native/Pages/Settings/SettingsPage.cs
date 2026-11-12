@@ -36,7 +36,7 @@ public sealed class SettingsPage : Page
     readonly TextBlock healthStatus = SettingsKit.HelpText();
     readonly DetailsList healthDetails = new();
     readonly Panel controllerHost = new();
-    readonly PrivateAccess privateAccess;
+    readonly Connect.PrivateAccessPanel privateAccess;
     readonly LastSession lastSession;
     readonly ThemeSettings themeSettings;
     readonly Control appearance;
@@ -89,7 +89,7 @@ public sealed class SettingsPage : Page
         about.Margin = new Thickness(0, 20, 0, 0);
 
         // Remote, Last session and Appearance
-        privateAccess = new PrivateAccess(request);
+        privateAccess = new Connect.PrivateAccessPanel((path, method, body) => request(path, method, body));
         lastSession = new LastSession(request);
         themeSettings = new ThemeSettings();
         appearance = SettingsKit.Panel(themeSettings, maxWidth: 960);
