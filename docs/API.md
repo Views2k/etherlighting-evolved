@@ -45,9 +45,12 @@ Each physical uplink is counted once, including optical uplinks. Virtual aggrega
 | `sequence` | Increases for each completed measurement |
 | `refresh_interval_ms` | Publication interval, currently `5000` |
 
-Counter resets, uplink membership changes, and reconnection start a new measurement window. Clients must expire
-readings when their age reaches ten seconds, including when frame delivery stops. Visual number transitions
-interpolate between measured results; they do not create additional traffic measurements.
+Counter resets, uplink membership changes, and reconnection start a new measurement window. A reading is
+current for ten seconds from capture. Each frame reports its age at the time of the snapshot.
+While the same uplink is connected, the panel can keep an expired measurement visible as “Last reading.”
+Its peak and chart then describe the minute ending at that measurement. A counter reset, uplink change,
+or disconnected session clears the previous readings. A missed port-status sample can age out while the
+switch connection stays active.
 
 `POST /api/session/recover` revalidates the current switch and cleans up its owned output before resuming
 the retained scene after an interrupted connection. It preserves saved credentials and rejects changed

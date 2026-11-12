@@ -32,8 +32,9 @@ public sealed partial class LightingPage : Page
     readonly Border toolbar = new(), dock = new(), inspectorFrame = new();
     readonly Grid dockRow = new() { ColumnSpacing = 12, RowSpacing = 6 };
     readonly ScrollViewer mapScroll = new(), inspectorScroll = new();
-    readonly StackPanel canvas = U.Column(14), inspector = U.Column(14);
-    readonly TextBlock title = U.H1(""), meter = U.Text("", "muted"), mapStatus = U.P("", "muted"), legend = U.Text("", "muted", true);
+    readonly Grid canvas = new() { ColumnDefinitions = new("*,Auto"), RowDefinitions = new("Auto,Auto,Auto,Auto,Auto") };
+    readonly StackPanel inspector = U.Column(14);
+    readonly TextBlock title = U.H1(""), mapStatus = U.P("", "muted"), legend = U.Text("", "muted", true);
     readonly Dictionary<int, PortTile> tiles = [];
     readonly Dictionary<string, EffectClockPair> clocks = [];
     readonly Dictionary<int, EffectAnimationState> animations = [];
@@ -47,7 +48,8 @@ public sealed partial class LightingPage : Page
     double settleAt;
     JsonObject? quickProfile;
     List<JsonObject> profiles = [];
-    long readingRef, meterSequence = long.MinValue, lastTelemetry;
+    long lastTelemetry;
+    double? scheduledExpiry;
     string shape = "", layoutMode = "", lastMode = "";
     bool hiddenInspector, mobileInspector, alive = true;
     TextBlock summary = U.Text(""), levelLabel = U.Text(""), selection = U.Text("");
@@ -67,7 +69,7 @@ public sealed partial class LightingPage : Page
         inspectorFrame.BorderThickness = new Thickness(1, 0, 0, 0); Surface(inspectorFrame, "surface");
         body.Children.Add(mapScroll); body.Children.Add(inspectorFrame);
         layout.Children.Add(toolbar); layout.Children.Add(body); Grid.SetRow(body, 1); layout.Children.Add(dock); Grid.SetRow(dock, 2); Content = layout;
-        editor.Changed += OnEdited; paint.Tick += (_, _) => PaintFrame(); meterExpiry.Tick += (_, _) => { meterExpiry.Stop(); PaintTelemetry(); }; SizeChanged += (_, _) => Reflow();
+        editor.Changed += OnEdited; paint.Tick += (_, _) => PaintFrame(); meterExpiry.Tick += (_, _) => { meterExpiry.Stop(); PaintBandwidth(); }; SizeChanged += (_, _) => Reflow();
         BuildDock(); BuildCanvas(); BuildInspector(); BuildToolbar(); Reflow(); Update(); WakePreview();
         connection = (Workspace.Connected, Workspace.Disconnected, Workspace.Busy);
         Workspace.ConnectionChanged += ConnectionChanged;
@@ -127,31 +129,20 @@ public sealed partial class LightingPage : Page
         dockRow.Children.Add(U.Wrap(12, U.Text("Default brightness", "muted"), master, levelLabel, U.Button("Map key", "quiet", MapKey))); dockRow.Children.Add(actions);
         dock.Child = dockRow;
     }
-    readonly Grid banks = new(), mapHeader = new();
+    readonly Grid banks = new();
     readonly List<(bool Optical, UniformGrid Bank, StackPanel Heading, Border Section)> sections = [];
     readonly List<(Button Button, string Scope)> chips = [];
     readonly WrapPanel legendItems = U.Wrap(13);
-    readonly StackPanel bandwidthPanel = U.Row(16), meterHeading = U.Column(1);
-    readonly TextBlock download = U.Text("", "small"), upload = U.Text("", "small"), downloadPeak = U.Text("", "small muted"), uploadPeak = U.Text("", "small muted");
-    readonly BandwidthPlot bandwidthPlot = new();
-    readonly StackPanel chartGroup = U.Row(8);
-    bool rackView;
-    readonly StackPanel meterSlot = U.Column(3);
+    readonly UplinkBandwidthMeter bandwidthPanel = new();
     readonly Button openInspector = U.Button("Port controls", "quiet");
     Button rackWorkspace = U.Button("Workspace", "quiet");
     string legendSignature = "";
     void BuildCanvas()
     {
-        // The same heading and meter move between the wide faceplate and the compact rack.
-        foreach (var c in new Control[] { title, mapStatus, meter, openInspector, download, downloadPeak, upload, uploadPeak }) if (c.Parent is Panel oldParent) oldParent.Children.Remove(c); canvas.Children.Clear(); mapHeader.Children.Clear(); meterSlot.Children.Clear(); tiles.Clear(); sections.Clear(); banks.Children.Clear(); chips.Clear(); bandwidthPanel.Children.Clear(); meterHeading.Children.Clear();
-        shape = string.Join(",", editor.Copper) + "|" + string.Join(",", editor.Optical);
         var badge = U.Text("Demo", "small muted"); badge.IsVisible = Workspace.Session.Bool("simulated") == true;
         title.FontSize = 19; var name = U.Row(12, title, badge); var head = U.Column(2, name, mapStatus);
-        meter.FontSize = 10; meterHeading.Children.Add(U.H3("Uplink bandwidth")); meterHeading.Children.Add(meter);
-        bandwidthPanel.Children.Add(meterHeading); bandwidthPanel.Children.Add(U.Column(2, download, downloadPeak)); bandwidthPanel.Children.Add(U.Column(2, upload, uploadPeak));
-        if (chartGroup.Children.Count == 0) { chartGroup.Children.Add(U.Text("Last minute", "small muted")); chartGroup.Children.Add(bandwidthPlot); }
-        bandwidthPanel.Children.Add(chartGroup); chartGroup.IsVisible = rackView && bandwidthPlot.HasHistory;
-        mapHeader.ColumnDefinitions = new("*,Auto"); mapHeader.Children.Add(head); mapHeader.Children.Add(bandwidthPanel); Grid.SetColumn(bandwidthPanel, 1); canvas.Children.Add(mapHeader);
+        canvas.Children.Add(head);
+        canvas.Children.Add(bandwidthPanel);
         var selectors = U.Wrap(0);
         foreach (var (label, target) in new[] { ("All ports", "all"), ("Ethernet", "copper"), ("SFP", "sfp"), ("None", "none") })
         {
@@ -159,8 +150,24 @@ public sealed partial class LightingPage : Page
         }
         var multi = U.Button("Select multiple", "quiet"); multi.Classes.Set("selected", editor.Multiple); multi.Click += (_, _) => { editor.Multiple = !editor.Multiple; multi.Classes.Set("selected", editor.Multiple); };
         details = Action("Port details", PortDetails); rackWorkspace = U.Button("Workspace", "quiet", RackTools);
-        openInspector.Click -= ShowInspector; openInspector.Click += ShowInspector;
-        canvas.Children.Add(U.Wrap(7, selectors, multi, details, openInspector, rackWorkspace));
+        openInspector.Click += ShowInspector;
+        AddRow(U.Wrap(7, selectors, multi, details, openInspector, rackWorkspace), 1);
+        AddRow(banks, 2);
+        selection = U.Text("", "small muted"); var footer = new Grid { ColumnDefinitions = new("*,Auto") };
+        footer.Children.Add(legendItems); footer.Children.Add(selection); Grid.SetColumn(selection, 1); AddRow(footer, 4);
+        BuildBanks();
+
+        void AddRow(Control control, int row)
+        {
+            canvas.Children.Add(control);
+            Grid.SetRow(control, row);
+            Grid.SetColumnSpan(control, 2);
+        }
+    }
+    void BuildBanks()
+    {
+        shape = string.Join(",", editor.Copper) + "|" + string.Join(",", editor.Optical);
+        tiles.Clear(); sections.Clear(); banks.Children.Clear();
         foreach (var (sfp, ids) in new[] { (false, editor.Copper), (true, editor.Optical) })
         {
             if (ids.Count == 0) continue;
@@ -172,11 +179,7 @@ public sealed partial class LightingPage : Page
             var section = new Border { Child = U.Column(4, heading, bank) }; section.Bind(Border.BorderBrushProperty, "line");
             banks.Children.Add(section); sections.Add((sfp, bank, heading, section));
         }
-        canvas.Children.Add(banks); canvas.Children.Add(meterSlot);
-        selection = U.Text("", "small muted"); var footer = new Grid { ColumnDefinitions = new("*,Auto") };
-        if (legendItems.Parent is Panel old) old.Children.Remove(legendItems);
-        footer.Children.Add(legendItems); footer.Children.Add(selection); Grid.SetColumn(selection, 1); canvas.Children.Add(footer);
-        legendSignature = ""; PaintTelemetry(); Frame(); UpdateControls(); Reflow(true);
+        Frame(); Reflow(true);
     }
     void SetInspectorCollapsed(bool value)
     {
@@ -207,14 +210,22 @@ public sealed partial class LightingPage : Page
         var right = !hiddenInspector && !narrow;
         var width = Bounds.Width > 0 ? Bounds.Width - (right ? (rack ? 320 : 360) : 0) : 920;
         var inline = width >= 640 && editor.Copper.Count is > 0 and <= 8 && editor.Optical.Count is > 0 and <= 2;
-        var state = $"{narrow}:{rack}:{right}:{inline}:{mobileInspector}:{Columns(false, editor.Copper.Count)}";
+        var meterBelow = rack || narrow || width < 680;
+        var showChart = rack && width >= 530;
+        var state = $"{narrow}:{rack}:{right}:{inline}:{meterBelow}:{showChart}:{mobileInspector}:{Columns(false, editor.Copper.Count)}";
         if (state == layoutMode && !force) return; layoutMode = state;
-        rackView = rack; chartGroup.IsVisible = rack && bandwidthPlot.HasHistory;
         dockRow.ColumnDefinitions = new(narrow ? "*" : "Auto,*"); dockRow.RowDefinitions = new(narrow ? "Auto,Auto" : "Auto"); Grid.SetColumn(actions, narrow ? 0 : 1); Grid.SetRow(actions, narrow ? 1 : 0);
         body.ColumnDefinitions = new(right ? (rack ? "*,320" : "*,360") : "*"); Grid.SetColumn(inspectorFrame, right ? 1 : 0);
         inspectorFrame.IsVisible = right || narrow && mobileInspector; mapScroll.IsVisible = !narrow || !mobileInspector;
         toolbar.IsVisible = !rack; openInspector.IsVisible = !right; rackWorkspace.IsVisible = rack;
-        canvas.Spacing = rack ? 3 : 14; canvas.Margin = new Thickness(rack ? 12 : 20, rack ? 3 : 14);
+        canvas.Margin = new Thickness(rack ? 12 : 20, rack ? 3 : 14);
+        Grid.SetRow(bandwidthPanel, meterBelow ? 3 : 0);
+        Grid.SetColumn(bandwidthPanel, meterBelow ? 0 : 1);
+        Grid.SetColumnSpan(bandwidthPanel, meterBelow ? 2 : 1);
+        bandwidthPanel.HorizontalAlignment = meterBelow ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+        bandwidthPanel.ShowChart(showChart);
+        foreach (var child in canvas.Children)
+            child.Margin = new Thickness(0, Grid.GetRow(child) == 0 ? 0 : rack ? 3 : 14, 0, 0);
         banks.ColumnDefinitions = inline ? new ColumnDefinitions($"{editor.Copper.Count}*,{editor.Optical.Count}*") : new ColumnDefinitions("*");
         banks.RowDefinitions = inline ? new RowDefinitions("Auto") : new RowDefinitions(string.Join(",", Enumerable.Repeat("Auto", Math.Max(1, sections.Count))));
         for (var i = 0; i < sections.Count; i++)
@@ -225,8 +236,6 @@ public sealed partial class LightingPage : Page
             entry.Bank.Columns = inline ? entry.Bank.Children.Count : Columns(entry.Optical, entry.Bank.Children.Count);
             foreach (var t in entry.Bank.Children.OfType<PortTile>()) t.Compact = rack;
         }
-        if (bandwidthPanel.Parent is Panel previous) previous.Children.Remove(bandwidthPanel);
-        if (rack || narrow) { meterSlot.Children.Add(bandwidthPanel); meterHeading.IsVisible = false; } else { mapHeader.Children.Add(bandwidthPanel); Grid.SetColumn(bandwidthPanel, 1); meterHeading.IsVisible = true; }
         if (mapScroll.IsVisible && alive) WakePreview();
     }
     void RackTools()
@@ -263,13 +272,14 @@ public sealed partial class LightingPage : Page
     {
         var current = (Workspace.Connected, Workspace.Disconnected, Workspace.Busy);
         if (current == connection) return;
+        if (current.Connected != connection.Connected || current.Disconnected != connection.Disconnected) PaintBandwidth();
         connection = current; UpdateControls();
     }
     public override void Update()
     {
         if (!alive) return;
         var next = string.Join(",", editor.Copper) + "|" + string.Join(",", editor.Optical);
-        if (shape != next) { BuildCanvas(); BuildInspector(); BuildToolbar(); }
+        if (shape != next) { BuildBanks(); BuildInspector(); BuildToolbar(); }
         var mode = State.Str("mode") ?? ""; if (mode != lastMode) { lastMode = mode; UpdateControls(); }
         PaintTelemetry(); UpdateControls();
     }
@@ -348,34 +358,22 @@ public sealed partial class LightingPage : Page
             legendItems.Children.Add(U.Row(4, new Icon("chevron", 13) { RenderTransform = new RotateTransform(-90) }, U.Text("Uplink", "small muted")));
             legendItems.Children.Add(U.Text("PoE", "small muted"));
         }
-        var bandwidth = State.Obj("uplink_bandwidth"); var sequence = bandwidth.Int("sequence") ?? -1;
-        var newSample = sequence != meterSequence;
-        if (newSample) { meterSequence = sequence; readingRef = watch.ElapsedMilliseconds; meterExpiry.Stop(); }
-        var age = bandwidth.Num("sample_age_ms"); var remaining = 10000 - age - (watch.ElapsedMilliseconds - readingRef);
-        var ready = Workspace.Connected && !Workspace.Disconnected && bandwidth.Str("status") == "ready" && bandwidth.Arr("ports") is { Count: > 0 } ports && ports.All(p => p.Num() is > 0 and { } id && id % 1 == 0) && bandwidth.Num("sample_period_ms") > 0 && age >= 0 && remaining > 0;
-        string Rate(double bps) => bps is > 0 and < 10000 ? "<0.01" : (bps / 1000000).ToString(bps >= 1e9 ? "0" : "0.00");
-        if (ready && bandwidth.Num("download_bps") is >= 0 and { } down && bandwidth.Num("upload_bps") is >= 0 and { } up)
-        {
-            meter.Text = $"{bandwidth.Num("sample_period_ms") / 1000:0.#} s average · Updates every 5 s";
-            download.Text = $"↓ Download   {Rate(down)} Mbps"; upload.Text = $"↑ Upload   {Rate(up)} Mbps";
-            var records = bandwidth.Arr("history").OfType<JsonArray>().Where(s => s.Count == 3 && s[0].Num() is <= 0 and > -60000 && s[1].Num() >= 0 && s[2].Num() >= 0).ToList();
-            downloadPeak.Text = records.Count > 0 ? "Peak " + Rate(records.Max(s => s[2].Num()!.Value)) + " Mbps" : "";
-            uploadPeak.Text = records.Count > 0 ? "Peak " + Rate(records.Max(s => s[1].Num()!.Value)) + " Mbps" : "";
-            if (newSample || !bandwidthPlot.HasHistory) bandwidthPlot.Update(records);
-            chartGroup.IsVisible = rackView && bandwidthPlot.HasHistory;
-            if (!meterExpiry.IsEnabled && !Shell.Hidden) { meterExpiry.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(remaining!.Value))); meterExpiry.Start(); }
-        }
-        else
-        {
-            meterExpiry.Stop(); if (bandwidthPlot.HasHistory) bandwidthPlot.Update([]); chartGroup.IsVisible = false;
-            meter.Text = !Workspace.Connected || Workspace.Disconnected ? "Unavailable" : bandwidth.Str("status") switch { "waiting" => "Waiting for samples", "no_uplink" => "No uplink detected", "ready" when remaining <= 0 => "Readings delayed", "stale" => "Readings delayed", _ => "Unavailable" };
-            download.Text = "↓ Download   —"; upload.Text = "↑ Upload   —"; downloadPeak.Text = uploadPeak.Text = "";
-        }
+        PaintBandwidth();
+    }
+    void PaintBandwidth()
+    {
+        var now = Environment.TickCount64;
+        var deadline = bandwidthPanel.RenderReading(Workspace.Bandwidth, now);
+        if (deadline is null || Shell.Hidden) { meterExpiry.Stop(); scheduledExpiry = null; return; }
+        if (scheduledExpiry == deadline && meterExpiry.IsEnabled) return;
+        scheduledExpiry = deadline;
+        meterExpiry.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(deadline.Value - now)));
+        meterExpiry.Start();
     }
     public override void VisibilityChanged(bool visible)
     {
         if (!visible) { paint.Stop(); meterExpiry.Stop(); watch.Stop(); return; }
-        if (alive) { watch.Start(); meterSequence = long.MinValue; frames = new(); Frame(); PaintTelemetry(); WakePreview(); }
+        if (alive) { watch.Start(); frames = new(); Frame(); PaintTelemetry(); WakePreview(); }
     }
     public override void Leave() { alive = false; paint.Stop(); meterExpiry.Stop(); editor.Changed -= OnEdited; Workspace.ConnectionChanged -= ConnectionChanged; watch.Stop(); }
     void MapKey()

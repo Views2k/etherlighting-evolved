@@ -16,7 +16,7 @@ const section=(source,start,end)=>{
 export function createTopologyFixture({root=defaultRoot}={}){
   const source=readFileSync(path.join(root,'preview/app.mjs'),'utf8');
   const shell=section(source,'app.innerHTML =','const view = document.querySelector');
-  const studio=section(source,'function renderStudio() {','  uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(meterHost);')+'}\n';
+  const studio=section(source,'function renderStudio() {','  uplinkBandwidth?.dispose();')+'}\n';
   const ports=section(source,'function speedLegend() {','function updateLive() {');
   const runtime=configuration=>`
 import {LINK_SPEEDS,linkStatus,portPower,isUplink,portLabel,selectPort,selectionHint,switchTitle} from '/preview/port-map.mjs';
@@ -71,6 +71,7 @@ document.querySelector('#connection').textContent='Switch connected';
 function paint(){renderPorts();portGlow?.paint(new Map([...state.ports,...state.sfp].map(port=>[String(port.port),port.display_rgb])));}
 paint();
 window.topologyFixture={
+  setBandwidth(record){meter.update({...state,connected:true,uplink_bandwidth:record});},
   setTopology(spec){state=makeState(spec);selected=new Set();selectionAnchor=null;paint();document.querySelector('#switch-title').textContent=switchTitle(state);},
   get portIds(){return allPorts();},get selected(){return [...selected];}
 };

@@ -1,10 +1,18 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from etherlighting_evolved import ubus
-from etherlighting_evolved.transport import SSHTransport, TransportError
+from etherlighting_evolved.transport import (
+    READ_CPU,
+    READ_POE,
+    READ_PORTS,
+    PortSampleUnavailable,
+    SSHTransport,
+    TransportError,
+)
 
 
 class Process:
@@ -55,8 +63,86 @@ class Connection:
     def close(self):
         self.closed = True
 
+    def is_closed(self):
+        return self.closed
+
     async def wait_closed(self):
         pass
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("command", "fault"), [(READ_PORTS, "timeout"), (READ_POE, "eof"), (READ_CPU, "cancel")])
+async def test_lost_status_sample_keeps_output_alive_and_can_resume(command, fault):
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    rgb = transport._rgb_client = SimpleNamespace(set_port=AsyncMock(), close=AsyncMock())
+    first = connection.process
+    running = asyncio.create_task(transport.run(command, channel="links", timeout=0.1))
+    await asyncio.wait_for(first.started.wait(), 1)
+    if fault == "eof":
+        first.replies.put_nowait("")
+    elif fault == "cancel":
+        running.cancel()
+    with pytest.raises(asyncio.CancelledError if fault == "cancel" else PortSampleUnavailable):
+        await running
+    assert first.closed and not connection.closed and transport.lighting_generation is rgb
+    await transport.write_port_rgb(1, "00ff00", 30)
+    rgb.set_port.assert_awaited_once_with(1, "00ff00", 30)
+    replacement = connection.process = Process()
+    next_read = asyncio.create_task(transport.run(command, channel="links"))
+    await asyncio.wait_for(replacement.started.wait(), 1)
+    replacement.replies.put_nowait("new data\n")
+    replacement.replies.put_nowait(replacement.writes[0].splitlines()[-1].removeprefix("echo "))
+    assert await next_read == "new data\n"
+    assert id(first) not in transport._process_tags
+    await transport.close()
+
+
+@pytest.mark.anyio
+async def test_unconfirmed_status_reader_is_bounded_and_still_checked_on_handoff():
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    first = connection.process
+    first.stdin.write_eof = first.close  # The shell has not acknowledged exit.
+    first.replies.put_nowait("")
+    with pytest.raises(PortSampleUnavailable):
+        await transport.run(READ_PORTS, channel="links")
+    replacement = connection.process = Process()
+    reading = asyncio.create_task(transport.run(READ_PORTS, channel="links"))
+    await asyncio.wait_for(replacement.started.wait(), 1)
+    replacement.replies.put_nowait("second sample\n")
+    replacement.replies.put_nowait(replacement.writes[-1].splitlines()[-1].removeprefix("echo "))
+    assert await reading == "second sample\n"
+    replacement.stdin.write_eof = replacement.close
+    replacement.replies.put_nowait("")
+    with pytest.raises(PortSampleUnavailable):
+        await transport.run(READ_PORTS, channel="links")
+    unused = connection.process = Process()
+    for _ in range(3):
+        with pytest.raises(PortSampleUnavailable):
+            await transport.run(READ_PORTS, channel="links")
+    assert not unused.started.is_set() and len(first.writes) == 1
+    assert set(transport._process_tags) == {id(first), id(replacement)}
+    with pytest.raises(TransportError, match="cleanup"):
+        await transport.close()
+    assert not connection.closed
+    first.exit_signal = ("TERM", False, "", "")
+    replacement.exit_status = 0
+    await transport.close()
+    assert connection.closed
+
+
+@pytest.mark.anyio
+async def test_closed_ssh_during_status_read_still_fails_the_session():
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    reading = asyncio.create_task(transport.run(READ_PORTS, channel="links"))
+    await asyncio.wait_for(connection.process.started.wait(), 1)
+    connection.close()
+    connection.process.replies.put_nowait("")
+    with pytest.raises(TransportError) as error:
+        await reading
+    assert not isinstance(error.value, PortSampleUnavailable) and not transport.connected
 
 
 @pytest.mark.anyio

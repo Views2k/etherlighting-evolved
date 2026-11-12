@@ -43,7 +43,13 @@ from .rules import DEFAULT_RULES, PortFacts, Rule, first_match
 from .sfp import NATIVE_PERIODS, SfpLight, SfpSync
 from .sfp_playback import SfpPlayback, displayed_rgb
 from .switch import EtherlightSwitch, PortOutput
-from .transport import AuthenticationError, HostKeyMismatchError, SimulatedTransport, TransportError
+from .transport import (
+    AuthenticationError,
+    HostKeyMismatchError,
+    PortSampleUnavailable,
+    SimulatedTransport,
+    TransportError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1919,6 +1925,9 @@ class Engine:
                     self._adjust_throttle(None)
                 if changed:
                     self._dirty.set()  # a cable was pulled: show it now, not on the next frame
+            except PortSampleUnavailable:
+                # Existing samples age naturally until the next successful read.
+                pass
             except TransportError as exc:
                 self._lost(exc)
             await asyncio.sleep(self.link_poll)

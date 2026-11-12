@@ -17,10 +17,17 @@ import time
 from abc import ABC, abstractmethod
 
 SSH_CLOSE_TIMEOUT = 3.0
+READ_PORTS = "swctrl port show"
+READ_POE = "swctrl poe show 2>/dev/null"
+READ_CPU = 'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "$b"'
 
 
 class TransportError(RuntimeError):
     """The switch could not be reached or stopped answering."""
+
+
+class PortSampleUnavailable(TransportError):
+    """A switch status sample was missed while the SSH connection remained open."""
 
 
 class NativeOutputUncertain(TransportError):
@@ -170,6 +177,12 @@ class _Channel:
     def __init__(self, process) -> None:
         self.process = process
         self.lock = asyncio.Lock()
+        self.sample_failed = False
+
+
+def _process_exited(process) -> bool:
+    status = getattr(process, "exit_status", None)
+    return isinstance(status, int) and status >= 0 or getattr(process, "exit_signal", None) is not None
 
 
 class SSHTransport(Transport):
@@ -202,6 +215,7 @@ class SSHTransport(Transport):
         self.host_key_pinned_now = False
         self._conn = None
         self._channels: dict[str, _Channel] = {}
+        self._prior_port_reader: _Channel | None = None
         self._channel_lock = asyncio.Lock()
         self._rgb_lock = asyncio.Lock()
         self._health_lock = asyncio.Lock()
@@ -452,14 +466,51 @@ class SSHTransport(Transport):
                     self._opening_finished(conn)
             return channel
 
+    async def _port_channel(self, conn) -> _Channel:
+        previous = self._channels.get("links")
+        if previous is not None and previous.sample_failed:
+            async with previous.lock:
+                if self._conn is not conn or conn.is_closed():
+                    raise TransportError("the SSH connection closed during switch status sampling")
+                if self._channels.get("links") is previous:
+                    # One spare reader lets sampling recover when firmware omits the first shell's exit status.
+                    finished = previous if _process_exited(previous.process) else self._prior_port_reader
+                    if finished is not None:
+                        if not _process_exited(finished.process):
+                            raise PortSampleUnavailable("the previous switch status read is finishing")
+                        await finished.process.wait_closed()
+                        if self._conn is not conn:
+                            raise TransportError("the SSH connection changed during switch status sampling")
+                        self._process_tags.pop(id(finished.process), None)
+                    if finished is not previous:
+                        self._prior_port_reader = previous
+                    self._channels.pop("links")
+        return await self._channel("links", connection=conn)
+
+    async def _command_failed(self, conn, ch, port_sample: bool, exc: BaseException) -> None:
+        if (port_sample and self._conn is conn and not conn.is_closed()
+                and isinstance(exc, (TimeoutError, TransportError, BrokenPipeError, asyncio.CancelledError))):
+            if ch is not None and self._channels.get("links") is ch and not ch.sample_failed:
+                ch.sample_failed = True
+                with contextlib.suppress(Exception):
+                    ch.process.stdin.write_eof()
+            if isinstance(exc, asyncio.CancelledError):
+                return
+            raise PortSampleUnavailable("switch status could not be read") from exc
+        await self._close_failed_connection(conn)
+
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
         conn = self._conn
         if conn is None:
             raise TransportError("not connected")
+        port_sample = channel == "links" and command in (READ_PORTS, READ_POE, READ_CPU)
+        opening = self._port_channel(conn) if port_sample else self._channel(channel, connection=conn)
         try:
-            ch = await asyncio.wait_for(self._channel(channel, connection=conn), timeout)
+            ch = await asyncio.wait_for(opening, timeout)
+        except PortSampleUnavailable:
+            raise
         except Exception as exc:
-            await self._close_failed_connection(conn)
+            await self._command_failed(conn, None, port_sample, exc)
             raise TransportError(f"could not open a shell on the switch: {exc}") from exc
         async with ch.lock:
             self._seq += 1
@@ -468,6 +519,8 @@ class SSHTransport(Transport):
                 async with asyncio.timeout(timeout):
                     if self._conn is not conn:
                         raise TransportError("the SSH session closed before sending a command")
+                    if ch.sample_failed:
+                        raise TransportError("the switch status shell is finishing")
                     ch.process.stdin.write(f"{command}\necho {marker}\n")
                     lines: list[str] = []
                     size = 0
@@ -481,17 +534,14 @@ class SSHTransport(Transport):
                         if size > 262144:
                             raise TransportError("the switch returned an oversized response")
                         lines.append(line)
-            except asyncio.CancelledError:
-                await self._close_failed_connection(conn)
-                raise
-            except TransportError:
-                await self._close_failed_connection(conn)
+            except (asyncio.CancelledError, TransportError) as exc:
+                await self._command_failed(conn, ch, port_sample, exc)
                 raise
             except TimeoutError as exc:
-                await self._close_failed_connection(conn)
+                await self._command_failed(conn, ch, port_sample, exc)
                 raise TransportError(f"the switch did not answer within {timeout:g}s") from exc
             except Exception as exc:
-                await self._close_failed_connection(conn)
+                await self._command_failed(conn, ch, port_sample, exc)
                 raise TransportError(f"SSH error: {exc}") from exc
 
     async def _close_failed_connection(self, connection) -> None:
@@ -559,9 +609,13 @@ class SSHTransport(Transport):
                 conn, self._conn = self._conn, None
                 client, self._rgb_client = self._rgb_client, None
                 channels, self._channels = self._channels, {}
+                processes = [channel.process for channel in channels.values()]
+                if self._prior_port_reader is not None:
+                    processes.append(self._prior_port_reader.process)
+                    self._prior_port_reader = None
                 self._rgb_checked = self._rgb_failed = False
                 self._cleanup = {"connection": conn, "client": client,
-                                 "processes": [channel.process for channel in channels.values()],
+                                 "processes": processes,
                                  "eof": set(), "exited": set(), "late_connections": []}
             task = self._close_task = asyncio.create_task(self._finish_close(), name="ee-ssh-close")
         try:
@@ -599,15 +653,11 @@ class SSHTransport(Transport):
                 key = id(process)
                 if key in cleanup["exited"]:
                     return
-                status = getattr(process, "exit_status", None)
-                exited = isinstance(status, int) and status >= 0 or getattr(process, "exit_signal", None) is not None
-                if key not in cleanup["eof"] and not exited:
+                if key not in cleanup["eof"] and not _process_exited(process):
                     process.stdin.write_eof()
                     cleanup["eof"].add(key)
                 await asyncio.wait_for(process.wait_closed(), SSH_CLOSE_TIMEOUT)
-                status = getattr(process, "exit_status", None)
-                signal = getattr(process, "exit_signal", None)
-                if not (isinstance(status, int) and status >= 0 or signal is not None):
+                if not _process_exited(process):
                     raise TransportError("a switch helper did not acknowledge exit")
                 cleanup["exited"].add(key)
 

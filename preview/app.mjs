@@ -21,7 +21,7 @@ import { sfpSync, effectiveSfpLight, editableSfpLight, normalizeSfpBrightness, s
 import { createPortAnimator, portInk } from './port-animation.mjs';
 import {createPortGlow, enterInspector, confirmPorts} from './motion.mjs';
 import {getInspectorCollapsed,setInspectorCollapsed} from './preferences.mjs';
-import {mountUplinkBandwidth} from './uplink-bandwidth.mjs';
+import {createUplinkMeasurements,mountUplinkBandwidth} from './uplink-bandwidth.mjs';
 import { portDisplayRgb, manualDisplayRgb, masterDisplayRgb } from './port-display.mjs';
 import { LINK_SPEEDS, GROUP_NAME_LIMIT, groupNameError, portLabel, portPower, isUplink, linkStatus, portScopeOptions, selectPort, selectionHint, switchTitle } from './port-map.mjs';
 import { EFFECTS, effectColor, defaultConfig, setEffectCatalog, previewPhase, previewColorPhase, resolvedColorParams, activityPeak, dim } from './effect-renderer.mjs';
@@ -55,6 +55,8 @@ const galleryState = {};
 let appliedCount = 0, copiedAppearance = null, navigationVersion = 0;
 const previewClocks=new Map();
 let portGlow, uplinkBandwidth;
+const uplinkMeasurements=createUplinkMeasurements();
+let liveUplinkVersion=0, nextRefreshId=0, appliedRefreshId=0;
 let inspectorCollapsed=getInspectorCollapsed();
 const portAnimator=createPortAnimator(port=>document.querySelector(`[data-port="${port}"]`),globalThis,{onPaint:colors=>portGlow?.paint(colors)});
 const rememberedEffects=new Map(), previewStates=new Map();
@@ -235,10 +237,16 @@ async function confirmDraft(){
 }
 async function refresh(rebuild = true) {
   const workspace=session.workspace_id,send=workspaceRequest();
-  const [next, ports] = await Promise.all([send('/api/state'), send('/api/ports')]);
-  if(workspace!==session.workspace_id)return;
+  const id=++nextRefreshId, liveAtStart=liveUplinkVersion;
+  const [[next,receivedAt], ports] = await Promise.all([
+    send('/api/state').then(snapshot=>[snapshot,performance.now()]), send('/api/ports')]);
+  if(workspace!==session.workspace_id||id<=appliedRefreshId)return;
+  appliedRefreshId=id;
   receiveScheduleClock(next.schedule_clock);
-  state = {...next, ports};
+  const latest=liveAtStart===liveUplinkVersion?{}:{
+    connected:state.connected,telemetry:state.telemetry,uplink_bandwidth:state.uplink_bandwidth};
+  state = {...next,...latest,ports};
+  if(liveAtStart===liveUplinkVersion)uplinkMeasurements.update(state,disconnected,workspace,receivedAt);
   if(lastApplied?.after&&sceneFingerprint(state)!==sceneFingerprint(lastApplied.after.scene))lastApplied=null;
   updateConnection();
   updateLive();
@@ -375,7 +383,7 @@ function renderStudio() {
   placeInRack();
   rack.addEventListener('change',placeInRack);
   secondaryCleanup=()=>rack.removeEventListener('change',placeInRack);
-  uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(meterHost);
+  uplinkBandwidth?.dispose();uplinkBandwidth=mountUplinkBandwidth(meterHost,globalThis,uplinkMeasurements);
   renderPorts();updateGroups();renderInspector();updateLive();updateDraftBar();renderQuickProfiles();updateUndo();
   document.querySelector('#apply-draft').onclick=()=>run(flushEdits);
   document.querySelector('#cancel-draft').onclick=discardDraft;
@@ -572,7 +580,8 @@ function updateLive() {
   livePortDetails?.update();
   const legend=document.querySelector('.current-speed-legend');
   if(legend){const keys=new Set([...(state.ports||[]),...(state.sfp||[])].map(port=>linkStatus(port).key));const entries=[...LINK_SPEEDS,['offline','Disconnected'],['disabled','Disabled'],['unknown','Not reported']].filter(([key])=>keys.has(key));const signature=entries.map(([key])=>key).join(',');if(legend.dataset.keys!==signature){legend.innerHTML=entries.map(([key,name])=>`<span><i class="speed-dot speed-${key}" aria-hidden="true"></i>${name}</span>`).join('');legend.dataset.keys=signature;}}
-  uplinkBandwidth?.update(state,disconnected);
+  if(uplinkBandwidth)uplinkBandwidth.update(state,disconnected,session.workspace_id);
+  else uplinkMeasurements.update(state,disconnected,session.workspace_id,performance.now());
   if(document.hidden)return;
   if(page==='Effects'){secondaryCleanup?.update?.({state,selectedPorts:[...selected],effectDrafts:rememberedEffects,draft});return;}
   if (page !== 'Lighting') return;
@@ -992,13 +1001,30 @@ function connectFrames() {
   if(closingWorkspace||streamPaused)return;
   if(currentSocket&&currentSocket.readyState<2)return;
   clearTimeout(retryTimer); currentSocket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/ws`);
-  currentSocket.addEventListener('open',()=>{disconnected=false;updateConnection();if(document.querySelector('#status').textContent==='The workspace connection was interrupted.')status('Workspace connection restored');updateDraftBar();});
+  const opened=currentSocket;
+  currentSocket.addEventListener('open',()=>{
+    if(opened!==currentSocket)return;
+    if(disconnected)liveUplinkVersion++;
+    disconnected=false;updateConnection();if(document.querySelector('#status').textContent==='The workspace connection was interrupted.')status('Workspace connection restored');updateDraftBar();
+  });
   currentSocket.addEventListener('message',event=>{
+    if(opened!==currentSocket||closingWorkspace||streamPaused)return;
     let message;try{message=JSON.parse(event.data);}catch{return;}
-    if(message.type==='frame'&&workspaceReady){receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,telemetry:message.telemetry??state.telemetry,poe_summary:message.poe_summary??state.poe_summary,identify:Object.hasOwn(message,'identify')?message.identify:state.identify,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:Object.hasOwn(message,'uplink_bandwidth')?message.uplink_bandwidth:state.uplink_bandwidth,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected,mode:message.mode};session={...session,connected:message.connected};pushLiveColors();scheduleLiveUpdate();return;}
+    if(message.type==='frame'&&workspaceReady){
+      const newGeneration=message.telemetry?.generation!==undefined&&message.telemetry.generation!==state.telemetry?.generation;
+      const changedConnection=message.connected!=null&&message.connected!==state.connected;
+      const hasReading=Object.hasOwn(message,'uplink_bandwidth');
+      if(hasReading||newGeneration||changedConnection)liveUplinkVersion++;
+      let reading=newGeneration?null:state.uplink_bandwidth;
+      if(hasReading)reading=message.uplink_bandwidth;
+      if(message.connected===false)reading=null;
+      receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,telemetry:message.telemetry??state.telemetry,poe_summary:message.poe_summary??state.poe_summary,identify:Object.hasOwn(message,'identify')?message.identify:state.identify,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:reading,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected??state.connected,mode:message.mode};session={...session,connected:state.connected};
+      uplinkMeasurements.update(state,disconnected,session.workspace_id,performance.now());pushLiveColors();scheduleLiveUpdate();return;}
     else if(message.type==='state'&&workspaceReady){
+      liveUplinkVersion++;
       receiveScheduleClock(message.state.schedule_clock);
       state={...message.state,ports:state.ports};
+      uplinkMeasurements.update(state,disconnected,session.workspace_id,performance.now());
       if(!busy&&lastApplied?.after&&sceneFingerprint(state)!==sceneFingerprint(lastApplied.after.scene))lastApplied=null;
       if(page==='Lighting'){updateGroups();updateLive();reconcileEditor();}
     }else if(message.type==='session'){void acceptSession(message.session);}
@@ -1008,12 +1034,12 @@ function connectFrames() {
       if(page==='Settings')secondaryCleanup?.update?.(state,session,disconnected);
     }
   });
-  const opened=currentSocket;
   currentSocket.addEventListener('close',()=>{
     if(closingWorkspace||streamPaused||opened!==currentSocket)return;
+    liveUplinkVersion++;state={...state,uplink_bandwidth:null};
     disconnected=true;updateConnection();updateLive();if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);retryTimer=setTimeout(connectFrames,1500);
   });
-  currentSocket.addEventListener('error',()=>currentSocket.close());
+  currentSocket.addEventListener('error',()=>opened.close());
 }
 document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>run(()=>navigate(button.dataset.page))));
 document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))updateRangeProgress();});
@@ -1039,6 +1065,8 @@ window.addEventListener('beforeunload',event=>{saveUiState();if(busy||pendingPla
 window.addEventListener('popstate',()=>{const historyEntry=routeHistory.observe();if(!historyEntry)return;const target=['Lighting','Effects','Automation','Profiles','Settings','Help'].find(name=>`#${name.toLowerCase()}`===historyEntry.hash)||'Lighting';run(()=>navigate(target,{fromHistory:true,historyEntry}));});
 
 function resetWorkspace() {
+  appliedRefreshId=++nextRefreshId;
+  uplinkMeasurements.reset();
   navigationVersion++;
   document.querySelectorAll('.group-dialog,.draft-dialog,.rack-workspace-dialog,.saved-library,.scene-history,.port-finder,.port-names,.scene-conflict').forEach(dialog=>dialog.close('stay'));
   activeColorPopover?.();secondaryCleanup?.();secondaryCleanup=undefined;portAnimator.stop();portGlow?.dispose();portGlow=null;uplinkBandwidth?.dispose();uplinkBandwidth=null;
@@ -1071,6 +1099,9 @@ async function acceptSession(next) {
   const changed=session.workspace_id!==next.workspace_id||session.simulated!==next.simulated;
   if(changed&&(workspaceReady||openingWorkspace)){saveUiState();resetWorkspace();}
   session=next;updateConnection();
+  if(!changed&&workspaceReady&&next.connected===false&&state.connected!==false){
+    liveUplinkVersion++;state={...state,connected:false,uplink_bandwidth:null};updateLive();
+  }
   if(!session.logged_in){if(!workspaceReady&&secondaryCleanup?.update)secondaryCleanup.update(session);else showConnection();const handoff=handoffStatus(session);if(handoff)status(handoff.message,handoff.error);return;}
   if(workspaceReady)return;
   const workspace=session.workspace_id;

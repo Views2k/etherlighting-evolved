@@ -37,6 +37,28 @@ internal static class LightingPageChecks
         try
         {
             check(shell.CurrentPage is LightingPage, "the regular workspace opens the native Lighting page");
+            var page = (LightingPage)shell.CurrentPage!;
+            var bandwidth = page.GetLogicalDescendants().OfType<UplinkBandwidthMeter>().Single();
+            var heading = bandwidth.GetLogicalDescendants().OfType<TextBlock>().Single(t => t.Text == "Uplink bandwidth");
+            var window = (Window)TopLevel.GetTopLevel(page)!;
+            var windowSize = (window.Width, window.Height);
+            var detached = 0;
+            void OnDetach(object? sender, LogicalTreeAttachmentEventArgs args) => detached++;
+            bandwidth.DetachedFromLogicalTree += OnDetach;
+            try
+            {
+                window.Width = 1300; window.Height = 800; Dispatcher.UIThread.RunJobs();
+                var wideRow = Grid.GetRow(bandwidth);
+                window.Width = 1000; window.Height = 410; Dispatcher.UIThread.RunJobs();
+                page.Update(); page.Frame();
+                check(wideRow == 0 && Grid.GetRow(bandwidth) == 3 && heading.IsEffectivelyVisible && detached == 0,
+                    "wide and rack layouts keep the same attached bandwidth meter and visible heading");
+            }
+            finally
+            {
+                bandwidth.DetachedFromLogicalTree -= OnDetach;
+                (window.Width, window.Height) = windowSize; Dispatcher.UIThread.RunJobs();
+            }
             Click("None"); check(studio.Selected.Count == 0, "None clears the port selection");
             Click("Ethernet"); var copper = PortTopology.LightingPorts(w.State).Copper;
             check(studio.Selected.SequenceEqual(copper), "Ethernet selects precisely the switch's copper ports");
