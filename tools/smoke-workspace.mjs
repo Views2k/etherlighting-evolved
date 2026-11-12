@@ -62,8 +62,11 @@ async function bounds(selector) {
 async function checkBandwidthWidth(inspectorClosed) {
   const slot = await bounds('.rack-meter-slot');
   const plot = await bounds('.rack-meter-slot .bandwidth-chart svg');
+  const dock = await bounds('.output-dock');
   assert.ok(Math.abs(plot.x + plot.width - slot.x - slot.width) <= 2, 'The traces must reach the far edge of the rack meter');
   assert.ok(plot.width > slot.width * (inspectorClosed ? 0.45 : 0.25), 'The rack graph must use the available row');
+  assert.ok(plot.height >= 32 && plot.bottom <= dock.y + 1 && slot.bottom <= dock.y + 1,
+    'The entire rack graph and its labels must sit above the brightness footer');
   return Math.round(plot.width);
 }
 async function observeBandwidthPlot() {

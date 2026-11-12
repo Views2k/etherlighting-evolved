@@ -33,6 +33,10 @@ public sealed partial class LightingPage : Page
     readonly Grid dockRow = new() { ColumnSpacing = 12, RowSpacing = 6 };
     readonly ScrollViewer mapScroll = new(), inspectorScroll = new();
     readonly Grid canvas = new() { ColumnDefinitions = new("*,Auto"), RowDefinitions = new("Auto,Auto,Auto,Auto,Auto") };
+    readonly Grid rackFaceplate = new() { ColumnDefinitions = new("*,Auto"), RowDefinitions = new("Auto,Auto,Auto,0,Auto"), VerticalAlignment = VerticalAlignment.Top };
+    readonly ScrollViewer rackPortScroll = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    readonly List<Control> portRows = [];
+    bool rackLayout;
     readonly StackPanel inspector = U.Column(14);
     readonly TextBlock title = U.H1(""), mapStatus = U.P("", "muted"), legend = U.Text("", "muted", true);
     readonly Dictionary<int, PortTile> tiles = [];
@@ -142,6 +146,9 @@ public sealed partial class LightingPage : Page
         var badge = U.Text("Demo", "small muted"); badge.IsVisible = Workspace.Session.Bool("simulated") == true;
         title.FontSize = 19; var name = U.Row(12, title, badge); var head = U.Column(2, name, mapStatus);
         canvas.Children.Add(head);
+        portRows.Add(head);
+        rackPortScroll.Content = rackFaceplate;
+        Grid.SetColumnSpan(rackPortScroll, 2);
         canvas.Children.Add(bandwidthPanel);
         var selectors = U.Wrap(0);
         foreach (var (label, target) in new[] { ("All ports", "all"), ("Ethernet", "copper"), ("SFP", "sfp"), ("None", "none") })
@@ -160,9 +167,22 @@ public sealed partial class LightingPage : Page
         void AddRow(Control control, int row)
         {
             canvas.Children.Add(control);
+            portRows.Add(control);
             Grid.SetRow(control, row);
             Grid.SetColumnSpan(control, 2);
         }
+    }
+    void SetRackLayout(bool rack)
+    {
+        if (rackLayout == rack) return;
+        rackLayout = rack;
+        var from = rack ? canvas : rackFaceplate;
+        var to = rack ? rackFaceplate : canvas;
+        foreach (var row in portRows) { from.Children.Remove(row); to.Children.Add(row); }
+        if (rack) canvas.Children.Add(rackPortScroll);
+        else canvas.Children.Remove(rackPortScroll);
+        mapScroll.VerticalScrollBarVisibility = rack ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+        canvas.RowDefinitions = new(rack ? "*,Auto" : "Auto,Auto,Auto,Auto,Auto");
     }
     void BuildBanks()
     {
@@ -219,13 +239,14 @@ public sealed partial class LightingPage : Page
         inspectorFrame.IsVisible = right || narrow && mobileInspector; mapScroll.IsVisible = !narrow || !mobileInspector;
         toolbar.IsVisible = !rack; openInspector.IsVisible = !right; rackWorkspace.IsVisible = rack;
         canvas.Margin = new Thickness(rack ? 12 : 20, rack ? 3 : 14);
-        Grid.SetRow(bandwidthPanel, meterBelow ? 3 : 0);
+        SetRackLayout(rack);
+        Grid.SetRow(bandwidthPanel, rack ? 1 : meterBelow ? 3 : 0);
         Grid.SetColumn(bandwidthPanel, meterBelow ? 0 : 1);
         Grid.SetColumnSpan(bandwidthPanel, meterBelow ? 2 : 1);
         bandwidthPanel.HorizontalAlignment = showChart ? HorizontalAlignment.Stretch
             : meterBelow ? HorizontalAlignment.Left : HorizontalAlignment.Right;
         bandwidthPanel.ShowChart(showChart);
-        foreach (var child in canvas.Children)
+        foreach (var child in portRows.Append<Control>(bandwidthPanel))
             child.Margin = new Thickness(0, Grid.GetRow(child) == 0 ? 0 : rack ? 3 : 14, 0, 0);
         banks.ColumnDefinitions = inline ? new ColumnDefinitions($"{editor.Copper.Count}*,{editor.Optical.Count}*") : new ColumnDefinitions("*");
         banks.RowDefinitions = inline ? new RowDefinitions("Auto") : new RowDefinitions(string.Join(",", Enumerable.Repeat("Auto", Math.Max(1, sections.Count))));

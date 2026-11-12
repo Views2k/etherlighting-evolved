@@ -3,9 +3,7 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
-using Avalonia.Headless;
 using Avalonia.Interactivity;
-using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
@@ -56,9 +54,9 @@ internal static class LightingPageChecks
                 var wideRow = Grid.GetRow(bandwidth);
                 window.Width = 1000; window.Height = 410; Dispatcher.UIThread.RunJobs();
                 page.Update(); page.Frame();
-                check(wideRow == 0 && Grid.GetRow(bandwidth) == 3 && heading.IsEffectivelyVisible && detached == 0,
+                check(wideRow == 0 && Grid.GetRow(bandwidth) == 1 && heading.IsEffectivelyVisible && detached == 0,
                     "wide and rack layouts keep the same attached bandwidth meter and visible heading");
-                RackBandwidth(window, page, bandwidth, output, check);
+                await RackBandwidth(window, page, bandwidth, output, check);
             }
             finally
             {
@@ -140,94 +138,85 @@ internal static class LightingPageChecks
         }
     }
 
-    static void RackBandwidth(Window window, LightingPage page, UplinkBandwidthMeter meter, string output, Action<bool, string> check)
+    static async Task RackBandwidth(Window window, LightingPage page, UplinkBandwidthMeter meter, string output, Action<bool, string> check)
     {
-        void Resize(int width) { window.Width = width; window.Height = 400; Dispatcher.UIThread.RunJobs(); }
         var plot = meter.GetLogicalDescendants().OfType<BandwidthPlot>().Single();
         var map = meter.GetLogicalAncestors().OfType<ScrollViewer>().First();
+        var face = page.GetLogicalDescendants().OfType<PortTile>().First().GetLogicalAncestors().OfType<ScrollViewer>().First();
+        var brightness = page.GetLogicalDescendants().OfType<TextBlock>().First(t => t.Text == "Default brightness");
+        var dock = brightness.GetLogicalAncestors().OfType<Border>().First();
+        var metrics = meter.GetLogicalDescendants().OfType<Grid>().Single(g => g.Width == 270);
         Rect Bounds(Control c) => new(c.TranslatePoint(default, window)!.Value, c.Bounds.Size);
         Button? HideButton() => page.GetLogicalDescendants().OfType<Button>().FirstOrDefault(b =>
             b.IsEffectivelyVisible && AutomationProperties.GetName(b) == "Hide port controls");
-        Resize(1276);
         var initiallyOpen = HideButton() is not null;
-        var readings = new UplinkMeasurements();
+        var workspace = page.Workspace;
+        var original = workspace.State["uplink_bandwidth"]?.DeepClone();
         var history = new JsonArray();
         for (var i = -59; i <= 0; i++)
             history.Add(new JsonArray(i * 1000, (int)(26e6 + 12e6 * Math.Sin(i * .36)), (int)(66e6 + 28e6 * Math.Sin(i * .22))));
-        readings.Receive(new JsonObject { ["connected"] = true, ["uplink_bandwidth"] = new JsonObject
-        {
-            ["status"] = "ready", ["sequence"] = 60, ["ports"] = new JsonArray(9), ["refresh_interval_ms"] = 1000,
-            ["sample_period_ms"] = 1000, ["sample_age_ms"] = 0, ["download_bps"] = 66000000, ["upload_bps"] = 26000000,
-            ["history"] = history,
-        } }, "rack-layout", false, Environment.TickCount64);
+        await workspace.SetPaused(true);
         try
         {
-            HideButton()?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Dispatcher.UIThread.RunJobs();
-            meter.RenderReading(readings, Environment.TickCount64);
-            window.UpdateLayout();
-            var full = Bounds(plot);
-            var viewport = Bounds(map);
-            var labels = meter.GetLogicalDescendants().OfType<TextBlock>().ToArray();
-            var peaks = labels.Where(t => t.Text?.StartsWith("Peak ", StringComparison.Ordinal) == true).ToArray();
-            var metrics = meter.GetLogicalDescendants().OfType<Grid>().Single(g => g.Width == 270);
-            check(full.Width > viewport.Width * .6 && viewport.Right - full.Right is >= 4 and <= 24,
-                "the 1276 by 400 rack plot fills the width beside the two rates and reaches the map's padded right edge");
-            var controls = labels.Where(t => !string.IsNullOrEmpty(t.Text) && t.Text != "Last minute").Cast<Control>()
-                .Concat(page.GetLogicalDescendants().OfType<PortTile>()).Append(map)
-                .Append(page.GetLogicalDescendants().OfType<TextBlock>().First(t => t.Text == "Default brightness")).ToArray();
-            var positions = controls.Select(Bounds).ToArray();
-            // Compare the same window and readings against the original fixed-width graph.
-            var (alignment, column, width) = (meter.HorizontalAlignment, meter.ColumnDefinitions[1].Width, plot.Width);
-            try
+            workspace.Handle(new JsonObject { ["type"] = "frame", ["connected"] = true, ["uplink_bandwidth"] = new JsonObject
             {
-                meter.HorizontalAlignment = HorizontalAlignment.Left;
-                meter.ColumnDefinitions[1].Width = GridLength.Auto;
-                plot.Width = 175;
-                window.UpdateLayout();
-                var original = Bounds(plot);
-                check(metrics.Bounds.Width == 270 && peaks.Length == 2 && positions.SequenceEqual(controls.Select(Bounds)) &&
-                    full.Position == original.Position && full.Height == original.Height && full.Width > original.Width,
-                    "only the plot width changes from the original rack layout; the labels, peak rows, faceplate, dock and viewport keep their geometry");
-            }
-            finally
+                ["status"] = "ready", ["sequence"] = 60, ["ports"] = new JsonArray(9), ["refresh_interval_ms"] = 1000,
+                ["sample_period_ms"] = 1000, ["sample_age_ms"] = 0, ["download_bps"] = 66000000, ["upload_bps"] = 26000000,
+                ["history"] = history,
+            } }, Environment.TickCount64);
+            foreach (var (width, height) in new[] { (1276, 400), (1024, 320) })
             {
-                meter.HorizontalAlignment = alignment;
-                meter.ColumnDefinitions[1].Width = column;
-                plot.Width = width;
-                window.UpdateLayout();
-            }
-            using (var frame = window.CaptureRenderedFrame())
-            {
-                check(frame is not null, "the native rack graph renders in the full Lighting window");
-                if (frame is not null)
+                window.Width = width; window.Height = height;
+                Dispatcher.UIThread.RunJobs();
+                foreach (var inspector in new[] { false, true })
                 {
-                    frame.Save(Path.Combine(output, "rack-bandwidth-1276x400.png"));
-                    var visible = full.Intersect(viewport);
-                    CheckTracePixels(frame, visible, window, check);
+                    if (inspector) page.RevealEditor();
+                    else HideButton()?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    face.ScrollToHome(); Dispatcher.UIThread.RunJobs();
+                    meter.RenderReading(workspace.Bandwidth, Environment.TickCount64); window.UpdateLayout();
+                    var full = Bounds(plot);
+                    var viewport = Bounds(map);
+                    var labels = meter.GetLogicalDescendants().OfType<TextBlock>().Where(t => !string.IsNullOrEmpty(t.Text)).ToArray();
+                    var caseName = $"{width}x{height}{(inspector ? "-inspector" : "")}";
+                    check((HideButton() is not null) == inspector && metrics.Bounds.Width == 270 &&
+                        Math.Abs(full.X - Bounds(metrics).Right - 16) <= 1 && viewport.Right - full.Right is >= 4 and <= 24,
+                        $"the {caseName} graph fills the available rack width beside the original rate columns");
+                    check(meter.IsEffectivelyVisible && full.Height == 32 && viewport.Contains(full) && Bounds(dock).Top - full.Bottom >= 2 &&
+                        Bounds(face).Bottom <= Bounds(meter).Top && labels.All(t => viewport.Contains(Bounds(t))) &&
+                        labels.Count(t => t.Text!.StartsWith("Peak ", StringComparison.Ordinal) && t.Text.EndsWith("Mbps", StringComparison.Ordinal)) == 2,
+                        $"the full 32px graph, both rates and both peaks fit above the {caseName} brightness dock");
+                    using (var image = new RenderTargetBitmap(new PixelSize(width, height)))
+                    {
+                        // Render the arranged window now. The headless swapchain can still
+                        // contain the previous size and inspector state immediately after resize.
+                        image.Render(window);
+                        image.Save(Path.Combine(output, $"rack-bandwidth-{caseName}.png"));
+                        CheckTracePixels(image, full, window, check);
+                    }
+                    var pinnedPosition = plot.TranslatePoint(default, map)!.Value;
+                    face.ScrollToEnd(); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+                    var movement = plot.TranslatePoint(default, map)!.Value - pinnedPosition;
+                    check(Math.Abs(movement.X) < .5 && Math.Abs(movement.Y) < .5 && Bounds(plot).Size == full.Size &&
+                        Bounds(dock).Top - Bounds(plot).Bottom >= 2 && (face.Extent.Height <= face.Viewport.Height || face.Offset.Y > 0),
+                        $"scrolling the {caseName} faceplate by {face.Offset.Y:0.##} pixels keeps the graph fixed above the dock");
                 }
             }
-            Resize(1040);
-            var smaller = Bounds(plot);
-            check(full.Width - smaller.Width > 200 && Bounds(map).Right - smaller.Right is >= 4 and <= 24,
-                "the rack graph follows successive window widths without overflowing the map");
-            Resize(1276); page.RevealEditor(); Dispatcher.UIThread.RunJobs();
-            var withInspector = Bounds(plot);
-            var openMap = Bounds(map);
-            check(HideButton() is not null && full.Width - withInspector.Width > 265 && withInspector.Width > 400 &&
-                openMap.Right - withInspector.Right is >= 4 and <= 24,
-                "opening the inspector constrains the graph to the available map width with the same right padding");
         }
         finally
         {
+            face.ScrollToHome();
             if (!initiallyOpen) HideButton()?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            meter.RenderReading(page.Shell.Workspace.Bandwidth, Environment.TickCount64);
+            workspace.Bandwidth.Reset();
+            workspace.Handle(new JsonObject { ["type"] = "frame", ["uplink_bandwidth"] = original }, Environment.TickCount64);
+            await workspace.SetPaused(false);
         }
     }
 
-    static void CheckTracePixels(WriteableBitmap frame, Rect graph, Window window, Action<bool, string> check)
+    static void CheckTracePixels(RenderTargetBitmap frame, Rect graph, Window window, Action<bool, string> check)
     {
-        using var buffer = frame.Lock();
+        using var copy = new WriteableBitmap(frame.PixelSize, frame.Dpi, Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Premul);
+        using var buffer = copy.Lock();
+        frame.CopyPixels(buffer, Avalonia.Platform.AlphaFormat.Premul);
         var sx = buffer.Size.Width / window.Bounds.Width;
         var sy = buffer.Size.Height / window.Bounds.Height;
         var x0 = Math.Clamp((int)Math.Ceiling(graph.X * sx), 0, buffer.Size.Width);
@@ -236,14 +225,13 @@ internal static class LightingPageChecks
         var y1 = Math.Clamp((int)Math.Floor(graph.Bottom * sy), y0, buffer.Size.Height);
         var blue = new bool[x1 - x0];
         var pink = new bool[x1 - x0];
-        var rgba = buffer.Format == Avalonia.Platform.PixelFormat.Rgba8888;
         for (var y = y0; y < y1; ++y)
         for (var x = x0; x < x1; ++x)
         {
             var pixel = Marshal.ReadInt32(buffer.Address, y * buffer.RowBytes + 4 * x);
-            var red = rgba ? (byte)pixel : (byte)(pixel >> 16);
+            var red = (byte)(pixel >> 16);
             var green = (byte)(pixel >> 8);
-            var b = rgba ? (byte)(pixel >> 16) : (byte)pixel;
+            var b = (byte)pixel;
             blue[x - x0] |= b - red > 35 && green - red > 18;
             pink[x - x0] |= red - green > 35 && red - b > 14;
         }
