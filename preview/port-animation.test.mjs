@@ -349,3 +349,71 @@ test('disposal during a failed draft cannot paint or restart the animation', () 
   animator.pushFrame({1: '#ff0000'}, 20); animator.setPreview(() => ({1: '#00ff00'})); animator.start();
   assert.equal(mock.queue.size, 0);
 });
+
+function timedAnimatorEnvironment() {
+  const mock = animatorEnvironment(), timers = new Map();
+  let handle = 0;
+  mock.media.matches = false;
+  mock.environment.setTimeout = (callback, delay) => { timers.set(++handle, {callback, delay}); return handle; };
+  mock.environment.clearTimeout = id => timers.delete(id);
+  mock.timers = timers;
+  mock.fireTimers = () => { const pending = [...timers.values()]; timers.clear(); for (const timer of pending) timer.callback(); };
+  return mock;
+}
+
+test('steady lighting stops repainting until a different frame arrives', async () => {
+  const {PAINT_INTERVAL, SETTLE_TIME} = await import('./port-animation.mjs');
+  const mock = timedAnimatorEnvironment(), writes = [];
+  const element = {isConnected: true, style: {setProperty: (key, value) => { if (key === '--port-color') writes.push(value); }}};
+  const animator = createPortAnimator(() => element, mock.environment);
+  let time = 0;
+  const step = () => { time += PAINT_INTERVAL; mock.fireTimers(); mock.flush(time); };
+  animator.pushFrame({1: '#204060'}, time);
+  for (let i = 0; i < 400 && (mock.queue.size || mock.timers.size); i++) step();
+  assert.equal(mock.queue.size, 0); assert.equal(mock.timers.size, 0);
+  assert.ok(time >= SETTLE_TIME, 'the loop keeps painting while the color settles');
+  const settled = writes.length;
+  for (let i = 0; i < 40; i++) { time += 45; animator.pushFrame({1: '#204060'}, time); }
+  assert.equal(mock.queue.size, 0, 'identical frames do not wake a settled display');
+  assert.equal(writes.length, settled);
+  time += 45; animator.pushFrame({1: '#ff0000'}, time);
+  assert.equal(mock.queue.size + mock.timers.size, 1, 'a different frame wakes it');
+  for (let i = 0; i < 60; i++) step();
+  assert.ok(writes.length > settled);
+  animator.dispose();
+});
+
+test('moving lighting paints at most thirty times a second on a fast display', async () => {
+  const {PAINT_INTERVAL} = await import('./port-animation.mjs');
+  const mock = timedAnimatorEnvironment();
+  let paints = 0;
+  const element = {isConnected: true, style: {setProperty: key => { if (key === '--port-color') paints++; }}};
+  const animator = createPortAnimator(() => element, mock.environment);
+  // One second of a 240 Hz display with a color that changes on every stream frame.
+  for (let frame = 0; frame <= 240; frame++) {
+    const time = frame * 1000 / 240;
+    if (frame % 10 === 0) animator.pushFrame({1: `#${(frame % 256).toString(16).padStart(2, '0')}4080`}, time);
+    for (const [id, timer] of [...mock.timers]) if (timer.due === undefined) timer.due = time + timer.delay;
+    for (const [id, timer] of [...mock.timers]) if (timer.due <= time) { mock.timers.delete(id); timer.callback(); }
+    mock.flush(time);
+  }
+  assert.ok(paints > 15, `painted ${paints} times`);
+  assert.ok(paints <= Math.ceil(1000 / PAINT_INTERVAL) + 1, `painted ${paints} times`);
+  animator.stop();
+  assert.equal(mock.timers.size, 0, 'stopping clears the pending wake-up');
+  animator.dispose();
+});
+
+test('a staged preview keeps animating and stopping clears every pending frame', () => {
+  const mock = timedAnimatorEnvironment();
+  const element = {isConnected: true, style: {setProperty() {}}};
+  const animator = createPortAnimator(() => element, mock.environment);
+  animator.pushFrame({1: '#101010'}, 0);
+  animator.setPreview(() => ({1: '#303030'}));
+  let time = 0;
+  for (let i = 0; i < 120; i++) { time += 34; mock.fireTimers(); mock.flush(time); }
+  assert.equal(mock.queue.size + mock.timers.size, 1, 'a preview is time-based and never settles');
+  animator.stop();
+  assert.equal(mock.queue.size + mock.timers.size, 0);
+  animator.dispose();
+});

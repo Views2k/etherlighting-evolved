@@ -79,6 +79,11 @@ export class ColorFrames {
   }
 }
 
+// The switch and the engine stream update about 20 to 30 times a second, so painting faster only costs CPU and GPU time.
+export const PAINT_INTERVAL = 1000 / 30;
+// After the last visible change the loop stops until a different frame or a preview arrives.
+export const SETTLE_TIME = 600;
+
 export function createPortAnimator(getElement, environment = globalThis, {onPaint} = {}) {
   const frames = new ColorFrames();
   const displayed = new Map(), elements = new Map(), painted = new WeakMap();
@@ -86,9 +91,15 @@ export function createPortAnimator(getElement, environment = globalThis, {onPain
   const checking = new URLSearchParams(environment.location.search).has('motion-check');
   const reducedMotion = environment.matchMedia('(prefers-reduced-motion: reduce)');
   let active = false, disposed = false, request = 0, last = 0, preview = null, previewFailed = false, frozenTime = null;
+  let waiting = 0, idle = false, changedAt = 0;
   let previewPorts = [];
 
-  function schedule() { if (active && !request) request = environment.requestAnimationFrame(draw); }
+  function schedule() {
+    if (!active || request || waiting) return;
+    const wait = last && environment.setTimeout ? PAINT_INTERVAL - (environment.performance.now() - last) : 0;
+    if (wait > 4) waiting = environment.setTimeout(() => { waiting = 0; if (active && !request) request = environment.requestAnimationFrame(draw); }, wait);
+    else request = environment.requestAnimationFrame(draw);
+  }
   function report(kind) {
     if (reported.has(kind)) return;
     reported.add(kind);
@@ -100,6 +111,7 @@ export function createPortAnimator(getElement, environment = globalThis, {onPain
   function draw(now) {
     request = 0;
     if (!active) return;
+    let changed = false;
     try {
       const started = checking ? environment.performance.now() : 0;
       const elapsed = last ? clamp(now - last, 0, 80) : 16;
@@ -132,7 +144,7 @@ export function createPortAnimator(getElement, environment = globalThis, {onPain
           const css = rgbCss(color);
           const prior = painted.get(element);
           const ink = portInk();
-          if (prior?.css !== css) element.style.setProperty('--port-color', css);
+          if (prior?.css !== css) { element.style.setProperty('--port-color', css); changed = true; }
           if (prior?.ink !== ink) element.style.setProperty('--port-ink', ink);
           displayed.set(port, color);
           painted.set(element, {css, ink});
@@ -144,23 +156,37 @@ export function createPortAnimator(getElement, environment = globalThis, {onPain
       if (active && onPaint) { try { onPaint(displayed); } catch { report('paint'); } }
       if (checking && active) environment.dispatchEvent(new CustomEvent('ee-render-sample', {detail:{kind:'Lighting', ms:environment.performance.now()-started}}));
     } finally {
-      if (!reducedMotion.matches) schedule();
+      if (changed || !changedAt) changedAt = now;
+      // A running preview is time-based, so it keeps painting; otherwise stop once the colors have settled.
+      idle = !(preview && !previewFailed) && now - changedAt >= SETTLE_TIME;
+      if (!reducedMotion.matches && !idle) schedule();
     }
   }
 
   function start() {
     if (disposed) return;
     if (!active) { active = true; last = 0; }
+    idle = false; changedAt = 0;
     schedule();
   }
-  function stop() { active = false; environment.cancelAnimationFrame(request); request = 0; last = 0; elements.clear(); failedPorts.clear(); }
+  function stop() {
+    active = false; environment.cancelAnimationFrame(request); request = 0; last = 0; elements.clear(); failedPorts.clear();
+    if (waiting) { environment.clearTimeout?.(waiting); waiting = 0; }
+    idle = false; changedAt = 0;
+  }
   const motionChanged = () => { frozenTime = null; last = 0; schedule(); };
   reducedMotion.addEventListener('change', motionChanged);
   return {
     pushFrame(colors, time = environment.performance.now()) {
-      if (!disposed && frames.push(colors, time)) { failedPorts.clear(); start(); }
+      if (disposed) return;
+      const before = idle ? JSON.stringify(frames.latest()) : null;
+      if (!frames.push(colors, time)) return;
+      failedPorts.clear();
+      // A settled display wakes only for a frame that differs from the one it already shows.
+      if (before !== null && active && before === JSON.stringify(frames.latest())) return;
+      start();
     },
-    setPreview(render) { if (!disposed) { preview = render; previewFailed = false; schedule(); } },
+    setPreview(render) { if (!disposed) { preview = render; previewFailed = false; idle = false; changedAt = 0; schedule(); } },
     start,
     stop,
     dispose() { disposed = true; stop(); reducedMotion.removeEventListener('change', motionChanged); displayed.clear(); frames.frames.length = 0; preview = null; }
