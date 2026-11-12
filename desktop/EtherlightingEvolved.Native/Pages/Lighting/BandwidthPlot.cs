@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 
 namespace EtherlightingEvolved.Native.Pages.Lighting;
@@ -9,42 +10,101 @@ internal sealed class BandwidthPlot : Control
 {
     static readonly Pen Download = new(new SolidColorBrush(Color.Parse("#74b9ff")), 1.6);
     static readonly Pen Upload = new(new SolidColorBrush(Color.Parse("#eb80c0")), 1.6);
-    readonly List<(double Time, double Up, double Down)> values = [];
-    double scale = 1;
+    readonly BandwidthTimeline trace = new();
+    readonly Func<long> time;
+    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(1000d / 30) };
+    StreamGeometry? uploadLine, downloadLine;
+    double drawnScale, deadline;
+    Size drawnSize;
+    bool active, attached;
 
-    public BandwidthPlot()
+    public BandwidthPlot() : this(() => Environment.TickCount64) { }
+
+    internal BandwidthPlot(Func<long> time)
     {
-        Width = 175;
+        this.time = time;
         Height = 32;
         ClipToBounds = true;
+        timer.Tick += (_, _) => Tick(time());
+        AttachedToVisualTree += (_, _) => { attached = true; Tick(time()); };
+        DetachedFromVisualTree += (_, _) => { attached = false; timer.Stop(); };
     }
 
-    public bool HasHistory => values.Count >= 2;
+    public bool HasHistory => trace.Points.Count >= 2;
+    internal bool IsAnimating => timer.IsEnabled;
 
-    public void Update(IReadOnlyList<BandwidthPoint> records)
+    public void SetActive(bool value)
     {
-        values.Clear();
-        scale = 1;
-        foreach (var row in records)
-        {
-            values.Add((1 + row.Offset / 60000, row.Up, row.Down));
-            scale = Math.Max(scale, Math.Max(row.Up, row.Down));
-        }
+        if (active == value) return;
+        active = value;
+        var now = time();
+        if (value) trace.Resume(now);
+        Tick(now);
+    }
+
+    public void Update(UplinkSample? sample, double now)
+    {
+        trace.Update(sample, now);
+        downloadLine = uploadLine = null;
         InvalidateVisual();
+    }
+
+    public void SetDeadline(double value, double now)
+    {
+        var changed = value != deadline;
+        deadline = value;
+        if (changed || timer.IsEnabled != ShouldAnimate(now)) Tick(now);
+    }
+
+    bool ShouldAnimate(double now) => active && attached && IsEffectivelyVisible && now < deadline && trace.Moving(now);
+
+    void Tick(double now)
+    {
+        if (ShouldAnimate(now)) timer.Start();
+        else timer.Stop();
+        if (active && attached && IsEffectivelyVisible) InvalidateVisual();
     }
 
     public override void Render(DrawingContext context)
     {
         base.Render(context);
-        var width = Bounds.Width;
-        var height = Math.Max(0, Bounds.Height - 2);
-        Point At(double time, double rate) => new(time * width, height - rate / scale * (height - 2));
-        for (var i = 1; i < values.Count; i++)
+        if (!HasHistory || Bounds.Width <= 0 || Bounds.Height < 4) return;
+        var now = time();
+        var fresh = now < deadline;
+        var scale = fresh ? trace.Scale(now) : trace.FinalScale;
+        if (downloadLine is null || drawnScale != scale || drawnSize != Bounds.Size)
         {
-            var a = values[i - 1];
-            var b = values[i];
-            context.DrawLine(Download, At(a.Time, a.Down), At(b.Time, b.Down));
-            context.DrawLine(Upload, At(a.Time, a.Up), At(b.Time, b.Up));
+            downloadLine = BuildLine(scale, true);
+            uploadLine = BuildLine(scale, false);
+            drawnScale = scale;
+            drawnSize = Bounds.Size;
         }
+        var shift = fresh ? -trace.Offset(now) * Bounds.Width / BandwidthTimeline.Window : 0;
+        using (context.PushTransform(Matrix.CreateTranslation(shift, 0)))
+        {
+            context.DrawGeometry(null, Download, downloadLine);
+            context.DrawGeometry(null, Upload, uploadLine!);
+        }
+    }
+
+    StreamGeometry BuildLine(double scale, bool down)
+    {
+        var geometry = new StreamGeometry();
+        using var path = geometry.Open();
+        double? previous = null;
+        foreach (var point in trace.Points)
+        {
+            var xy = new Point((1 + point.Offset / BandwidthTimeline.Window) * Bounds.Width,
+                Bounds.Height - 2 - (down ? point.Down : point.Up) / scale * (Bounds.Height - 4));
+            if (previous is null || !trace.Joins(previous.Value, point.Offset))
+            {
+                if (previous is not null) path.EndFigure(false);
+                path.BeginFigure(xy, false);
+            }
+            else path.LineTo(xy);
+            previous = point.Offset;
+        }
+        if (previous is not null) path.EndFigure(false);
+        return geometry;
     }
 }

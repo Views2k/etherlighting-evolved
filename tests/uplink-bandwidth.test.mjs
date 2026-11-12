@@ -6,7 +6,7 @@ const sample=(overrides={})=>({status:'ready',ports:[5],upload_bps:25_000_000,do
   sample_period_ms:5000,sample_age_ms:0,sequence:1,refresh_interval_ms:5000,...overrides});
 
 function fixture() {
-  let time=0, next=0;
+  let time=0, next=0, intersection;
   const frames=new Map(), timers=new Map(), listeners=new Map(), motionListeners=new Map();
   const doc={hidden:false,activeElement:{name:'color input'},
     addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
@@ -21,6 +21,11 @@ function fixture() {
   doc.createElementNS=(_,tag)=>new Element(tag);
   const host=new Element('div'), media={matches:false,addEventListener:(type,fn)=>motionListeners.set(type,fn),removeEventListener:type=>motionListeners.delete(type)};
   const environment={document:doc,performance:{now:()=>time},matchMedia:()=>media,
+    IntersectionObserver:class {
+      constructor(callback){intersection=callback;}
+      observe(){intersection([{isIntersecting:true}]);}
+      disconnect(){intersection=null;}
+    },
     requestAnimationFrame:fn=>{const id=++next;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
     setTimeout:(fn,delay)=>{const id=++next;timers.set(id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id)};
   const measurements=createUplinkMeasurements(), panel=mountUplinkBandwidth(host,environment,measurements), section=host.children[0];
@@ -30,6 +35,7 @@ function fixture() {
     update:(record=sample(),state={})=>panel.update({connected:true,uplink_bandwidth:record,...state}),
     tick(ms){time+=ms;for(const [id,fn] of [...frames]){frames.delete(id);fn(time);}for(const [id,timer] of [...timers])if(timer.at<=time){timers.delete(id);timer.fn();}},
     hide(value){doc.hidden=value;listeners.get('visibilitychange')?.();},
+    intersect(value){intersection?.([{isIntersecting:value}]);},
     reduced(value){media.matches=value;motionListeners.get('change')?.();}};
 }
 
@@ -44,17 +50,19 @@ test('bandwidth uses decimal network units without presenting tiny positive traf
 
 test('a speed test remains visible after the live sample returns to idle',()=>{
   const ui=fixture();
+  ui.reduced(true);
   ui.update(sample({upload_bps:500_000,download_bps:750_000,history:[
     [-10_000,1_000_000,1_500_000_000],[-5000,200_000_000,750_000],[0,500_000,750_000]]}));
   assert.equal(ui.text(0),'0.75 Mbps');
   assert.equal(ui.readings[0].children[2].textContent,'Peak 1500 Mbps');
   assert.equal(ui.readings[1].children[2].textContent,'Peak 200.00 Mbps');
   assert.equal(ui.section.children[2].hidden,false);
-  const graph=ui.section.children[2].children[1].children[0].getAttribute('points');
+  const graph=ui.section.children[2].children[1].children[0].getAttribute('d');
+  assert.ok(graph.startsWith('M'));
   ui.update(sample({status:'stale'}));
   assert.equal(ui.readings[0].children[2].textContent,'Peak 1500 Mbps');
   assert.equal(ui.section.children[2].children[0].textContent,'Minute before last reading');
-  assert.equal(ui.section.children[2].children[1].children[0].getAttribute('points'),graph);
+  assert.equal(ui.section.children[2].children[1].children[0].getAttribute('d'),graph);
   ui.panel.dispose();
 });
 
@@ -196,4 +204,56 @@ test('disposing a panel removes its timers, observers, and elements',()=>{
   assert.equal(ui.frames.size,0);assert.equal(ui.timers.size,0);assert.equal(ui.listeners.size,0);
   assert.equal(ui.motionListeners.size,0);assert.equal(ui.host.children.length,0);
   ui.update();assert.equal(ui.frames.size,0);
+});
+
+const chartSample=(overrides={})=>sample({sample_period_ms:1000,refresh_interval_ms:1000,
+  history:[[-3000,10,40],[-2000,30,80],[-1000,20,100],[0,40,30]],...overrides});
+const path=(ui,direction=0)=>ui.section.children[2].children[1].children[direction].getAttribute('d');
+const coordinates=svg=>[...svg.matchAll(/([ML])([\d.]+) ([\d.]+)/g)].map(([,cmd,x,y])=>({cmd,x:Number(x),y:Number(y)}));
+
+test('the measured upload and download segments scroll uniformly between switch readings, then stop',()=>{
+  const ui=fixture();ui.update(chartSample());
+  const first=[path(ui),path(ui,1)].map(coordinates);
+  ui.tick(100);
+  const middle=[path(ui),path(ui,1)].map(coordinates);
+  ui.tick(100);
+  const end=[path(ui),path(ui,1)].map(coordinates);
+  for(const i of [0,1]){
+    assert.ok(Math.abs(first[i][0].x-middle[i][0].x-0.4)<0.001);
+    assert.ok(Math.abs(middle[i][0].x-end[i][0].x-0.4)<0.001);
+    assert.equal(end[i].at(-1).x,240);
+    assert.ok(end[i].every(p=>p.y>=2 && p.y<=34));
+  }
+  assert.notEqual(first[1].at(-1).y,end[1].at(-1).y);
+  ui.tick(2000);const atLast=path(ui);assert.equal(ui.frames.size,0);
+  ui.tick(3000);assert.equal(path(ui),atLast);assert.equal(ui.frames.size,0);
+  ui.panel.dispose();
+});
+
+test('late delivery of an overlapping snapshot keeps the historical timeline anchored',()=>{
+  const ui=fixture();ui.update(chartSample());ui.tick(850);
+  const before=coordinates(path(ui))[0].x;
+  ui.tick(400);
+  const prior=coordinates(path(ui))[0].x;
+  ui.update(chartSample({sequence:2,sample_age_ms:250,
+    history:[[-4000,10,40],[-3000,30,80],[-2000,20,100],[-1000,40,30],[0,60,45]]}));
+  assert.equal(coordinates(path(ui))[0].x,prior);
+  assert.ok(Math.abs(before-prior-1.6)<0.001);
+  ui.tick(100);assert.ok(Math.abs(prior-coordinates(path(ui))[0].x-0.4)<0.001);
+  ui.panel.dispose();
+});
+
+test('the chart leaves gaps between interrupted samples and pauses motion when it is offscreen',()=>{
+  const ui=fixture();ui.update(chartSample({history:[[-8000,10,40],[-7000,20,60],[-2000,30,45],[-1000,20,50],[0,35,40]]}));
+  assert.equal(coordinates(path(ui)).filter(p=>p.cmd==='M').length,2);
+  ui.intersect(false);assert.equal(ui.frames.size,0);
+  const offscreen=path(ui);ui.tick(200);assert.equal(path(ui),offscreen);
+  ui.intersect(true);assert.equal(ui.frames.size,1);
+  ui.reduced(true);assert.equal(ui.frames.size,0);
+  const settled=path(ui);ui.tick(250);assert.equal(path(ui),settled);
+  ui.reduced(false);assert.equal(ui.frames.size,1);
+  ui.hide(true);assert.equal(ui.frames.size,0);
+  ui.tick(11000);ui.hide(false);assert.equal(ui.frames.size,0);
+  assert.equal(ui.section.dataset.status,'stale');
+  ui.panel.dispose();
 });

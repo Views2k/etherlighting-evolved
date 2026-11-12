@@ -258,7 +258,7 @@ class Engine:
         self._sent: list[tuple[float, int]] = []  # (time, commands) for the last few seconds
 
         self._meter = TrafficMeter()
-        self._bandwidth = UplinkBandwidth(self._telemetry_ports())
+        self._bandwidth = UplinkBandwidth(self._telemetry_ports(), poll_interval=self.link_poll)
         self._t0 = timing.monotonic()
         self._dirty = asyncio.Event()
         self._write_idle = asyncio.Event()
@@ -304,7 +304,6 @@ class Engine:
             asyncio.create_task(self._keep_connected(), name="ee-connection"),
             asyncio.create_task(self._render_loop(), name="ee-render"),
             asyncio.create_task(self._status_loop(), name="ee-status"),
-            asyncio.create_task(self._bandwidth_loop(), name="ee-bandwidth"),
             asyncio.create_task(self._health_loop(), name="ee-health"),
         ]
 
@@ -1905,6 +1904,7 @@ class Engine:
                 self._telemetry_sampled_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
                 self._telemetry_sequence += 1
                 self._bandwidth.update(links, now=sample_time, generation=generation)
+                self._bandwidth.publish(now=sample_time)
                 measured = self._meter.update(links)
                 self.traffic = {port: measured[port] for port in self._meter.valid}
                 changed = {p: (k.link_up, k.anomaly) for p, k in links.items()} != {
@@ -1931,16 +1931,3 @@ class Engine:
             except TransportError as exc:
                 self._lost(exc)
             await asyncio.sleep(self.link_poll)
-
-    async def _bandwidth_loop(self) -> None:
-        interval = self._bandwidth.INTERVAL
-        deadline = timing.monotonic() + interval
-        while True:
-            await asyncio.sleep(max(0.0, deadline - timing.monotonic()))
-            now = timing.monotonic()
-            if now < deadline:
-                continue
-            self._bandwidth.publish(now=now, connected=self.connected)
-            if self._subscribers:
-                self._publish(self.frame_message())
-            deadline += (math.floor((now - deadline) / interval) + 1) * interval

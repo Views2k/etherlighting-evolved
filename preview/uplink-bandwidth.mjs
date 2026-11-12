@@ -1,4 +1,5 @@
 import {MOTION} from './motion.mjs';
+import {mountBandwidthPlot} from './bandwidth-plot.mjs';
 
 const STALE_AFTER_MS = 10_000;
 const finiteRate = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -21,6 +22,7 @@ export function uplinkReading(record, {connected=true, disconnected=false, elaps
   if (record.sample_age_ms + Math.max(0,elapsedMs) >= STALE_AFTER_MS) return {status:'stale'};
   return {status:'ready', upload:record.upload_bps, download:record.download_bps,
     sequence:record.sequence, ports:[...new Set(record.ports)], period:record.sample_period_ms,
+    refresh:finiteRate(record.refresh_interval_ms) && record.refresh_interval_ms > 0 ? record.refresh_interval_ms : record.sample_period_ms,
     remaining:STALE_AFTER_MS-record.sample_age_ms-Math.max(0,elapsedMs)};
 }
 
@@ -52,7 +54,7 @@ export function createUplinkMeasurements() {
           const key=JSON.stringify([reading.sequence,ports,reading.upload,reading.download]);
           const expires=time+reading.remaining;
           if(last?.key===key)last.expires=Math.min(last.expires,expires);
-          else last={key,ports:ports.join(','),reading,history:incoming.history,expires};
+          else last={key,ports:ports.join(','),reading,history:incoming.history,capturedAt:expires-STALE_AFTER_MS,expires};
         }else{
           emptyStatus=reading.status;
           if(last&&reading.status==='stale')last.expires=Math.min(last.expires,time);
@@ -84,24 +86,20 @@ export function mountUplinkBandwidth(host, environment=globalThis, measurements=
   const svgNode=tag=>doc.createElementNS('http://www.w3.org/2000/svg',tag);
   const plot=svgNode('svg');plot.setAttribute('viewBox','0 0 240 36');plot.setAttribute('preserveAspectRatio','none');
   const lines=fields.map(field=>{
-    const line=svgNode('polyline');line.setAttribute('class',field.label.toLowerCase());
+    const line=svgNode('path');line.setAttribute('class',field.label.toLowerCase());
     plot.append(line);return line;
   });
   const chartLabel=element('span','bandwidth-chart-label','Last minute');
   chart.append(chartLabel,plot);
   section.append(heading,readings,chart);host.append(section);
-  function showHistory(history, delayed=false) {
-    const samples=Array.isArray(history)?history.filter(point=>Array.isArray(point)&&point.length===3
-      &&Number.isFinite(point[0])&&point[0]<=0&&point[0]>-60000&&finiteRate(point[1])&&finiteRate(point[2])):[];
-    const peaks=fields.map(field=>Math.max(0,...samples.map(p=>p[field.historyColumn])));
-    const scale=Math.max(1,...peaks);
-    for(const [index,field] of fields.entries()){
-      const peak=formatBandwidth(peaks[index]);
+  const historyPlot=mountBandwidthPlot(chart,lines,environment,media);
+  function showHistory(last, delayed=false) {
+    const samples=historyPlot.update(last?.history,last?.reading,last?.capturedAt??0,delayed);
+    for(const field of fields){
+      const peak=formatBandwidth(Math.max(0,...samples.map(p=>p[field.historyColumn])));
       field.peak.textContent=samples.length?`Peak ${peak.value} ${peak.unit}`:'';
       field.peak.title=delayed?'Peak in the minute before the last reading':'Highest measured interval in the last minute';
-      lines[index].setAttribute('points',samples.map(p=>`${240+p[0]/250},${34-32*p[field.historyColumn]/scale}`).join(' '));
     }
-    chart.hidden=samples.length<2;
   }
   let signature='', frame=0, timer=0, disposed=false, generation=measurements.generation;
   let displayed=null, animation=null, wroteAt=0;
@@ -133,9 +131,9 @@ export function mountUplinkBandwidth(host, environment=globalThis, measurements=
     cancelTimer();
     if(disposed||doc.hidden)return;
     const {last,emptyStatus}=measurements;
-    if(generation!==measurements.generation){generation=measurements.generation;signature='';displayed=null;cancel();}
+    if(generation!==measurements.generation){generation=measurements.generation;signature='';displayed=null;cancel();showHistory(null);}
     if(!last){
-      section.dataset.status=emptyStatus;cancel();if(!chart.hidden||fields[0].peak.textContent)showHistory([]);
+      section.dataset.status=emptyStatus;cancel();if(!chart.hidden||fields[0].peak.textContent)showHistory(null);
       write(null);status.hidden=false;status.textContent=labels[emptyStatus];
       fields.forEach(field=>field.description.setAttribute('aria-label',`${field.label}: ${labels[emptyStatus]}`));
       section.title='Traffic across detected switch uplinks.';return;
@@ -148,21 +146,21 @@ export function mountUplinkBandwidth(host, environment=globalThis, measurements=
     const next=JSON.stringify([last.key,delayed]);
     const target=[reading.download,reading.upload];
     if(next!==signature||settle){
-      signature=next;cancel();showHistory(last.history,delayed);
+      signature=next;cancel();showHistory(last,delayed);
       fields.forEach((field,index)=>{const formatted=formatBandwidth(target[index]);field.description.setAttribute('aria-label',`${field.label}: ${formatted.value} ${formatted.unit}${delayed?' (last reading)':''}`);});
       if(!displayed||settle||delayed||media.matches)write(target);
       else {animation={start:now(),from:[...displayed],to:target};frame=environment.requestAnimationFrame(paint);}
     }
     if(!delayed)timer=environment.setTimeout(()=>{timer=0;render();},Math.max(1,remaining));
   }
-  const visibility=()=>{if(doc.hidden){cancel();cancelTimer();}else render({settle:true});};
-  const motion=()=>{if(media.matches)render({settle:true});};
+  const visibility=()=>{if(doc.hidden){cancel();cancelTimer();}else render({settle:true});historyPlot.visibilityChanged();};
+  const motion=()=>{render({settle:true});historyPlot.visibilityChanged();};
   doc.addEventListener('visibilitychange',visibility);media.addEventListener('change',motion);
   return {
     update(state, connectionLost=false, workspaceId){
       if(disposed)return;
       measurements.update(state,connectionLost,workspaceId,now());render();
     },
-    dispose(){disposed=true;cancel();cancelTimer();doc.removeEventListener('visibilitychange',visibility);media.removeEventListener('change',motion);section.remove();}
+    dispose(){disposed=true;cancel();cancelTimer();historyPlot.dispose();doc.removeEventListener('visibilitychange',visibility);media.removeEventListener('change',motion);section.remove();}
   };
 }

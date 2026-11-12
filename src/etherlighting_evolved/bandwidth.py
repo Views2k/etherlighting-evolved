@@ -10,12 +10,12 @@ from .links import PortLink
 
 
 class UplinkBandwidth:
-    INTERVAL = 5.0
     STALE_AFTER = 10.0
     HISTORY_SECONDS = 60.0
 
-    def __init__(self, physical_ports: Iterable[int]) -> None:
+    def __init__(self, physical_ports: Iterable[int], *, poll_interval: float = 1.0) -> None:
         self._physical_ports = frozenset(physical_ports)
+        self._refresh_interval_ms = round(poll_interval * 1000)
         self._sequence = 0
         self.reset("waiting")
 
@@ -77,7 +77,7 @@ class UplinkBandwidth:
             self._status = "waiting"
 
     def publish(self, *, now: float | None = None, connected: bool = True) -> bool:
-        """Publish the latest measured interval when the engine's refresh deadline arrives."""
+        """Publish the delta between the latest capture and the previous published capture."""
         now = time.monotonic() if now is None else now
         if not math.isfinite(now):
             raise ValueError("publication time must be finite")
@@ -119,4 +119,4 @@ class UplinkBandwidth:
                 "history": measurement["history"] if measurement else [],
                 "sample_period_ms": None if measurement is None else round(measurement["sample_period_ms"], 1),
                 "sample_age_ms": None if age is None or not connected else round(age * 1000, 1),
-                "sequence": self._sequence, "refresh_interval_ms": round(self.INTERVAL * 1000)}
+                "sequence": self._sequence, "refresh_interval_ms": self._refresh_interval_ms}

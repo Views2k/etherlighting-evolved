@@ -1358,7 +1358,7 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .rack-meter-slot .bandwidth-chart:not([hidden]) { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .bandwidth-chart-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
   .bandwidth-chart svg { display: block; flex: 1; min-width: 0; height: 32px; border-bottom: 1px solid var(--line); }
-  .bandwidth-chart polyline { fill: none; stroke-width: 1.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .bandwidth-chart path { fill: none; stroke-width: 1.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
   .bandwidth-chart .upload { stroke: var(--traffic-upload); }
   .bandwidth-chart .download { stroke: var(--traffic-download); }
   .inspector .color-parameter > input[type="range"] { grid-column: 1; min-width: 0; width: 100%; }

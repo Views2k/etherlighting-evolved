@@ -84,7 +84,57 @@ internal static class UplinkBandwidthChecks
             "opening a new Lighting page reuses the original sample deadline");
         Show(new JsonObject { ["status"] = "no_uplink", ["ports"] = new JsonArray() }, 16401);
         check(Has("No uplink detected") && !Has(peak) && !plot.HasHistory, "removing the last uplink clears its values");
+        GraphMotion(check);
         RefreshOrdering(check);
+    }
+
+    static void GraphMotion(Action<bool, string> check)
+    {
+        static UplinkSample Sample(int sequence, double captured, params BandwidthPoint[] history) =>
+            new(sequence, [3], history[^1].Down, history[^1].Up, [..history], 1, captured, 1000, 1000);
+        var first = Sample(4, 5000, new(-3000, 10, 20), new(-2000, 30, 40), new(-1000, 10, 20), new(0, 40, 80));
+        var trace = new BandwidthTimeline();
+        trace.Update(first, 5000);
+        var start = trace.Cursor(5000);
+        check(trace.Cursor(5030) == start + 30 && trace.Cursor(5060) == start + 60 && start < 5000,
+            "the download and upload time axis advances uniformly between readings");
+        var following = Sample(5, 6055, new(-3000, 30, 40), new(-2000, 10, 20), new(-1000, 40, 80), new(0, 50, 900));
+        var before = trace.Cursor(6060);
+        var scale = trace.Scale(6060);
+        trace.Update(following, 6060);
+        check(trace.Cursor(6060) == before && trace.Scale(6060) == scale && trace.Scale(6280) > scale &&
+            trace.Scale(6280) < trace.FinalScale, "arrival jitter and a new peak preserve the current graph position and scale");
+        check(trace.Cursor(9000) == 6000 && !trace.Moving(9000) && trace.Offset(9000) == 0,
+            "the graph stops at the last actual capture when no further counters arrive");
+        var missed = Sample(6, 9500, new(-5500, 10, 20), new(-4500, 40, 80), new(-3500, 50, 900), new(0, 30, 50))
+            with { Period = 3500 };
+        trace.Update(missed, 9500);
+        check(!trace.Joins(-3500, 0) && trace.Joins(-4500, -3500), "missing intervals break the trace without widening their own gap threshold");
+        trace.Update(first with { Series = 2, CapturedAt = 11_000 }, 11_000);
+        check(trace.Points.Count == first.History.Count && trace.Cursor(20_000) == 11_000, "a new source has an independent capture clock and history");
+
+        var now = 5000L;
+        var plot = new BandwidthPlot(() => now);
+        var window = new Window { Content = plot };
+        try
+        {
+            plot.Update(first, now);
+            plot.SetDeadline(15_000, now);
+            plot.SetActive(true);
+            check(!plot.IsAnimating, "a detached bandwidth graph schedules no animation");
+            window.Show();
+            plot.SetDeadline(15_000, now);
+            check(plot.IsAnimating, "a visible bandwidth graph advances independently of the switch sampling rate");
+            plot.SetActive(false);
+            check(!plot.IsAnimating, "hiding or leaving the chart stops its rendering timer");
+            plot.SetActive(true);
+            plot.SetDeadline(now, now);
+            check(!plot.IsAnimating, "stale bandwidth readings freeze the chart");
+            plot.SetDeadline(15_000, now);
+            window.Content = null;
+            check(!plot.IsAnimating, "detaching a running graph releases its rendering timer");
+        }
+        finally { window.Close(); }
     }
 
     static void RefreshOrdering(Action<bool, string> check)

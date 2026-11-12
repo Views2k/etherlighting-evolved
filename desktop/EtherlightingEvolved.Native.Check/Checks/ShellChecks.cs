@@ -82,7 +82,7 @@ internal static class ShellChecks
                     var clock = Stopwatch.StartNew();
                     while (!workspace.StreamOpen && clock.Elapsed < TimeSpan.FromSeconds(8)) await Task.Delay(25);
                     check(workspace.StreamOpen && !workspace.Disconnected, "the live stream recovers after an immediate hide and restore");
-                    if (page is null or "Lighting") await LightingPageChecks.RunAsync(shell, check);
+                    if (page is null or "Lighting") await LightingPageChecks.RunAsync(shell, check, output);
                     if (page is null or "Lighting") await SliderChecks.RunAsync(shell, check);
                     if (page is null or "Effects") await GalleryPageChecks.RunAsync(shell, check);
                     if (page is null or "Profiles" or "Automation") await AutomationProfileChecks.RunAsync(shell, check);
