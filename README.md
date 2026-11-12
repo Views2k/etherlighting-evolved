@@ -4,6 +4,12 @@ Etherlighting Evolved (EE) controls UniFi port lighting over SSH. Select ports, 
 
 EE is an unofficial community project, not affiliated with, endorsed by, or sponsored by Ubiquiti. UniFi and Etherlighting are trademarks of Ubiquiti Inc.
 
+## Desktop app
+
+EE 0.5.0 brings Lighting, Effects, Automation, Profiles, Settings and Help into a native desktop window. On Windows, the installer includes the local workspace service. Open EE and choose the demo to try the controls, or connect to your switch to manage its lighting.
+
+The macOS and Linux desktop clients connect to a running EE workspace. Open the app on macOS or run `./EtherlightingEvolved` from the extracted folder on Linux. Choose **Change workspace address** to enter the private HTTPS address of your EE workspace. See the [desktop guide](desktop/README.md) for platform packages and startup options.
+
 ## Lighting controls
 
 - Set colors and brightness for individual ports or groups.
@@ -11,7 +17,9 @@ EE is an unofficial community project, not affiliated with, endorsed by, or spon
 - Color ports by link status, traffic, PoE usage, anomalies, or a schedule.
 - Select SFP lights for regular effects, including Activity Glow, Live Traffic, and Traffic Trails. In Effects, select **Include SFP lights** to add them to your Ethernet selection.
 - Configure SFP indicator lighting individually, together, or to follow an Ethernet port.
-- Save lighting profiles and apply them when needed.
+- Save the current lighting or a preview as a profile. Review a profile's settings, apply it, or use **Undo last apply** to return to the previous lighting.
+- Test rules against a port and time before applying them. Set weekly schedules to choose a profile, adjust brightness, or hand lighting control to UniFi.
+- Rename ports in Port details or use their names from UniFi Network.
 - View uplink upload and download rates, updated every five seconds.
 - Use Settings to connect UniFi Network, configure private access through Tailscale, or hand lighting control back to UniFi.
 
@@ -19,7 +27,7 @@ Review the [hardware qualification table](docs/HARDWARE.md) for the model and fi
 
 ## Run from source
 
-The workspace requires Node.js 20 or newer and Python 3.11 or newer with the dependencies declared in [pyproject.toml](pyproject.toml). Development and build instructions are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The source gateway and lighting engine use Node.js 20 or newer and Python 3.11 or newer. Building the desktop app also requires the .NET 8 SDK and the locked desktop dependencies. See the [development guide](docs/DEVELOPMENT.md).
 
 With an existing Python environment in `.venv`, start the simulator from the repository root:
 
@@ -47,7 +55,7 @@ Use **Handoff to UniFi** to release EE's lighting control. Wait for its result b
 
 ## Windows installer
 
-The Windows app runs the same workspace in its own window. Build the installer from this repository using [the Windows build instructions](docs/DEVELOPMENT.md#windows-installer). The build uses existing local tools and writes its output under `outputs/releases/`.
+Build the Windows installer from the repository root with the existing local tools. Setup packages the native app together with the gateway, engine and notices under `outputs/releases/`. See the [Windows build instructions](docs/DEVELOPMENT.md#windows-installer).
 
 ## Development
 
@@ -57,8 +65,9 @@ The application, engine, tests, assets, and packaging scripts share this reposit
 
 | Directory | Contents |
 | --- | --- |
-| `preview/` | Current workspace, private gateway, and browser rendering |
-| `src/etherlighting_evolved/` | Python engine, device adapters, API, and desktop host |
+| `desktop/` | Native desktop app, simulator checks, and platform packaging |
+| `preview/` | Browser workspace, private gateway, and browser rendering |
+| `src/etherlighting_evolved/` | Python lighting engine, device adapters, and API |
 | `src/*.mjs` | Shared browser modules and effect catalog |
 | `assets/` | Browser artwork and styles |
 | `tests/` | Python and JavaScript tests with deterministic fixtures |

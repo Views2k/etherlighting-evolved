@@ -25,10 +25,12 @@ def check_contents(app):
     for item in app.rglob('*'):
         if item.name.lower() in private:
             raise ValueError('Private state or analysis artifact is included in the package.')
-    for name in ['LICENSE.txt', 'licenses/Node-LICENSE.txt', 'licenses/Python-LICENSE.txt', 'licenses/COMPONENTS.txt']:
+    for name in ['LICENSE.txt', 'licenses/Node-LICENSE.txt', 'licenses/Python-LICENSE.txt', 'licenses/COMPONENTS.txt',
+                 'licenses/DotNet-LICENSE.txt', 'licenses/DotNet-THIRD-PARTY-NOTICES.txt']:
         if not (app / name).is_file() or not (app / name).stat().st_size:
             raise ValueError(f'Missing notice: {name}')
-    for name in ['EtherlightingEvolved.exe', 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html']:
+    for name in ['EtherlightingEvolved.exe', 'libSkiaSharp.dll', 'libHarfBuzzSharp.dll', 'av_libglesv2.dll',
+                 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html']:
         path = app / name
         if not path.is_file() or not path.stat().st_size:
             raise ValueError(f'Missing application file: {name}')
@@ -40,9 +42,13 @@ def verify(root, app, node, installer=None):
         raise ValueError('JavaScript and Python versions differ.')
     if tomllib.loads((root / 'pyproject.toml').read_text('utf-8'))['project']['version'] != version:
         raise ValueError('Python package versions differ.')
+    native = (root / 'desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj').read_text('utf-8')
+    if re.search(r'<Version>([^<]+)</Version>', native).group(1) != version:
+        raise ValueError('Desktop program and Python versions differ.')
+    if b'PYZ-00.pyz' in (app / 'EtherlightingEvolved.exe').read_bytes()[-4_000_000:]:
+        raise ValueError('The desktop program is the earlier Python build.')
     modules, sources = {}, {}
-    for relative, entry in [('EtherlightingEvolved.exe', 'workspace_launcher'),
-                            ('engine/EEEngine.exe', 'native_service')]:
+    for relative, entry in [('engine/EEEngine.exe', 'native_service')]:
         executable = CArchiveReader(str(app / relative))
         archive = executable.open_embedded_archive('PYZ.pyz')
         checked = []
@@ -57,8 +63,7 @@ def verify(root, app, node, installer=None):
                 raise ValueError(f'Packaged module differs: {name}')
             sources[source.relative_to(root).as_posix()] = digest(source)
             checked.append(name)
-        required = ('etherlighting_evolved.engine' if relative.startswith('engine/')
-                    else 'etherlighting_evolved.workspace_desktop')
+        required = 'etherlighting_evolved.engine'
         if required not in checked:
             raise ValueError(f'Required module missing: {required}')
         modules[relative] = sorted(checked)

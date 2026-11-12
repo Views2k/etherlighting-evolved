@@ -1,0 +1,433 @@
+using System.Diagnostics;
+using System.Text.Json.Nodes;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Markup.Xaml.Styling;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.Themes.Fluent;
+using Avalonia.Threading;
+using EtherlightingEvolved.Native.Core;
+using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Theme;
+
+namespace EtherlightingEvolved.Native;
+
+public sealed record Options(bool Background, bool Demo, Uri? Url, string? Smoke, bool Quit)
+{
+    /// <summary>--shot DIR --page NAME [--theme ID] [--size 1440x900]: save a screenshot of one page, off screen.</summary>
+    public string? Shot { get; init; }
+
+    public string ShotPage { get; init; } = "Lighting";
+
+    public string? ShotTheme { get; init; }
+
+    public PixelSize ShotSize { get; init; } = new(1440, 900);
+
+    public static Options? Parse(string[] args)
+    {
+        Uri? url = null;
+        string? smoke = null;
+        var address = Environment.GetEnvironmentVariable("EE_WORKSPACE_URL");
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--url" && i + 1 < args.Length) address = args[++i];
+            else if (args[i] == "--smoke" && i + 1 < args.Length) smoke = Path.GetFullPath(args[++i]);
+        }
+        if (!string.IsNullOrWhiteSpace(address))
+        {
+            if (!Uri.TryCreate(address, UriKind.Absolute, out url) || url.Scheme is not ("http" or "https")) return null;
+        }
+        string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        var shot = Arg("--shot") is { } folder ? Path.GetFullPath(folder) : null;
+        var size = Arg("--size")?.Split('x') is [var w, var h] && int.TryParse(w, out var width) && int.TryParse(h, out var height) ? new PixelSize(width, height) : new PixelSize(1440, 900);
+        return new Options(args.Contains("--background"), args.Contains("--demo") || smoke is not null || (shot is not null && url is null), url, smoke ?? shot, args.Contains("--quit"))
+        {
+            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size,
+        };
+    }
+}
+
+public sealed class App : Application
+{
+    public const string ThemeKey = "ee.theme.v1";
+    public static Options Options { get; set; } = new(false, false, null, null, false);
+    internal static SingleInstance? Instance { get; set; }
+    internal static string DataDirectory { get; set; } = Locations.Workspace(false);
+    AppHost? host;
+
+    public override void Initialize()
+    {
+        Name = "Etherlighting Evolved";
+        Styles.Add(new FluentTheme());
+        Styles.Add(new StyleInclude(new Uri("avares://EtherlightingEvolved/"))
+        {
+            Source = new Uri("avares://Avalonia.Controls.ColorPicker/Themes/Fluent/Fluent.xaml"),
+        });
+        Styles.Add(Look.Styles());
+        string? theme = null;
+        try { theme = Preferences.GetItem(ThemeKey); } catch (Exception) { }
+        Look.Apply(this, theme ?? ThemeTokens.DefaultTheme);
+    }
+
+    public override void OnFrameworkInitializationCompleted()
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop && Instance is not null)
+        {
+            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            host = new AppHost(this, desktop, Options, Instance, DataDirectory);
+            host.Start();
+        }
+        base.OnFrameworkInitializationCompleted();
+    }
+}
+
+/// <summary>
+/// The desktop program: starts the EE service when it is bundled, keeps EE in the notification area, and returns
+/// the switch lighting through the service's confirmed shutdown before quitting.
+/// </summary>
+sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime desktop, Options options, SingleInstance instance, string dataDirectory)
+{
+    readonly string version = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
+    ShellWindow? window;
+    Workspace? workspace;
+    ServiceHost? service;
+    TrayIcon? tray;
+    bool quitting, forceArmed;
+
+    public void Start()
+    {
+        desktop.ShutdownRequested += OnShutdownRequested;
+        instance.Listen(command => Dispatcher.UIThread.InvokeAsync(() => HandleAsync(command)));
+        if (options.Smoke is null) CreateTray();
+        _ = ConnectAsync();
+    }
+
+    async Task ConnectAsync()
+    {
+        Uri address;
+        try
+        {
+            if (options.Url is { } url) address = url;
+            else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host)
+            {
+                service = host;
+                address = await host.StartAsync(CancellationToken.None);
+            }
+            else address = Locations.SavedWorkspace ?? new Uri("http://127.0.0.1:4180/");
+        }
+        catch (Exception)
+        {
+            Open(new Uri("http://127.0.0.1:9/"));
+            window!.Shell.Notify("The EE service did not start. Close any other EE window, then open EE again.", true);
+            if (options.Smoke is not null) desktop.Shutdown(1);
+            return;
+        }
+        Open(address);
+        await window!.Shell.Start();
+        if (options.Shot is { } shot) _ = ShotAsync(shot);
+        else if (options.Smoke is { } folder) _ = SmokeAsync(folder);
+    }
+
+    void Open(Uri address)
+    {
+        workspace = new Workspace(address);
+        window = new ShellWindow(new AppShell(workspace)
+        {
+            OpenWorkspaceAddress = service is null && options.Smoke is null ? ChangeWorkspace : null,
+        });
+        if (options.Smoke is not null)
+        {
+            // Checks run in a real window placed off screen, so nothing appears on the desktop.
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Position = new PixelPoint(-20000, -20000);
+            window.ShowInTaskbar = false;
+            window.ShowActivated = false;
+        }
+        if (!options.Background) window.Show();
+        else _ = window.Shell.SetHidden(true);
+    }
+
+    async Task ChangeWorkspace(Uri address)
+    {
+        var previous = window!;
+        using (var probe = new EeApi(address))
+        {
+            if (await probe.GetAsync("/api/workspace") is not JsonObject info || info.Bool("live") is null)
+                throw new InvalidOperationException("That address did not respond as an EE workspace.");
+        }
+        await previous.Shell.Workspace.Idle();
+        previous.Shell.Studio.SaveUiState(previous.Shell.PageName);
+        Locations.SavedWorkspace = address;
+        await previous.Shell.Workspace.DisposeAsync();
+        previous.Shell.ResetWorkspace();
+        previous.AllowClose = true;
+        previous.Close();
+        Open(address);
+        ShowWindow();
+        await window!.Shell.Start();
+    }
+
+    void CreateTray()
+    {
+        var menu = new NativeMenu();
+        var openItem = new NativeMenuItem("Open Etherlighting Evolved");
+        openItem.Click += (_, _) => ShowWindow();
+        menu.Add(openItem);
+        if (Autostart.Supported)
+        {
+            var startItem = new NativeMenuItem(OperatingSystem.IsWindows() ? "Start with Windows" : "Start at login")
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox, IsChecked = Autostart.Enabled,
+            };
+            startItem.Click += (_, _) =>
+            {
+                try { Autostart.Set(!Autostart.Enabled); }
+                catch (Exception) { }
+                startItem.IsChecked = Autostart.Enabled;
+            };
+            menu.Add(startItem);
+        }
+        menu.Add(new NativeMenuItemSeparator());
+        var quitItem = new NativeMenuItem("Quit");
+        quitItem.Click += (_, _) => _ = QuitAsync(false);
+        menu.Add(quitItem);
+        WindowIcon? icon = null;
+        try { icon = new WindowIcon(AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/ee.ico"))); }
+        catch (Exception) { }
+        tray = new TrayIcon { Icon = icon, ToolTipText = "Etherlighting Evolved", Menu = menu, IsVisible = true };
+        tray.Clicked += (_, _) => ShowWindow();
+        TrayIcon.SetIcons(app, [tray]);
+    }
+
+    void ShowWindow()
+    {
+        if (window is null) return;
+        window.Show();
+        if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+        window.Activate();
+    }
+
+    async Task<string> HandleAsync(string command)
+    {
+        if (command == "show")
+        {
+            ShowWindow();
+            return "ok";
+        }
+        // The installer must be able to replace the files, so its request ends EE even if cleanup is unconfirmed.
+        await QuitAsync(true);
+        return "closed";
+    }
+
+    async Task QuitAsync(bool force)
+    {
+        if (quitting) return;
+        quitting = true;
+        window?.Shell.Status("Closing the workspace…");
+        var confirmed = service is null || await service.StopAsync();
+        if (!confirmed && !force && !forceArmed)
+        {
+            quitting = false;
+            forceArmed = true;
+            ShowWindow();
+            window?.Shell.Notify("The workspace has not confirmed shutdown. Choose Quit again to close anyway.", true);
+            return;
+        }
+        if (!confirmed)
+        {
+            service?.Kill();
+            Locations.RecordUnconfirmedExit(version);
+        }
+        await Finish(confirmed ? 0 : 1);
+    }
+
+    async Task Finish(int code)
+    {
+        window?.Shell.Studio.SaveUiState(window.Shell.PageName);
+        if (workspace is not null) await workspace.DisposeAsync();
+        tray?.Dispose();
+        if (window is not null) window.AllowClose = true;
+        desktop.Shutdown(code);
+    }
+
+    // Sign-out and shutdown: return the lighting before the session ends, asking Windows to wait meanwhile.
+    void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
+    {
+        if (quitting) return;
+        quitting = true;
+        using (SessionEnd.Block(window?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero))
+        {
+            var confirmed = service is null || service.StopAsync().GetAwaiter().GetResult();
+            if (!confirmed)
+            {
+                service?.Kill();
+                Locations.RecordUnconfirmedExit(version);
+            }
+        }
+        if (window is not null) window.AllowClose = true;
+    }
+
+    /// <summary>Saves one page as shot.png from the real window off screen, then quits (development checks).</summary>
+    async Task ShotAsync(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var code = 1;
+        try
+        {
+            var shell = window!.Shell;
+            window.Width = options.ShotSize.Width;
+            window.Height = options.ShotSize.Height;
+            if (options.ShotTheme is { } theme) Look.Apply(app, theme);
+            var started = Stopwatch.StartNew();
+            while (!(shell.Workspace.Ready && shell.CurrentPage is not null) && shell.PageName != "Connect")
+            {
+                if (started.Elapsed > TimeSpan.FromSeconds(90)) throw new TimeoutException("The workspace did not open.");
+                await Task.Delay(200);
+            }
+            if (options.ShotPage != "Connect" && shell.PageName != options.ShotPage) await shell.Navigate(options.ShotPage);
+            if (shell.PageName != options.ShotPage || shell.CurrentPage is null)
+                throw new InvalidOperationException($"The requested {options.ShotPage} page did not open.");
+            await Task.Delay(2500);
+            if (Math.Abs(window.Bounds.Width - options.ShotSize.Width) > 1 || Math.Abs(window.Bounds.Height - options.ShotSize.Height) > 1)
+                throw new InvalidOperationException($"Requested a {options.ShotSize.Width} × {options.ShotSize.Height} window, got {window.Bounds.Width} × {window.Bounds.Height}.");
+            using var bitmap = new RenderTargetBitmap(options.ShotSize);
+            bitmap.Render(window);
+            bitmap.Save(Path.Combine(folder, "shot.png"));
+            code = 0;
+        }
+        catch (Exception exception)
+        {
+            await File.WriteAllTextAsync(Path.Combine(folder, "shot-error.txt"), exception.ToString());
+        }
+        if (service is not null && !await service.StopAsync()) service.Kill();
+        await Finish(code);
+    }
+
+    /// <summary>Exercises the real window off screen against the simulator, then quits through the normal path.</summary>
+    async Task SmokeAsync(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var result = new JsonObject { ["version"] = version };
+        var passed = false;
+        try
+        {
+            var shell = window!.Shell;
+            var started = Stopwatch.StartNew();
+            while (!shell.Workspace.Ready || shell.CurrentPage is null)
+            {
+                if (started.Elapsed > TimeSpan.FromSeconds(90)) throw new TimeoutException("The workspace did not open.");
+                await Task.Delay(200);
+            }
+            result["page"] = shell.PageName;
+            result["simulated"] = shell.Workspace.Session.Bool("simulated");
+            if (service is null || shell.Workspace.Options.Bool("live") != false || shell.Workspace.Session.Bool("simulated") != true)
+                throw new InvalidOperationException("This desktop check requires its own simulator.");
+            using var process = Process.GetCurrentProcess();
+            async Task<double> CpuAsync(int seconds)
+            {
+                process.Refresh();
+                var before = process.TotalProcessorTime;
+                var clock = Stopwatch.StartNew();
+                await Task.Delay(TimeSpan.FromSeconds(seconds));
+                process.Refresh();
+                return Math.Round((process.TotalProcessorTime - before).TotalSeconds / clock.Elapsed.TotalSeconds * 100, 2);
+            }
+            result["logical_processors"] = Environment.ProcessorCount;
+            result["cpu_initial_percent"] = await CpuAsync(10);
+            // A visible change through the workspace API: a rainbow on ports 1–4.
+            using (var api = new WorkspaceApi(shell.Workspace.Api.BaseUri))
+            {
+                var stateNode = await shell.Workspace.Request("/api/state");
+                using var document = System.Text.Json.JsonDocument.Parse(stateNode!.ToJsonString());
+                var lighting = LightingModel.State(document.RootElement, LightingState.Empty);
+                result["apply_effect"] = await api.ApplyEffectAsync(lighting, [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
+            }
+            await Task.Delay(3000);
+            result["cpu_visible_percent"] = await CpuAsync(20);
+            var size = new PixelSize((int)Math.Max(1, window.Bounds.Width), (int)Math.Max(1, window.Bounds.Height));
+            using (var bitmap = new RenderTargetBitmap(size))
+            {
+                bitmap.Render(window);
+                bitmap.Save(Path.Combine(folder, "window.png"));
+            }
+            foreach (var theme in new[] { "silver", "evolved" })
+            {
+                Look.Apply(app, theme);
+                await Task.Delay(300);
+                using var bitmap = new RenderTargetBitmap(size);
+                bitmap.Render(window);
+                bitmap.Save(Path.Combine(folder, $"window-{theme}.png"));
+            }
+            foreach (var name in AppShell.PageNames)
+            {
+                await shell.Navigate(name);
+                if (shell.PageName != name || shell.CurrentPage is null)
+                    throw new InvalidOperationException($"The {name} page did not open.");
+                if (name == "Effects") result["cpu_effects_percent"] = await CpuAsync(12);
+                await Task.Delay(350);
+                using var bitmap = new RenderTargetBitmap(size);
+                bitmap.Render(window);
+                bitmap.Save(Path.Combine(folder, $"{name.ToLowerInvariant()}.png"));
+            }
+            await shell.Navigate("Effects");
+            window.Hide();
+            await Task.Delay(10000);
+            result["cpu_hidden_percent"] = await CpuAsync(30);
+            result["hidden_stream_paused"] = !shell.Workspace.StreamOpen;
+            process.Refresh();
+            result["memory_mb"] = process.PrivateMemorySize64 / 1048576;
+            result["working_set_mb"] = process.WorkingSet64 / 1048576;
+            passed = result["apply_effect"]?.GetValue<string>() == "ok" && !shell.Workspace.StreamOpen;
+        }
+        catch (Exception exception)
+        {
+            result["error"] = exception.Message;
+        }
+        var confirmed = service is null || await service.StopAsync();
+        result["service_stopped_cleanly"] = confirmed;
+        result["passed"] = passed && confirmed;
+        await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
+        if (!confirmed) service?.Kill();
+        await Finish(passed && confirmed ? 0 : 1);
+    }
+}
+
+internal static class Program
+{
+    [STAThread]
+    public static int Main(string[] args)
+    {
+        if (Options.Parse(args) is not { } options) return 2;
+        if (options.Quit) return SingleInstance.QuitRunningCopy();
+        if (options.Smoke is { } output) Locations.TestDataDirectory = Path.Combine(output, "client");
+        var data = options.Smoke is { } smoke ? Path.Combine(smoke, "data") : Locations.Workspace(options.Demo);
+        // Development screenshots run beside the installed EE, so they never share its single-instance name.
+        var suffix = options.Shot is { } shot ? SingleInstance.Suffix(true, shot) : SingleInstance.Suffix(options.Demo, data);
+        using var instance = SingleInstance.TryAcquire(suffix);
+        if (instance is null)
+        {
+            if (!options.Background) SingleInstance.SendAsync(suffix, "show", TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            return 0;
+        }
+        App.Options = options;
+        App.Instance = instance;
+        App.DataDirectory = data;
+        return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    /// <summary>
+    /// The window draws with Skia on the processor. Measured on Windows, this used 61 MB of memory and 0.3% of one
+    /// core while hidden, against 275 MB and 2% for GPU composition, whose frame clock keeps running when no window
+    /// is shown. EE_GPU_RENDERING=1 selects GPU composition for comparison.
+    /// </summary>
+    public static AppBuilder BuildAvaloniaApp()
+    {
+        var builder = AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace()
+            .With(new Avalonia.Rendering.Composition.CompositionOptions { UseRegionDirtyRectClipping = true });
+        return Environment.GetEnvironmentVariable("EE_GPU_RENDERING") == "1"
+            ? builder
+            : builder.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Software] });
+    }
+}

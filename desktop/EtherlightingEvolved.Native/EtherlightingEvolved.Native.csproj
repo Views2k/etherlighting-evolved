@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <AssemblyName>EtherlightingEvolved</AssemblyName>
+    <RootNamespace>EtherlightingEvolved.Native</RootNamespace>
+    <Product>Etherlighting Evolved</Product>
+    <Company>Views2k</Company>
+    <Authors>Views2k</Authors>
+    <Description>Lighting controls for UniFi switches</Description>
+    <Version>0.5.0</Version>
+    <ApplicationIcon>../../src/etherlighting_evolved/assets/ee.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Standalone builds for every supported desktop. One restore covers all of them. -->
+    <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64;linux-x64;linux-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <!-- A published build carries its own .NET runtime in one program file. It is not compressed: compressed
+       assemblies are unpacked into memory at every start, while the installer already compresses the download.
+       The three native graphics libraries stay beside it, so nothing is unpacked to a temporary folder. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="11.3.23" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="EtherlightingEvolved.Native.Check" />
+    <AvaloniaResource Include="../../src/etherlighting_evolved/assets/ee.ico" Link="Assets/ee.ico" />
+    <AvaloniaResource Include="../../src/etherlighting_evolved/assets/ee.png" Link="Assets/ee.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The browser workspace's palettes, read as they are so both apps show the same colors. -->
+    <EmbeddedResource Include="../../preview/themes.css" LogicalName="themes.css" />
+    <EmbeddedResource Include="../../preview/theme-catalog.mjs" LogicalName="theme-catalog.mjs" />
+    <EmbeddedResource Include="../../src/icons.mjs" LogicalName="icons.mjs" />
+    <EmbeddedResource Include="../../src/catalog.mjs" LogicalName="catalog.mjs" />
+    <AvaloniaResource Include="../../assets/logo.png" Link="Assets/logo.png" />
+  </ItemGroup>
+</Project>

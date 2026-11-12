@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$PythonExe,
     [Parameter(Mandatory=$true)][string]$NodeExe,
     [string]$CompilerExe,
+    [string]$DotnetExe = 'dotnet',
     [string]$OutputRoot,
     [switch]$SkipInstaller,
     [switch]$ReleaseCandidate
@@ -20,7 +21,7 @@ if (-not $SkipInstaller) {
     $compiler = [IO.Path]::GetFullPath($CompilerExe)
     if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'An existing Inno Setup compiler is required.' }
 }
-& $PythonExe -c "import PyInstaller, fastapi, uvicorn, asyncssh, webview, pystray, PIL"
+& $PythonExe -c "import PyInstaller, fastapi, uvicorn, asyncssh, PIL"
 if ($LASTEXITCODE) { throw 'A build dependency is missing. No dependencies were downloaded.' }
 $version = & $PythonExe -c "import runpy,sys; print(runpy.run_path(sys.argv[1])['__version__'])" (Join-Path $backend 'src\etherlighting_evolved\__init__.py')
 if ($LASTEXITCODE -or $version -notmatch '^\d+\.\d+\.\d+$') { throw 'The application version could not be read.' }
@@ -37,8 +38,17 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 if ($LASTEXITCODE) { throw 'Brand asset generation failed. See brand-assets.log.' }
 $dist = Join-Path $OutputRoot 'dist'
 $app = Join-Path $dist 'EtherlightingEvolved'
-& $PythonExe -m PyInstaller --noconfirm --distpath $dist --workpath (Join-Path $OutputRoot 'desktop-build') (Join-Path $backend 'packaging\workspace-desktop.spec') *> (Join-Path $OutputRoot 'desktop-build.log')
-if ($LASTEXITCODE) { throw 'Desktop packaging failed. See desktop-build.log.' }
+# The desktop program is the native window (desktop/EtherlightingEvolved.Native). Its packages are restored ahead
+# of time from the lock file; the build itself never downloads anything.
+$native = Join-Path $backend 'desktop\EtherlightingEvolved.Native\EtherlightingEvolved.Native.csproj'
+if (-not (Test-Path -LiteralPath (Join-Path (Split-Path $native -Parent) 'obj\project.assets.json') -PathType Leaf)) {
+    throw 'Restore the desktop packages first (see desktop/README.md). No packages were downloaded.'
+}
+$nativeVersion = ([xml](Get-Content -LiteralPath $native -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+if ($nativeVersion -ne $version) { throw 'The desktop program version differs from the application version.' }
+$env:AVALONIA_TELEMETRY_OPTOUT = '1'
+& $DotnetExe publish $native -c Release -r win-x64 --no-restore -o $app *> (Join-Path $OutputRoot 'desktop-build.log')
+if ($LASTEXITCODE) { throw 'Desktop build failed. See desktop-build.log.' }
 & $PythonExe -m PyInstaller --noconfirm --distpath (Join-Path $OutputRoot 'engine-dist') --workpath (Join-Path $OutputRoot 'engine-build') (Join-Path $backend 'packaging\native-service.spec') *> (Join-Path $OutputRoot 'engine-build.log')
 if ($LASTEXITCODE) { throw 'Engine packaging failed. See engine-build.log.' }
 New-Item -ItemType Directory -Path (Join-Path $app 'engine') -Force | Out-Null
@@ -53,7 +63,7 @@ New-Item -ItemType Directory -Path (Join-Path $app 'runtime'),(Join-Path $app 'l
 Copy-Item -LiteralPath $node -Destination (Join-Path $app 'runtime\node.exe')
 Copy-Item -LiteralPath (Join-Path $backend 'LICENSE') -Destination (Join-Path $app 'LICENSE.txt')
 Copy-Item -LiteralPath $nodeLicense -Destination (Join-Path $app 'licenses\Node-LICENSE.txt')
-& $PythonExe (Join-Path $PSScriptRoot 'collect-package-notices.py') $app
+& $PythonExe (Join-Path $PSScriptRoot 'collect-package-notices.py') $app (Join-Path (Split-Path $native -Parent) 'obj\project.assets.json')
 if ($LASTEXITCODE) { throw 'Dependency notice collection failed.' }
 & $node -p 'process.versions.node' | Set-Content -LiteralPath (Join-Path $OutputRoot 'node-version.txt')
 if ($LASTEXITCODE) { throw 'The Node.js version could not be read.' }

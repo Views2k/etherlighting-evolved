@@ -1,0 +1,5 @@
+<Project>
+  <!-- Avalonia.BuildServices reports build statistics to Avalonia during compilation. Replace its target with an empty
+       one so building this repository never sends that data, with or without AVALONIA_TELEMETRY_OPTOUT. -->
+  <Target Name="AvaloniaStats" />
+</Project>

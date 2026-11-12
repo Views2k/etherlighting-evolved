@@ -42,6 +42,12 @@ jobs:
           python -m pip install --no-deps --no-build-isolation -e .
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m pip check
+      - name: Restore the desktop program's locked packages
+        env:
+          AVALONIA_TELEMETRY_OPTOUT: '1'
+        run: |
+          dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --locked-mode
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Verify source and simulator workflows
         run: |
           $browser = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'
@@ -95,3 +101,149 @@ jobs:
             outputs/candidate/dist/EtherlightingEvolved-Setup-*.exe
             outputs/candidate/package-verification.json
             outputs/candidate/packaged-smoke/result.json
+
+  unix-client:
+    name: Native client (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
+    defaults:
+      run:
+        shell: bash
+    env:
+      AVALONIA_TELEMETRY_OPTOUT: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12.10'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - name: Select the runner's .NET 8 SDK and simulator dependencies
+        run: |
+          set -euo pipefail
+          dotnet --version
+          python -m venv .venv
+          .venv/bin/python -m pip install --only-binary=:all: -c requirements-ci.txt fastapi uvicorn websockets asyncssh Pillow
+          .venv/bin/python -m pip check
+      - name: Exercise the native pages and editing workflows in the simulator
+        run: |
+          set -euo pipefail
+          project=desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj
+          dotnet restore "$project" --configfile desktop/NuGet.Config --locked-mode
+          dotnet build "$project" -c Release --no-restore
+          mkdir -p outputs/native-check
+          dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check | tee outputs/native-check/check.log
+      - name: Package both supported architectures
+        shell: pwsh
+        run: |
+          $platform = if ($IsMacOS) { 'osx' } else { 'linux' }
+          ./desktop/publish.ps1 -Runtime @("$platform-x64", "$platform-arm64") -PythonExe "$PWD/.venv/bin/python"
+      - name: Verify the archives and run the native package against a local simulator
+        run: |
+          set -euo pipefail
+          out="$PWD/outputs/native-check/package"
+          mkdir -p "$out"
+          if [[ "$RUNNER_OS" == macOS ]]; then platform=osx; else platform=linux; fi
+          case "$(uname -m)" in x86_64) native=x64 ;; arm64|aarch64) native=arm64 ;; *) exit 1 ;; esac
+          shopt -s nullglob
+          for arch in x64 arm64; do
+            rid="$platform-$arch"
+            root="$RUNNER_TEMP/ee-package-$rid"
+            mkdir "$root"
+            if [[ "$platform" == osx ]]; then
+              archives=(outputs/native/EtherlightingEvolved-*-"$rid".zip)
+              test "${#archives[@]}" = 1
+              unzip -q "${archives[0]}" -d "$root"
+              bundle="$root/EtherlightingEvolved.app/Contents"
+              plutil -lint "$bundle/Info.plist"
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Info.plist")" = EtherlightingEvolved
+              test -s "$bundle/Resources/ee.icns"
+              folder="$bundle/MacOS"
+              notices="$bundle/Resources"
+              test -s "$folder/libAvaloniaNative.dylib"
+              test -s "$folder/libSkiaSharp.dylib"
+              test -s "$folder/libHarfBuzzSharp.dylib"
+              cpu=$arch; if [[ "$arch" == x64 ]]; then cpu=x86_64; fi
+              lipo "$folder/EtherlightingEvolved" -verify_arch "$cpu"
+              for library in libAvaloniaNative.dylib libSkiaSharp.dylib libHarfBuzzSharp.dylib; do
+                lipo "$folder/$library" -verify_arch "$cpu"
+              done
+              codesign --verify --deep --strict --verbose "$root/EtherlightingEvolved.app"
+              original="outputs/native/$rid-app/EtherlightingEvolved.app/Contents/MacOS/EtherlightingEvolved"
+            else
+              archives=(outputs/native/EtherlightingEvolved-*-"$rid".tar.gz)
+              test "${#archives[@]}" = 1
+              tar -xzf "${archives[0]}" -C "$root"
+              folder="$root"
+              notices="$folder"
+              grep -Fxq 'Exec=EtherlightingEvolved' "$folder/etherlighting-evolved.desktop"
+              grep -Fxq 'Icon=etherlighting-evolved' "$folder/etherlighting-evolved.desktop"
+              test -s "$folder/etherlighting-evolved.png"
+              test -s "$folder/libSkiaSharp.so"
+              test -s "$folder/libHarfBuzzSharp.so"
+              machine='Advanced Micro Devices X86-64'; if [[ "$arch" == arm64 ]]; then machine=AArch64; fi
+              for binary in EtherlightingEvolved libSkiaSharp.so libHarfBuzzSharp.so; do
+                readelf -h "$folder/$binary" | grep -Fq "$machine"
+              done
+              original="outputs/native/$rid/EtherlightingEvolved"
+            fi
+            test -x "$folder/EtherlightingEvolved"
+            cmp "$original" "$folder/EtherlightingEvolved"
+            for notice in LICENSE.txt licenses/COMPONENTS.txt licenses/DotNet-LICENSE.txt licenses/DotNet-THIRD-PARTY-NOTICES.txt; do
+              test -s "$notices/$notice"
+            done
+            if [[ "$arch" == "$native" ]]; then client="$folder/EtherlightingEvolved"; fi
+          done
+          EE_PREVIEW_LIVE=0 EE_PREVIEW_PORT=4196 EE_WORKSPACE_DATA_DIR="$RUNNER_TEMP/ee-demo" node preview/server.mjs > "$out/simulator.log" 2>&1 &
+          gateway=$!
+          trap 'kill "$gateway" 2>/dev/null || true; wait "$gateway" || true' EXIT
+          url=http://127.0.0.1:4196
+          curl --silent --show-error --fail --retry 15 --retry-connrefused --retry-delay 1 --max-time 3 "$url/api/session" | python -c 'import json,sys; assert json.load(sys.stdin).get("simulated") is True'
+          size=1280x800
+          if [[ "$platform" == osx ]]; then
+            size=$(swift -e 'import AppKit; guard let screen = NSScreen.main else { fatalError("No desktop display") }; let frame = screen.visibleFrame; print("\(min(1280, Int(frame.width)))x\(min(800, Int(frame.height) - 32))")')
+          fi
+          echo "Opening the packaged Effects page at $size"
+          command=("$client" --url "$url" --shot "$out" --page Effects --size "$size")
+          if [[ "$platform" == linux ]]; then command=(xvfb-run -a "${command[@]}"); fi
+          if ! python -c 'import subprocess,sys; subprocess.run(sys.argv[1:], check=True, timeout=120)' "${command[@]}"; then
+            if [[ -f "$out/shot-error.txt" ]]; then cat "$out/shot-error.txt"; fi
+            exit 1
+          fi
+          .venv/bin/python -c 'from PIL import Image; import sys; im=Image.open(sys.argv[1]); assert im.size == tuple(map(int,sys.argv[2].split("x"))) and any(lo < hi for lo,hi in im.convert("RGB").getextrema())' "$out/shot.png" "$size"
+      - name: Keep native verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-${{ matrix.runner }}-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            outputs/native-check/check.log
+            outputs/native-check/*.png
+            outputs/native-check/package/shot.png
+            outputs/native-check/package/shot-error.txt
+            outputs/native/*.log
+      - name: Keep verified desktop client archives
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: EtherlightingEvolved-${{ matrix.runner }}-${{ github.sha }}
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            outputs/native/EtherlightingEvolved-*-osx-*.zip
+            outputs/native/EtherlightingEvolved-*-linux-*.tar.gz
