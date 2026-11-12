@@ -25,6 +25,7 @@ ee.toml
 login.json
 controller-login.json
 private-access.json
+approved-device.json
 known_hosts
 known_switches.json
 desktop.json

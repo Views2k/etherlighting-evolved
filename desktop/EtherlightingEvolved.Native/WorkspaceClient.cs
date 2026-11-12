@@ -27,7 +27,7 @@ public sealed class WorkspaceClient : IAsyncDisposable
     public WorkspaceClient(Uri baseUri)
     {
         this.baseUri = baseUri;
-        http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(10) };
+        http = new HttpClient(WorkspaceTransport.CreateHandler(baseUri)) { BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(10) };
         resumed.SetResult();
     }
 
@@ -132,10 +132,7 @@ public sealed class WorkspaceClient : IAsyncDisposable
     async Task StreamAsync(CancellationToken token)
     {
         using var socket = new ClientWebSocket();
-        socket.Options.SetRequestHeader("Origin", Address);
-        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-        var address = new UriBuilder(baseUri) { Scheme = baseUri.Scheme == "https" ? "wss" : "ws", Path = "/api/ws" }.Uri;
-        await socket.ConnectAsync(address, token);
+        await WorkspaceTransport.ConnectStreamAsync(socket, baseUri, http, token);
         var buffer = new byte[64 * 1024];
         using var message = new MemoryStream();
         while (socket.State == WebSocketState.Open)

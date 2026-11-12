@@ -15,7 +15,7 @@ public sealed class WorkspaceApi : IDisposable
 
     public WorkspaceApi(Uri baseUri)
     {
-        http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(45) };
+        http = new HttpClient(WorkspaceTransport.CreateHandler(baseUri)) { BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(45) };
         // The private Tailscale gateway requires the workspace origin on changes; the local gateway accepts it.
         http.DefaultRequestHeaders.Add("Origin", baseUri.GetLeftPart(UriPartial.Authority));
     }

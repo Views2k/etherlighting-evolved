@@ -315,7 +315,7 @@ test('the accounts audience is explicit, saved without account details, and rest
   assert.equal(shared.ready,true);assert.equal(shared.audience,'accounts');assert.equal(shared.error,null);
   assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,true);
   assert.equal(f.active.authorize(visitor('owner@example.invalid')).ok,true);
-  assert.equal(f.active.authorize(visitor()).ok,false);
+  assert.equal((await f.active.authorize(visitor())).ok,false);
   const saved=await readFile(f.configPath,'utf8');
   assert.equal(JSON.parse(saved).audience,'accounts');
   assert.equal(saved.includes('owner@example.invalid'),false);assert.equal(saved.includes('guest@example.invalid'),false);
@@ -329,6 +329,30 @@ test('the accounts audience is explicit, saved without account details, and rest
   assert.equal(f.active.authorize(visitor('guest@example.invalid')).ok,false);
   assert.equal('audience' in JSON.parse(await readFile(f.configPath,'utf8')),false);
   assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
+});
+
+test('private access uses the local device record and the current Tailscale host identity',async t=>{
+  const f=await fixture(t);
+  const sourceIp='100.100.0.20', deviceStableID='fixture-peer';
+  const whoisArgs=[];
+  const manager=createPrivateAccessManager({...f.options,runTailscale:async args=>{
+    if(args[0]!=='whois')return f.runTailscale(args);
+    whoisArgs.push(args);
+    return JSON.stringify({Node:{StableID:deviceStableID,Tags:['tag:fixture'],Addresses:[sourceIp+'/32']}});
+  }});
+  assert.equal((await manager.configure(true)).ready,true);
+  const recordPath=path.join(f.directory,'approved-device.json');
+  const save=hostStableID=>writeFile(recordPath,JSON.stringify({version:1,hostStableID,deviceStableID,addresses:[sourceIp]}),{mode:0o600});
+  assert.equal((await f.active.authorize(visitor())).ok,false);
+  await save('different-host');
+  assert.equal((await f.active.authorize(visitor())).ok,false);
+  assert.equal(whoisArgs.length,0);
+  await save(f.identity.Self.ID);
+  assert.deepEqual(await f.active.authorize(visitor()),{ok:true,device:true});
+  assert.deepEqual(whoisArgs,[['whois','--json',sourceIp]]);
+  await rm(recordPath);
+  assert.equal((await f.active.authorize(visitor())).ok,false);
+  assert.equal(f.active.authorize(visitor('owner@example.invalid')).ok,true);
 });
 
 test('turning access off keeps the chosen audience and an unknown or unsaved audience never takes effect',async t=>{

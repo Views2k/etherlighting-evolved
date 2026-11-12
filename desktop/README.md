@@ -10,6 +10,22 @@ For macOS, extract the archive for your processor and open `EtherlightingEvolved
 
 On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
 
+### Connect a tagged Tailscale device
+
+Devices signed in to the workspace owner’s Tailscale account can use the private workspace address directly. For a tagged device, enable **Use Tailscale** in **Mobile & remote access** on the Windows host. Open PowerShell as the user who runs EE and enter the device’s full Tailscale DNS name when prompted.
+
+[WINDOWS POWERSHELL]
+
+```powershell
+$ee = Join-Path $env:LOCALAPPDATA 'Programs\Etherlighting Evolved'
+$device = Read-Host 'Full Tailscale DNS name of the device to approve'
+& "$ee\runtime\node.exe" "$ee\tools\approve-workspace-device.mjs" approve $device
+```
+
+On the approved device, choose **Change workspace address** and enter the private address shown by the Windows host. Repeat the approval command for each tagged device. The host can approve an offline device when Tailscale still confirms its identity and assigned addresses.
+
+Use `status $device` to check that device, `status` to count saved approvals, or `revoke $device` to remove its access and keep the others. Use `revoke --all` to clear all device approvals.
+
 ### Add EE to the Linux applications menu
 
 Keep the extracted folder in a permanent location. To add EE to your own applications menu, open a terminal in that folder and run the following.

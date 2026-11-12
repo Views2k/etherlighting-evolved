@@ -2,6 +2,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {lstat,mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {createTailnetAccess,ACCESS_AUDIENCES} from './tailnet-access.mjs';
+import {createApprovedDeviceVerifier} from './approved-device.mjs';
 import {runInstalledTailscale,tailscaleActionUrl} from './tailscale-cli.mjs';
 export {runInstalledTailscale} from './tailscale-cli.mjs';
 
@@ -39,7 +40,7 @@ function parseJSON(value){
   fail('private_access_invalid_configuration');
 }
 
-function identityFrom(status,httpsPort,audience){
+function identityFrom(status,httpsPort,audience,deviceConfigPath,runTailscale){
   const self=status.Self;
   if(status.BackendState!=='Running'||!object(self)||self.Online!==true||self.Expired===true
       ||(self.Tags!==undefined&&(!Array.isArray(self.Tags)||self.Tags.length)))fail('tailscale_signin_required');
@@ -51,7 +52,10 @@ function identityFrom(status,httpsPort,audience){
   const name=self.DNSName.endsWith('.')?self.DNSName.slice(0,-1):self.DNSName;
   const origin=`https://${name}:${httpsPort}`;
   let gate;
-  try{gate=createTailnetAccess({origin,ownerLogin:user.LoginName,audience});}catch{fail('tailscale_signin_required');}
+  try{
+    const verifyDevice=createApprovedDeviceVerifier({configPath:deviceConfigPath,runTailscale,hostStableID:self.ID});
+    gate=createTailnetAccess({origin,ownerLogin:user.LoginName,audience,verifyDevice});
+  }catch{fail('tailscale_signin_required');}
   return {origin,ownerHash:hash(user.LoginName),nodeHash:hash(self.ID),gate};
 }
 
@@ -106,6 +110,7 @@ function unrelatedRoutes(serve,port){
 export function createPrivateAccessManager({configPath,runTailscale=runInstalledTailscale,startListener,stopListener}={}){
   if(typeof configPath!=='string'||!path.isAbsolute(configPath)||typeof startListener!=='function'||typeof stopListener!=='function')
     throw new Error('Private access requires local configuration and listener callbacks.');
+  const deviceConfigPath=path.join(path.dirname(configPath),'approved-device.json');
   let saved=null,loaded=false,operation=Promise.resolve(),httpsPort=PRIVATE_HTTPS_PORT,listenerPort=PRIVATE_LISTENER_PORT,audience='owner';
   const record=value=>{const next={...value};delete next.audience;if(audience!=='owner')next.audience=audience;return next;};
   let state={available:false,enabled:false,ready:false,url:null,error:null,setup_action:null,action_url:null};
@@ -154,7 +159,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     }
     if(info.BackendState!=='Running'&&info.BackendState!=='NeedsLogin')fail('tailscale_not_running');
     if(info.BackendState==='Running'&&(info.Self?.Expired===true||Array.isArray(info.Self?.Tags)&&info.Self.Tags.length))fail('tailscale_device_identity_required');
-    const current=identityFrom(info,httpsPort,audience);state.available=true;return current;
+    const current=identityFrom(info,httpsPort,audience,deviceConfigPath,runTailscale);state.available=true;return current;
   }
   async function serve(){return parseJSON(await runTailscale(['serve','status','--json']));}
   async function close(){

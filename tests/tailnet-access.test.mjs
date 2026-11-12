@@ -96,3 +96,48 @@ test('the owner audience is the default and unknown audiences are refused',()=>{
   }
   for(const audience of ['everyone','tailnet','',null,['accounts']])assert.throws(()=>createTailnetAccess({origin,ownerLogin,audience}));
 });
+
+test('accountless Serve requests can use the specifically approved device',async()=>{
+  const sources=[];
+  const access=createTailnetAccess({origin,ownerLogin,verifyDevice:async address=>{
+    sources.push(address);
+    return address==='100.100.0.20';
+  }});
+  const anonymous={'Tailscale-User-Login':undefined};
+  assert.deepEqual(await access.authorize(request(anonymous)),{ok:true,device:true});
+  assert.deepEqual(await access.authorize(request({...anonymous,Origin:origin},{method:'POST'})),{ok:true,device:true});
+  assert.deepEqual(await access.authorize(request({...anonymous,Origin:origin}),{websocket:true}),{ok:true,device:true});
+  assert.equal((await access.authorize(request({...anonymous,'X-Forwarded-For':'100.100.0.21'}))).ok,false);
+  assert.equal(sources.length,4);
+  assert.deepEqual(access.authorize(request()),{ok:true});
+  assert.equal(sources.length,4);
+});
+
+test('invalid requests and unapproved or malformed user logins cannot fall back to a device',()=>{
+  let attempts=0;
+  const access=createTailnetAccess({origin,ownerLogin,verifyDevice:()=>{attempts++;return true;}});
+  const anonymous={'Tailscale-User-Login':undefined};
+  for(const values of [
+    {'Tailscale-User-Login':'other@example.invalid'},{'Tailscale-User-Login':''},
+    {'Tailscale-User-Login':'=?utf-8?q?bad=FF?='},{'Tailscale-User-Login':'bad login'},
+    {...anonymous,'Tailscale-Funnel-Request':'?1'},{...anonymous,Host:'localhost'},
+    {...anonymous,'X-Forwarded-Host':'other.example'},{...anonymous,'X-Forwarded-Proto':'http'},
+    {...anonymous,'X-Forwarded-For':'192.0.2.20'},{...anonymous,'X-Forwarded-For':'100.100.0.20,100.100.0.21'},
+    {...anonymous,Authorization:'invalid'},{...anonymous,Forwarded:'invalid'},{...anonymous,Origin:'https://foreign.example'}
+  ])assert.equal(access.authorize(request(values)).ok,false);
+  for(const extra of [{method:'PUT'},{url:'//foreign.example/'},{socket:{remoteAddress:'100.100.0.20'}}])
+    assert.equal(access.authorize(request(anonymous,extra)).ok,false);
+  const duplicate=request(anonymous);
+  duplicate.rawHeaders.push('X-Forwarded-For','100.100.0.20');
+  assert.equal(access.authorize(duplicate).ok,false);
+  assert.equal(access.authorize(request(anonymous),{websocket:true}).ok,false);
+  assert.equal(attempts,0);
+});
+
+test('device lookup errors and unexpected results fail closed',async()=>{
+  for(const verifyDevice of [()=>{throw new Error('unavailable');},async()=>{throw new Error('unavailable');},()=>({ok:true}),()=>1]){
+    const access=createTailnetAccess({origin,ownerLogin,verifyDevice});
+    const result=await access.authorize(request({'Tailscale-User-Login':undefined}));
+    assert.deepEqual(result,{ok:false,status:403,code:'private_access_denied'});
+  }
+});

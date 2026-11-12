@@ -19,7 +19,7 @@ def digest(path):
 
 
 def check_contents(app):
-    private = {'private-access.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
+    private = {'private-access.json', 'approved-device.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
                'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
                'known_switches.json', 'port_led_fw.bin'}
     for item in app.rglob('*'):
@@ -30,7 +30,7 @@ def check_contents(app):
         if not (app / name).is_file() or not (app / name).stat().st_size:
             raise ValueError(f'Missing notice: {name}')
     for name in ['EtherlightingEvolved.exe', 'libSkiaSharp.dll', 'libHarfBuzzSharp.dll', 'av_libglesv2.dll',
-                 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html']:
+                 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html', 'tools/approve-workspace-device.mjs']:
         path = app / name
         if not path.is_file() or not path.stat().st_size:
             raise ValueError(f'Missing application file: {name}')
@@ -89,6 +89,10 @@ def verify(root, app, node, installer=None):
                 raise ValueError(f'Unexpected authoring metadata: {relative.as_posix()}')
             sources[relative.as_posix()] = digest(source)
             assets += 1
+    helper = 'tools/approve-workspace-device.mjs'
+    sources[helper] = digest(root / helper)
+    if digest(app / helper) != sources[helper]:
+        raise ValueError('Bundled device approval tool differs from the checked source.')
     check_contents(app)
     if digest(app / 'runtime/node.exe') != digest(node):
         raise ValueError('Bundled Node differs from the selected runtime.')

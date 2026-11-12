@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -29,7 +30,7 @@ public sealed class EeApi : IDisposable
     public EeApi(Uri baseUri)
     {
         BaseUri = baseUri;
-        http = new HttpClient(new SocketsHttpHandler { UseProxy = false, AutomaticDecompression = DecompressionMethods.All })
+        http = new HttpClient(WorkspaceTransport.CreateHandler(baseUri, DecompressionMethods.All))
         {
             BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(30),
         };
@@ -38,6 +39,9 @@ public sealed class EeApi : IDisposable
     }
 
     public Uri BaseUri { get; }
+
+    internal Task ConnectStreamAsync(ClientWebSocket socket, CancellationToken token) =>
+        WorkspaceTransport.ConnectStreamAsync(socket, BaseUri, http, token);
 
     public Task<JsonNode?> GetAsync(string path, CancellationToken token = default) => RequestAsync(path, "GET", null, null, token);
 
