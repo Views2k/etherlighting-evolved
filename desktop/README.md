@@ -10,6 +10,23 @@ For macOS, extract the archive for your processor and open `EtherlightingEvolved
 
 The macOS packaging script produces an application bundle with the executable permission set. Signing and notarization are separate distribution steps.
 
+### Add EE to the Linux applications menu
+
+Keep the extracted folder in a permanent location. To add EE to your own applications menu, open a terminal in that folder and run the following.
+
+[LINUX TERMINAL]
+
+```sh
+app_dir="$(pwd -P)"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$app_dir/EtherlightingEvolved" "$HOME/.local/bin/EtherlightingEvolved"
+install -Dm644 "$app_dir/etherlighting-evolved.png" "$data_dir/icons/hicolor/256x256/apps/etherlighting-evolved.png"
+install -Dm644 "$app_dir/etherlighting-evolved.desktop" "$data_dir/applications/etherlighting-evolved.desktop"
+```
+
+The menu entry runs `EtherlightingEvolved` by name. Make sure `$HOME/.local/bin` is on your graphical session's `PATH`. If you add it to your login profile, sign out and back in, then open **Etherlighting Evolved** from the applications menu.
+
 ## Build and test
 
 Use the .NET 8 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.

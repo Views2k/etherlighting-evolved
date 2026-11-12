@@ -191,7 +191,9 @@ jobs:
               test -s "$folder/libSkiaSharp.so"
               test -s "$folder/libHarfBuzzSharp.so"
               machine='Advanced Micro Devices X86-64'; if [[ "$arch" == arm64 ]]; then machine=AArch64; fi
-              readelf -h "$folder/EtherlightingEvolved" | grep -Fq "$machine"
+              for binary in EtherlightingEvolved libSkiaSharp.so libHarfBuzzSharp.so; do
+                readelf -h "$folder/$binary" | grep -Fq "$machine"
+              done
             fi
             test -x "$folder/EtherlightingEvolved"
             cmp "outputs/native/$rid/EtherlightingEvolved" "$folder/EtherlightingEvolved"
