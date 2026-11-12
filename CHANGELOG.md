@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.28
+
+- EE uses far less processor and graphics time. A window in the notification area or minimized no longer renders or receives the live stream. With steady lighting the port map stops repainting; with moving lighting it repaints 30 times a second instead of at the display rate. Status text and readings are rewritten only a few times a second, and the ambient glow no longer uses a blur pass.
+
 ## 0.4.27
 
 - Open EE from its system tray icon. The workspace stays off the Windows taskbar while open. Minimize or close the window to return it to the tray.

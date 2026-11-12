@@ -247,6 +247,7 @@ class DesktopApp:
             return
         self.window.show()
         self.window.restore()
+        self.set_page_visible(True)
         if not self.window.events.loaded.is_set():  # first time a window started in the background is shown
             threading.Thread(target=self.check_window_loads, daemon=True).start()
 
@@ -257,11 +258,57 @@ class DesktopApp:
         return False
 
     def hide_to_tray(self) -> None:
+        self.set_page_visible(False)
         self.window.hide()
         if not self.mentioned_tray and self.tray is not None:
             self.mentioned_tray = True
             self.tray.notify("Etherlighting Evolved is still running in the notification area. "
                              "Right-click its icon to quit.", PROJECT_NAME)
+
+    def set_page_visible(self, visible: bool) -> None:
+        """Tell the browser control whether its page can be seen.
+
+        Hiding or minimizing the window does not stop the page: it kept rendering and receiving the live stream at
+        full rate while nobody could see it. The control's own visibility is switched while the window is still
+        shown, which marks the page hidden, and the page is told directly as well. It then stops its animation
+        and, a few seconds later, its stream.
+        """
+        window = self.window
+        native = getattr(window, "native", None)
+        if native is None:
+            return
+
+        def apply() -> None:
+            control = getattr(native, "webview", None)
+            if control is None:
+                return
+            # The getter reports False whenever the window is hidden, so the value is always assigned.
+            control.Visible = visible
+            core = getattr(control, "CoreWebView2", None)
+            if core is not None:
+                core.ExecuteScriptAsync("window.dispatchEvent(new CustomEvent('ee-host-visibility',"
+                                        f"{{detail:{{hidden:{'false' if visible else 'true'}}}}}))")
+
+        try:
+            if native.InvokeRequired:
+                self.on_gui(apply)
+            else:
+                apply()
+        except Exception:
+            log.warning("couldn't update the page visibility; a hidden window may keep rendering")
+
+    def follow_window_state(self) -> None:
+        """A minimized window is as invisible as one in the tray, so its page is marked hidden too."""
+        native = getattr(self.window, "native", None)
+        if native is None:
+            return
+        from System.Windows.Forms import FormWindowState
+
+        def on_resize(sender, args) -> None:
+            if bool(native.Visible):
+                self.set_page_visible(native.WindowState != FormWindowState.Minimized)
+
+        native.Resize += on_resize
 
     # The UI's own title bar
 
@@ -481,6 +528,8 @@ class DesktopApp:
     def after_window_start(self) -> None:
         self.let_windows_close_the_app()
         self.remove_title_bar()
+        with contextlib.suppress(Exception):
+            self.follow_window_state()
         if not self.background:
             self.check_window_loads()
 
