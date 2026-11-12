@@ -166,7 +166,7 @@ input[type="color"]::-moz-color-swatch { border: 0; border-radius: 3px; }
 .studio-content { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: minmax(0, 1fr); align-items: stretch; overflow: hidden; }
 .canvas-area { min-width: 0; min-height: 0; height: 100%; overflow: auto; overscroll-behavior-y: contain; padding: 0; container: port-canvas / inline-size; }
 .port-map { position: relative; isolation: isolate; width: 100%; display: grid; align-content: start; gap: 14px; padding: 14px 20px; }
-.port-glow { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; filter: blur(8px); opacity: .12; z-index: -1; }
+.port-glow { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .12; z-index: -1; }
 .port-bank { display: grid; grid-template-columns: repeat(min(var(--port-count, 8), var(--port-columns, 8)), minmax(0, 1fr)); align-items: start; gap: 16px 10px; min-width: 0; }
 .port-bank.dense-bank { --port-columns: 12; }
 .port-bank.sfp-bank { grid-template-columns: repeat(min(var(--port-count, 2), 4), minmax(0, 1fr)); width: min(100%, calc(var(--port-count, 2) * 170px)); gap: 18px; }

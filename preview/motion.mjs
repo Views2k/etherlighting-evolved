@@ -34,16 +34,25 @@ export function confirmPorts(ports) {
   }
 }
 
+export const GLOW_INTERVAL = 200;
+
 export function createPortGlow(map, environment = globalThis) {
   const canvas = map.ownerDocument.createElement('canvas');
   canvas.className = 'port-glow'; canvas.setAttribute('aria-hidden','true'); map.prepend(canvas);
   const context = canvas.getContext('2d');
   if (!context) { canvas.remove(); return {paint(){},dispose(){}}; }
-  let geometry = [], disposed = false, lastColors = '', currentColors = new Map();
+  let geometry = [], disposed = false, lastColors = '', currentColors = new Map(), paintedAt = 0, trailing = 0;
+  // The glow is a faint ambient layer; repainting and recompositing it on every frame was the largest GPU cost.
   const paint = colors => {
     if (disposed) return;
     currentColors = colors;
     if (environment.document.hidden || !geometry.length) return;
+    const time = environment.performance?.now?.() ?? 0, wait = GLOW_INTERVAL - (time - paintedAt);
+    if (paintedAt && wait > 0 && environment.setTimeout) {
+      trailing ||= environment.setTimeout(() => { trailing = 0; paint(currentColors); }, wait);
+      return;
+    }
+    paintedAt = time;
     const samples = geometry.map(point => colors.get(point.port)?.map(channel => Math.max(0,Math.min(255,channel)).toFixed(1)).join(' ') || '0 0 0');
     const signature = samples.join(';');
     if (signature === lastColors) return;
@@ -72,7 +81,7 @@ export function createPortGlow(map, environment = globalThis) {
     geometry = [...map.querySelectorAll('.port-tile')].map(tile => {
       const rect = tile.querySelector('.port-led').getBoundingClientRect();
       return {port:tile.dataset.port,x:(rect.left-bounds.left+rect.width/2)*x,
-        y:(rect.top-bounds.top+rect.height/2)*y,radius:Math.max(18,rect.width*x*1.2)};
+        y:(rect.top-bounds.top+rect.height/2)*y,radius:Math.max(22,rect.width*x*1.5)};
     });
     paint(currentColors);
   };
@@ -86,6 +95,7 @@ export function createPortGlow(map, environment = globalThis) {
     paint,
     dispose() {
       disposed = true; observer.disconnect(); map.removeEventListener('scroll',measure,true);
+      if (trailing) { environment.clearTimeout?.(trailing); trailing = 0; }
       environment.document.removeEventListener('visibilitychange',measure); canvas.remove(); geometry = []; currentColors = new Map();
     }
   };

@@ -961,14 +961,41 @@ async function openGroups() {
   });
 }
 
+let streamPaused=false,streamPauseTimer;
+// The desktop host reports a window in the notification area or minimized, where the page itself still looks visible.
+let hostHidden=false;
+const pageHidden=()=>document.hidden||hostHidden;
+// The stream carries about twenty frames a second. Only the port colors need that rate; labels, status and readings
+// are refreshed at most four times a second so identical values are not rewritten into the page on every frame.
+let liveUpdateTimer=0,liveUpdatedAt=0;
+function pushLiveColors(){
+  if(pageHidden()||page!=='Lighting')return;
+  portAnimator.pushFrame(Object.fromEntries([...(state.ports||[]),...(state.sfp||[])].map(port=>[port.port,portDisplayRgb(port,state.output?.gamma)])));
+}
+function scheduleLiveUpdate(){
+  if(liveUpdateTimer)return;
+  liveUpdateTimer=setTimeout(()=>{
+    liveUpdateTimer=0;liveUpdatedAt=performance.now();
+    if(pageHidden())return;
+    updateConnection();updateLive();
+    {
+      if(page==='Automation'||page==='Profiles')secondaryCleanup?.update?.(state);
+      if(page==='Settings')secondaryCleanup?.update?.(state,session,disconnected);
+    }
+  },Math.max(0,250-(performance.now()-liveUpdatedAt)));
+}
+function pauseStreamWhileHidden(){
+  clearTimeout(streamPauseTimer);
+  streamPauseTimer=setTimeout(()=>{if(!pageHidden()||closingWorkspace)return;streamPaused=true;clearTimeout(retryTimer);currentSocket?.close();},5000);
+}
 function connectFrames() {
-  if(closingWorkspace)return;
+  if(closingWorkspace||streamPaused)return;
   if(currentSocket&&currentSocket.readyState<2)return;
   clearTimeout(retryTimer); currentSocket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/ws`);
   currentSocket.addEventListener('open',()=>{disconnected=false;updateConnection();if(document.querySelector('#status').textContent==='The workspace connection was interrupted.')status('Workspace connection restored');updateDraftBar();});
   currentSocket.addEventListener('message',event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
-    if(message.type==='frame'&&workspaceReady){receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,telemetry:message.telemetry??state.telemetry,poe_summary:message.poe_summary??state.poe_summary,identify:Object.hasOwn(message,'identify')?message.identify:state.identify,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:Object.hasOwn(message,'uplink_bandwidth')?message.uplink_bandwidth:state.uplink_bandwidth,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected,mode:message.mode};session={...session,connected:message.connected};updateConnection();updateLive();}
+    if(message.type==='frame'&&workspaceReady){receiveScheduleClock(message.schedule_clock);state={...state,schedule_clock:message.schedule_clock??state.schedule_clock,telemetry:message.telemetry??state.telemetry,poe_summary:message.poe_summary??state.poe_summary,identify:Object.hasOwn(message,'identify')?message.identify:state.identify,ports:message.ports??state.ports,sfp:message.sfp??state.sfp,sfp_sync:message.sfp_sync??state.sfp_sync,controller:message.controller??state.controller,stats:message.stats??state.stats,uplink_bandwidth:Object.hasOwn(message,'uplink_bandwidth')?message.uplink_bandwidth:state.uplink_bandwidth,reconnect_required:message.reconnect_required??state.reconnect_required,error:Object.hasOwn(message,'error')?message.error:state.error,connected:message.connected,mode:message.mode};session={...session,connected:message.connected};pushLiveColors();scheduleLiveUpdate();return;}
     else if(message.type==='state'&&workspaceReady){
       receiveScheduleClock(message.state.schedule_clock);
       state={...message.state,ports:state.ports};
@@ -981,8 +1008,9 @@ function connectFrames() {
       if(page==='Settings')secondaryCleanup?.update?.(state,session,disconnected);
     }
   });
+  const opened=currentSocket;
   currentSocket.addEventListener('close',()=>{
-    if(closingWorkspace)return;
+    if(closingWorkspace||streamPaused||opened!==currentSocket)return;
     disconnected=true;updateConnection();updateLive();if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);retryTimer=setTimeout(connectFrames,1500);
   });
   currentSocket.addEventListener('error',()=>currentSocket.close());
@@ -990,12 +1018,23 @@ function connectFrames() {
 document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>run(()=>navigate(button.dataset.page))));
 document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))updateRangeProgress();});
 document.addEventListener('focusout',()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>reconcileEditor(),150);});
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){saveUiState();portAnimator.stop();return;}
+function visibilityChanged(){
+  clearTimeout(streamPauseTimer);
+  if(pageHidden()){
+    saveUiState();portAnimator.stop();
+    // A hidden window shows nothing, so it stops receiving frames after a short grace period.
+    pauseStreamWhileHidden();
+    return;
+  }
+  if(streamPaused){streamPaused=false;connectFrames();if(workspaceReady)void refresh(false).catch(()=>{});}
   updateConnection();updateLive();
   if(page==='Automation'||page==='Profiles')secondaryCleanup?.update?.(state);
   if(page==='Settings')secondaryCleanup?.update?.(state,session,disconnected);
-});
+}
+document.addEventListener('visibilitychange',visibilityChanged);
+window.addEventListener('ee-host-visibility',event=>{const hidden=event.detail?.hidden===true;if(hidden===hostHidden)return;hostHidden=hidden;visibilityChanged();});
+// A window that starts hidden, such as a tray launch, never gets a visibility event.
+if(document.hidden)pauseStreamWhileHidden();
 window.addEventListener('beforeunload',event=>{saveUiState();if(busy||pendingPlan||edits.size||secondaryCleanup?.hasChanges?.()){event.preventDefault();event.returnValue='';}});
 window.addEventListener('popstate',()=>{const historyEntry=routeHistory.observe();if(!historyEntry)return;const target=['Lighting','Effects','Automation','Profiles','Settings','Help'].find(name=>`#${name.toLowerCase()}`===historyEntry.hash)||'Lighting';run(()=>navigate(target,{fromHistory:true,historyEntry}));});
 

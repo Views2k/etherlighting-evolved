@@ -64,7 +64,7 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     chart.hidden=samples.length<2;
   }
   let record, connected=false, disconnected=false, receivedAt=0, signature='', frame=0, timer=0, disposed=false;
-  let displayed=null, animation=null;
+  let displayed=null, animation=null, wroteAt=0;
   const now=()=>environment.performance.now();
   const cancel=()=>{if(frame)environment.cancelAnimationFrame(frame);frame=0;animation=null;};
   const cancelTimer=()=>{if(timer)environment.clearTimeout(timer);timer=0;};
@@ -82,6 +82,9 @@ export function mountUplinkBandwidth(host, environment=globalThis) {
     if(disposed||doc.hidden||!animation)return;
     if(current().status!=='ready'){render();return;}
     const progress=Math.max(0,Math.min(1,(time-animation.start)/MOTION.settle));
+    // Counting up in about twenty steps a second reads the same and avoids a page repaint on every display frame.
+    if(progress<1&&time-wroteAt<45){frame=environment.requestAnimationFrame(paint);return;}
+    wroteAt=time;
     const eased=1-(1-progress)**3;
     write(animation.to.map((value,index)=>animation.from[index]+(value-animation.from[index])*eased));
     if(progress<1)frame=environment.requestAnimationFrame(paint);
