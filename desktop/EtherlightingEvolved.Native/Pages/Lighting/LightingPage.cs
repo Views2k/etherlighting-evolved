@@ -222,7 +222,8 @@ public sealed partial class LightingPage : Page
         Grid.SetRow(bandwidthPanel, meterBelow ? 3 : 0);
         Grid.SetColumn(bandwidthPanel, meterBelow ? 0 : 1);
         Grid.SetColumnSpan(bandwidthPanel, meterBelow ? 2 : 1);
-        bandwidthPanel.HorizontalAlignment = meterBelow ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+        bandwidthPanel.HorizontalAlignment = showChart ? HorizontalAlignment.Stretch
+            : meterBelow ? HorizontalAlignment.Left : HorizontalAlignment.Right;
         bandwidthPanel.ShowChart(showChart);
         foreach (var child in canvas.Children)
             child.Margin = new Thickness(0, Grid.GetRow(child) == 0 ? 0 : rack ? 3 : 14, 0, 0);

@@ -59,6 +59,13 @@ async function screenshot(name) {
 async function bounds(selector) {
   return evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};})()`);
 }
+async function checkBandwidthWidth(inspectorClosed) {
+  const slot = await bounds('.rack-meter-slot');
+  const plot = await bounds('.rack-meter-slot .bandwidth-chart svg');
+  assert.ok(Math.abs(plot.x + plot.width - slot.x - slot.width) <= 2, 'The traces must reach the far edge of the rack meter');
+  assert.ok(plot.width > slot.width * (inspectorClosed ? 0.45 : 0.25), 'The rack graph must use the available row');
+  return Math.round(plot.width);
+}
 async function observeBandwidthPlot() {
   const chart = document.querySelector('.rack-meter-slot .bandwidth-chart');
   if (!chart || !chart.getBoundingClientRect().width) throw new Error('Rack bandwidth graph is hidden');
@@ -351,7 +358,7 @@ try {
   await evaluate('document.querySelector("[data-effect=traffic] .effect-card-open").click()');
   await until(() => evaluate('!!document.querySelector("#inspector")'), 'long port controls');
   report.inspector_scroll = [];
-  for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 700], [1099, 700], [1024, 600], [390, 844], [1280, 400], [1272, 394], [1024, 320], [1024, 400]]) {
+  for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 700], [1099, 700], [1024, 600], [390, 844], [1280, 400], [1276, 400], [1272, 394], [1024, 320], [1024, 400]]) {
     await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
     await frame();
     const layout = await evaluate(`({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth})`);
@@ -365,6 +372,7 @@ try {
       report.bandwidth.scrolling = scrolling;
       await send('Emulation.setEmulatedMedia', {features: []});
     }
+    if (width === 1276 && height === 400) layout.openGraphWidth = await checkBandwidthWidth(false);
     report.sizes.push(layout);
     if (width >= 1100 || width >= 900 && height <= 500) {
       const initial = await bounds('.canvas-area');
@@ -373,6 +381,10 @@ try {
       await frame();
       const expanded=await bounds('.canvas-area');
       assert.equal((await bounds('#inspector')).width,0);
+      if (width === 1276 && height === 400) {
+        layout.closedGraphWidth = await checkBandwidthWidth(true);
+        assert.ok(layout.closedGraphWidth > layout.openGraphWidth + 200, 'The graph expands when the inspector releases its column');
+      }
       assert.ok(expanded.width >= initial.width + 200 && expanded.width >= width-2,'Canvas uses the released inspector column');
       assert.equal(await evaluate('document.activeElement.id'),'expand-inspector');
       assert.equal(await evaluate('!document.querySelector("#draft-actions").hidden'),draftOpen);

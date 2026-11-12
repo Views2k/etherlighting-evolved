@@ -15,7 +15,8 @@ internal sealed class BandwidthPlot : Control
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(1000d / 30) };
     StreamGeometry? uploadLine, downloadLine;
     double drawnScale, deadline;
-    Size drawnSize;
+    Rect drawnBounds;
+    Rect? viewport;
     bool active, attached;
 
     public BandwidthPlot() : this(() => Environment.TickCount64) { }
@@ -23,12 +24,16 @@ internal sealed class BandwidthPlot : Control
     internal BandwidthPlot(Func<long> time)
     {
         this.time = time;
-        Width = 175;
         Height = 32;
         ClipToBounds = true;
         timer.Tick += (_, _) => Tick(time());
         AttachedToVisualTree += (_, _) => { attached = true; Tick(time()); };
-        DetachedFromVisualTree += (_, _) => { attached = false; timer.Stop(); };
+        DetachedFromVisualTree += (_, _) => { attached = false; viewport = null; timer.Stop(); };
+        EffectiveViewportChanged += (_, e) =>
+        {
+            viewport = e.EffectiveViewport;
+            Tick(time());
+        };
     }
 
     public bool HasHistory => trace.Points.Count >= 2;
@@ -57,7 +62,9 @@ internal sealed class BandwidthPlot : Control
         if (changed || timer.IsEnabled != ShouldAnimate(now)) Tick(now);
     }
 
-    bool ShouldAnimate(double now) => active && attached && IsEffectivelyVisible && now < deadline && trace.Moving(now);
+    Rect VisiblePlot => viewport is { } clip ? new Rect(Bounds.Size).Intersect(clip) : new Rect(Bounds.Size);
+    bool ShouldAnimate(double now) => active && attached && IsEffectivelyVisible && (viewport is null || VisiblePlot.Height >= 4)
+        && now < deadline && trace.Moving(now);
 
     void Tick(double now)
     {
@@ -69,16 +76,18 @@ internal sealed class BandwidthPlot : Control
     public override void Render(DrawingContext context)
     {
         base.Render(context);
-        if (!HasHistory || Bounds.Width <= 0 || Bounds.Height < 4) return;
+        var visible = VisiblePlot;
+        if (!HasHistory || visible.Width <= 0 || visible.Height < 4) return;
+        var graph = new Rect(0, visible.Y, Bounds.Width, visible.Height);
         var now = time();
         var fresh = now < deadline;
         var scale = fresh ? trace.Scale(now) : trace.FinalScale;
-        if (downloadLine is null || drawnScale != scale || drawnSize != Bounds.Size)
+        if (downloadLine is null || drawnScale != scale || drawnBounds != graph)
         {
-            downloadLine = BuildLine(scale, true);
-            uploadLine = BuildLine(scale, false);
+            downloadLine = BuildLine(graph, scale, true);
+            uploadLine = BuildLine(graph, scale, false);
             drawnScale = scale;
-            drawnSize = Bounds.Size;
+            drawnBounds = graph;
         }
         var shift = fresh ? -trace.Offset(now) * Bounds.Width / BandwidthTimeline.Window : 0;
         using (context.PushTransform(Matrix.CreateTranslation(shift, 0)))
@@ -88,15 +97,15 @@ internal sealed class BandwidthPlot : Control
         }
     }
 
-    StreamGeometry BuildLine(double scale, bool down)
+    StreamGeometry BuildLine(Rect graph, double scale, bool down)
     {
         var geometry = new StreamGeometry();
         using var path = geometry.Open();
         double? previous = null;
         foreach (var point in trace.Points)
         {
-            var xy = new Point((1 + point.Offset / BandwidthTimeline.Window) * Bounds.Width,
-                Bounds.Height - 2 - (down ? point.Down : point.Up) / scale * (Bounds.Height - 4));
+            var xy = new Point((1 + point.Offset / BandwidthTimeline.Window) * graph.Width,
+                graph.Bottom - 2 - (down ? point.Down : point.Up) / scale * (graph.Height - 4));
             if (previous is null || !trace.Joins(previous.Value, point.Offset))
             {
                 if (previous is not null) path.EndFigure(false);

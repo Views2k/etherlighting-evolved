@@ -52,6 +52,7 @@ internal sealed class UplinkBandwidthMeter : Grid
     public void ShowChart(bool visible)
     {
         chart.IsVisible = visible;
+        ColumnDefinitions[1].Width = visible ? GridLength.Star : GridLength.Auto;
         plot.SetActive(pageVisible && visible);
     }
 
