@@ -22,8 +22,8 @@ namespace EtherlightingEvolved.Native.Theme;
 /// </summary>
 public static class Look
 {
-    public static readonly FontFamily Font = new("Segoe UI Variable Text, Segoe UI, Inter, $Default");
-    public static readonly FontFamily DisplayFont = new("Segoe UI Variable Display, Segoe UI, Inter, $Default");
+    public static readonly FontFamily Font = new("Segoe UI Variable Text, Segoe UI, $Default");
+    public static readonly FontFamily DisplayFont = new("Segoe UI Variable Display, Segoe UI, $Default");
     public static readonly Easing Ease = new SplineEasing(0.2, 0.7, 0.2, 1);
     public static string CurrentTheme { get; private set; } = ThemeTokens.DefaultTheme;
 

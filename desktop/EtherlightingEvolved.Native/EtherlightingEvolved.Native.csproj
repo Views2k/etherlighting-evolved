@@ -18,12 +18,12 @@
     <!-- Standalone builds for every supported desktop. One restore covers all of them. -->
     <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64;linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
-  <!-- A published build carries its own .NET runtime in one compressed program file. The three native graphics
-       libraries stay beside it, so nothing is unpacked to a temporary folder at startup. -->
+  <!-- A published build carries its own .NET runtime in one program file. It is not compressed: compressed
+       assemblies are unpacked into memory at every start, while the installer already compresses the download.
+       The three native graphics libraries stay beside it, so nothing is unpacked to a temporary folder. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
@@ -31,7 +31,6 @@
     <PackageReference Include="Avalonia" Version="11.3.23" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.23" />
     <PackageReference Include="Avalonia.Controls.ColorPicker" Version="11.3.23" />
   </ItemGroup>
   <ItemGroup>

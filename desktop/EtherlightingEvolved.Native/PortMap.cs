@@ -26,8 +26,8 @@ public sealed class PortMap : Control, ICustomHitTest
         public double TextWidth = -1;
     }
 
-    static readonly Typeface Face = new(new FontFamily("fonts:Inter#Inter, $Default"));
-    static readonly Typeface Strong = new(new FontFamily("fonts:Inter#Inter, $Default"), FontStyle.Normal, FontWeight.SemiBold);
+    static readonly Typeface Face = new(new FontFamily("Segoe UI Variable Text, Segoe UI, $Default"));
+    static readonly Typeface Strong = new(new FontFamily("Segoe UI Variable Text, Segoe UI, $Default"), FontStyle.Normal, FontWeight.SemiBold);
 
     readonly List<Tile> tiles = [];
     HashSet<int> selected = [];

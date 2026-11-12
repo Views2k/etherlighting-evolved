@@ -1,31 +1,34 @@
-"""Collect installed dependency notices for the modules in the Windows package."""
+"""Collect installed dependency notices for the components in the Windows package.
+
+Python components come from the modules inside the packaged engine. .NET components come from the desktop
+program's restore record (project.assets.json): the .NET runtime and every package in its Windows build.
+"""
 
 import ast
 import importlib.metadata
+import json
 from pathlib import Path
+import re
 import shutil
 import sys
 
 from PyInstaller.archive.readers import CArchiveReader
 
+NOTICE_WORDS = ('license', 'licence', 'copying', 'notice')
 
-def collect(app: Path):
+
+def collect_python(app: Path, destination: Path, index: list[str]) -> int:
     mapping = importlib.metadata.packages_distributions()
     names = set()
-    for relative in ['EtherlightingEvolved.exe', 'engine/EEEngine.exe']:
-        archive = CArchiveReader(str(app / relative)).open_embedded_archive('PYZ.pyz')
-        for module in archive.toc:
-            if not module.startswith('etherlighting_evolved'):
-                names.update(mapping.get(module.split('.')[0], []))
-    destination = app / 'licenses'
-    destination.mkdir(exist_ok=True)
-    index = ['Third-party components', '']
+    archive = CArchiveReader(str(app / 'engine/EEEngine.exe')).open_embedded_archive('PYZ.pyz')
+    for module in archive.toc:
+        if not module.startswith('etherlighting_evolved'):
+            names.update(mapping.get(module.split('.')[0], []))
     for name in sorted(names):
         dist = importlib.metadata.distribution(name)
         folder = destination / name
         folder.mkdir(exist_ok=True)
-        notices = [file for file in dist.files or []
-                   if any(word in file.name.lower() for word in ('license', 'licence', 'copying', 'notice'))]
+        notices = [file for file in dist.files or [] if any(word in file.name.lower() for word in NOTICE_WORDS)]
         index.append(f'{name} {dist.version}')
         for number, file in enumerate(notices, 1):
             shutil.copyfile(dist.locate_file(file), folder / f'{number:02d}-{file.name}')
@@ -38,9 +41,65 @@ def collect(app: Path):
                         details.append(doc)
             (folder / 'SOURCE-NOTICE.txt').write_text('\n\n'.join(details) + '\n', encoding='utf-8')
     shutil.copyfile(Path(sys.base_prefix) / 'LICENSE.txt', destination / 'Python-LICENSE.txt')
+    return len(names)
+
+
+def nuspec_field(text: str, tag: str) -> str:
+    match = re.search(rf'<{tag}(?:\s[^>]*)?>([^<]*)</{tag}>', text)
+    return match.group(1).strip() if match else ''
+
+
+def collect_dotnet(assets: Path, destination: Path, index: list[str]) -> int:
+    record = json.loads(assets.read_text('utf-8'))
+    packages_root = Path(record['packageFolders'] and next(iter(record['packageFolders'])))
+    target = next((value for key, value in record['targets'].items() if key.endswith('/win-x64')), None)
+    if target is None:
+        raise SystemExit('The desktop restore record has no Windows build target.')
+    count = 0
+    for key, package in sorted(target.items(), key=lambda item: item[0].lower()):
+        if package.get('type') != 'package':
+            continue
+        name, version = key.split('/')
+        folder = packages_root / record['libraries'][key]['path']
+        files = [path for path in folder.iterdir() if path.is_file() and any(word in path.name.lower() for word in NOTICE_WORDS)]
+        output = destination / 'dotnet' / name
+        output.mkdir(parents=True, exist_ok=True)
+        for number, path in enumerate(sorted(files), 1):
+            shutil.copyfile(path, output / f'{number:02d}-{path.name}')
+        nuspec = next(folder.glob('*.nuspec'), None)
+        text = nuspec.read_text('utf-8') if nuspec else ''
+        license_name = nuspec_field(text, 'license') or nuspec_field(text, 'licenseUrl')
+        details = [f'{name} {version}', f'License: {license_name}', f"Copyright: {nuspec_field(text, 'copyright')}",
+                   f"Project: {nuspec_field(text, 'projectUrl')}"]
+        (output / 'PACKAGE-NOTICE.txt').write_text('\n'.join(details) + '\n', encoding='utf-8')
+        index.append(f'{name} {version} ({license_name or "see notice"})')
+        count += 1
+    # The .NET runtime carried by the self-contained build is a runtime pack, listed with the downloads.
+    framework = next(iter(record['project']['frameworks'].values()))
+    for dependency in framework.get('downloadDependencies', []):
+        if dependency['name'].lower() != 'microsoft.netcore.app.runtime.win-x64':
+            continue
+        version = dependency['version'].strip('[]').split(',')[0].strip()
+        folder = packages_root / dependency['name'].lower() / version
+        for source, target_name in [('LICENSE.TXT', 'DotNet-LICENSE.txt'), ('THIRD-PARTY-NOTICES.TXT', 'DotNet-THIRD-PARTY-NOTICES.txt')]:
+            if (folder / source).is_file():
+                shutil.copyfile(folder / source, destination / target_name)
+        index.append(f"{dependency['name']} {version} (MIT)")
+    if not (destination / 'DotNet-LICENSE.txt').is_file():
+        raise SystemExit('The .NET runtime license was not found in the restored packages.')
+    return count
+
+
+def collect(app: Path, assets: Path):
+    destination = app / 'licenses'
+    destination.mkdir(exist_ok=True)
+    index = ['Third-party components', '', 'Engine (Python)', '']
+    python = collect_python(app, destination, index)
+    index += ['', 'Desktop program (.NET)', '']
+    dotnet = collect_dotnet(assets, destination, index)
     (destination / 'COMPONENTS.txt').write_text('\n'.join(index) + '\n', encoding='utf-8')
-    print(f'Preserved notices for {len(names)} installed dependencies and Python.')
+    print(f'Preserved notices for {python} Python dependencies, Python, {dotnet} .NET packages and the .NET runtime.')
 
 
 if __name__ == '__main__':
-    collect(Path(sys.argv[1]).resolve())
+    collect(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())

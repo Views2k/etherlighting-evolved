@@ -42,6 +42,12 @@ jobs:
           python -m pip install --no-deps --no-build-isolation -e .
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m pip check
+      - name: Restore the desktop program's locked packages
+        env:
+          AVALONIA_TELEMETRY_OPTOUT: '1'
+        run: |
+          dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --locked-mode
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Verify source and simulator workflows
         run: |
           $browser = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'

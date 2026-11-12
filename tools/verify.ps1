@@ -37,6 +37,14 @@ try {
     Invoke-Check 'lint' $PythonExe @('-m','ruff','check','src/etherlighting_evolved','tests')
     Invoke-Check 'python' $PythonExe @('-m','pytest','-q','--junitxml',(Join-Path $OutputRoot 'python.xml'))
     Invoke-Check 'contract' $PythonExe @('tests/backend_contract.py','.')
+    # The desktop program: offscreen rendering checks and a lighting session against the simulator.
+    $check = Join-Path $root 'desktop\EtherlightingEvolved.Native.Check'
+    if (-not (Test-Path -LiteralPath (Join-Path $check 'obj\project.assets.json') -PathType Leaf)) {
+        throw 'Restore the desktop packages first (see desktop/README.md).'
+    }
+    $env:AVALONIA_TELEMETRY_OPTOUT = '1'
+    Invoke-Check 'desktop-build' 'dotnet' @('build',(Join-Path $check 'EtherlightingEvolved.Native.Check.csproj'),'-c','Release','--no-restore')
+    Invoke-Check 'desktop' 'dotnet' @((Join-Path $check 'bin\Release\net8.0\EtherlightingEvolved.Native.Check.dll'),'--output',(Join-Path $OutputRoot 'desktop'),'--service')
     Invoke-Check 'browser' $node @('tools/smoke-workspace.mjs','--root',$root,'--python',$PythonExe,'--browser',$BrowserExe,'--output',(Join-Path $OutputRoot 'browser'),'--port','4198')
     $passed = $true
 } finally {

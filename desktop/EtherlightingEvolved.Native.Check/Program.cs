@@ -32,7 +32,7 @@ void Check(bool ok, string name)
 AppBuilder.Configure<App>()
     .UseSkia()
     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
-    .WithInterFont()
+    
     .SetupWithoutStarting();
 
 // 1. Payload reading
