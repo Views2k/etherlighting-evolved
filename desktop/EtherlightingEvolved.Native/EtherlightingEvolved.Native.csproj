@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <AssemblyName>EtherlightingEvolvedNative</AssemblyName>
+    <RootNamespace>EtherlightingEvolved.Native</RootNamespace>
+    <Product>Etherlighting Evolved</Product>
+    <Company>Views2k</Company>
+    <Authors>Views2k</Authors>
+    <Description>Native desktop window for Etherlighting Evolved</Description>
+    <Version>0.1.0</Version>
+    <ApplicationIcon>../../src/etherlighting_evolved/assets/ee.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Standalone builds for every supported desktop. One restore covers all of them. -->
+    <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64;linux-x64;linux-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.23" />
+  </ItemGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="../../src/etherlighting_evolved/assets/ee.ico" Link="Assets/ee.ico" />
+  </ItemGroup>
+</Project>

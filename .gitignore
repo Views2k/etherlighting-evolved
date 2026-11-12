@@ -47,3 +47,6 @@ Thumbs.db
 .vscode/
 
 port-names/
+
+desktop/*/bin/
+desktop/*/obj/
