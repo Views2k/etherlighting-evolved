@@ -211,10 +211,18 @@ jobs:
           trap 'kill "$gateway" 2>/dev/null || true; wait "$gateway" || true' EXIT
           url=http://127.0.0.1:4196
           curl --silent --show-error --fail --retry 15 --retry-connrefused --retry-delay 1 --max-time 3 "$url/api/session" | python -c 'import json,sys; assert json.load(sys.stdin).get("simulated") is True'
-          command=("$client" --url "$url" --shot "$out" --page Effects --size 1280x800)
+          size=1280x800
+          if [[ "$platform" == osx ]]; then
+            size=$(swift -e 'import AppKit; guard let screen = NSScreen.main else { fatalError("No desktop display") }; let frame = screen.visibleFrame; print("\(min(1280, Int(frame.width)))x\(min(800, Int(frame.height) - 32))")')
+          fi
+          echo "Opening the packaged Effects page at $size"
+          command=("$client" --url "$url" --shot "$out" --page Effects --size "$size")
           if [[ "$platform" == linux ]]; then command=(xvfb-run -a "${command[@]}"); fi
-          python -c 'import subprocess,sys; subprocess.run(sys.argv[1:], check=True, timeout=120)' "${command[@]}"
-          .venv/bin/python -c 'from PIL import Image; import sys; im=Image.open(sys.argv[1]); assert im.size == (1280,800) and any(lo < hi for lo,hi in im.convert("RGB").getextrema())' "$out/shot.png"
+          if ! python -c 'import subprocess,sys; subprocess.run(sys.argv[1:], check=True, timeout=120)' "${command[@]}"; then
+            if [[ -f "$out/shot-error.txt" ]]; then cat "$out/shot-error.txt"; fi
+            exit 1
+          fi
+          .venv/bin/python -c 'from PIL import Image; import sys; im=Image.open(sys.argv[1]); assert im.size == tuple(map(int,sys.argv[2].split("x"))) and any(lo < hi for lo,hi in im.convert("RGB").getextrema())' "$out/shot.png" "$size"
       - name: Keep native verification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

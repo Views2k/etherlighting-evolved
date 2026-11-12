@@ -291,7 +291,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
                 throw new InvalidOperationException($"The requested {options.ShotPage} page did not open.");
             await Task.Delay(2500);
             if (Math.Abs(window.Bounds.Width - options.ShotSize.Width) > 1 || Math.Abs(window.Bounds.Height - options.ShotSize.Height) > 1)
-                throw new InvalidOperationException("The window did not reach the requested size.");
+                throw new InvalidOperationException($"Requested a {options.ShotSize.Width} × {options.ShotSize.Height} window, got {window.Bounds.Width} × {window.Bounds.Height}.");
             using var bitmap = new RenderTargetBitmap(options.ShotSize);
             bitmap.Render(window);
             bitmap.Save(Path.Combine(folder, "shot.png"));
