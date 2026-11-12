@@ -9,6 +9,7 @@ from etherlighting_evolved.transport import (
     READ_CPU,
     READ_POE,
     READ_PORTS,
+    UNFINISHED_PORT_READ_LIMIT,
     PortSampleUnavailable,
     SSHTransport,
     TransportError,
@@ -118,18 +119,45 @@ async def test_unconfirmed_status_reader_is_bounded_and_still_checked_on_handoff
     with pytest.raises(PortSampleUnavailable):
         await transport.run(READ_PORTS, channel="links")
     unused = connection.process = Process()
-    for _ in range(3):
+    for _ in range(UNFINISHED_PORT_READ_LIMIT - 1):
         with pytest.raises(PortSampleUnavailable):
             await transport.run(READ_PORTS, channel="links")
+    # At the limit the session is dropped, so the engine reconnects instead of using frozen status values.
+    with pytest.raises(TransportError, match="cleanup") as error:
+        await transport.run(READ_PORTS, channel="links")
+    assert not isinstance(error.value, PortSampleUnavailable)
     assert not unused.started.is_set() and len(first.writes) == 1
     assert set(transport._process_tags) == {id(first), id(replacement)}
-    with pytest.raises(TransportError, match="cleanup"):
-        await transport.close()
     assert not connection.closed
     first.exit_signal = ("TERM", False, "", "")
     replacement.exit_status = 0
     await transport.close()
     assert connection.closed
+
+
+@pytest.mark.anyio
+async def test_status_shell_open_timeout_closes_the_session():
+    # A cancelled open can leave the shell running on the switch without a handle; only closing the session ends it.
+    transport = SSHTransport("fixture.invalid")
+    opening, complete = asyncio.Event(), asyncio.Event()
+    connection = transport._conn = Connection(opening=opening, complete=complete)
+    with pytest.raises(TransportError) as error:
+        await transport.run(READ_PORTS, channel="links", timeout=0.05)
+    assert opening.is_set() and not isinstance(error.value, PortSampleUnavailable)
+    assert connection.closed and not transport.connected
+
+
+@pytest.mark.anyio
+async def test_successful_status_read_resets_the_unfinished_count():
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    transport._unfinished_port_reads = UNFINISHED_PORT_READ_LIMIT - 1
+    reading = asyncio.create_task(transport.run(READ_PORTS, channel="links"))
+    await asyncio.wait_for(connection.process.started.wait(), 1)
+    connection.process.replies.put_nowait("sample\n")
+    connection.process.replies.put_nowait(connection.process.writes[-1].splitlines()[-1].removeprefix("echo "))
+    assert await reading == "sample\n"
+    assert transport._unfinished_port_reads == 0
 
 
 @pytest.mark.anyio

@@ -20,6 +20,9 @@ SSH_CLOSE_TIMEOUT = 3.0
 READ_PORTS = "swctrl port show"
 READ_POE = "swctrl poe show 2>/dev/null"
 READ_CPU = 'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "$b"'
+# Status polls refused in a row because an earlier status shell has not exited. At the limit the connection is
+# dropped, so the engine reconnects and shows the error instead of driving lighting from frozen status values.
+UNFINISHED_PORT_READ_LIMIT = 3
 
 
 class TransportError(RuntimeError):
@@ -216,6 +219,7 @@ class SSHTransport(Transport):
         self._conn = None
         self._channels: dict[str, _Channel] = {}
         self._prior_port_reader: _Channel | None = None
+        self._unfinished_port_reads = 0
         self._channel_lock = asyncio.Lock()
         self._rgb_lock = asyncio.Lock()
         self._health_lock = asyncio.Lock()
@@ -441,6 +445,7 @@ class SSHTransport(Transport):
                 self._late_connections.append(conn)
             raise
         self._conn = conn
+        self._unfinished_port_reads = 0
         self._rgb_checked = self._rgb_failed = False
 
     async def _channel(self, name: str, *, connection=None) -> _Channel:
@@ -477,6 +482,9 @@ class SSHTransport(Transport):
                     finished = previous if _process_exited(previous.process) else self._prior_port_reader
                     if finished is not None:
                         if not _process_exited(finished.process):
+                            self._unfinished_port_reads += 1
+                            if self._unfinished_port_reads >= UNFINISHED_PORT_READ_LIMIT:
+                                raise TransportError("the switch status shell did not finish")
                             raise PortSampleUnavailable("the previous switch status read is finishing")
                         await finished.process.wait_closed()
                         if self._conn is not conn:
@@ -510,7 +518,9 @@ class SSHTransport(Transport):
         except PortSampleUnavailable:
             raise
         except Exception as exc:
-            await self._command_failed(conn, None, port_sample, exc)
+            # A shell open that fails or is cancelled part way can leave the shell running on the switch with no
+            # handle to end it. Closing the connection is the only way the switch reaps it.
+            await self._close_failed_connection(conn)
             raise TransportError(f"could not open a shell on the switch: {exc}") from exc
         async with ch.lock:
             self._seq += 1
@@ -529,6 +539,8 @@ class SSHTransport(Transport):
                         if line == "":
                             raise TransportError("the switch closed the shell")
                         if line.strip() == marker:
+                            if port_sample:
+                                self._unfinished_port_reads = 0
                             return "".join(lines)
                         size += len(line)
                         if size > 262144:
