@@ -20,6 +20,8 @@ public sealed class WorkspaceClient : IAsyncDisposable
     string title = "UniFi switch", status = "Connecting to EE…";
     double gamma = 2.2;
     List<PortView> copper = [], sfp = [];
+    LightingState lighting = LightingState.Empty;
+    IReadOnlyList<EffectInfo> effects = [];
     long frames;
 
     public WorkspaceClient(Uri baseUri)
@@ -117,6 +119,12 @@ public sealed class WorkspaceClient : IAsyncDisposable
         connected = WorkspaceModel.Bool(root, "connected") == true;
         copper = WorkspaceModel.Ports(ports.RootElement, default, gamma);
         sfp = WorkspaceModel.Ports(default, root.TryGetProperty("sfp", out var lights) ? lights : default, gamma);
+        lighting = LightingModel.State(root, lighting);
+        if (effects.Count == 0)
+        {
+            using var catalog = await GetAsync("/api/effects", token);
+            effects = LightingModel.Effects(catalog.RootElement);
+        }
         loaded = true;
         Publish();
     }
@@ -159,7 +167,13 @@ public sealed class WorkspaceClient : IAsyncDisposable
                 if (message.TryGetProperty("ports", out var ports) && ports.ValueKind == JsonValueKind.Array)
                     copper = WorkspaceModel.Ports(ports, default, gamma);
                 if (message.TryGetProperty("sfp", out var lights) && lights.ValueKind == JsonValueKind.Array)
+                {
                     sfp = WorkspaceModel.Ports(default, lights, gamma);
+                    var settings = LightingModel.Sfp(lights);
+                    if (!SameSfp(settings, lighting.Sfp)) lighting = lighting with { Sfp = settings };
+                }
+                if (WorkspaceModel.Text(message, "mode") is { } mode && (mode == "released") != lighting.Released)
+                    lighting = lighting with { Released = mode == "released" };
                 connected = WorkspaceModel.Bool(message, "connected") ?? connected;
                 Publish();
                 return false;
@@ -170,13 +184,14 @@ public sealed class WorkspaceClient : IAsyncDisposable
                 connected = WorkspaceModel.Bool(state, "connected") ?? connected;
                 if (state.TryGetProperty("sfp", out var sfpState) && sfpState.ValueKind == JsonValueKind.Array)
                     sfp = WorkspaceModel.Ports(default, sfpState, gamma);
+                lighting = LightingModel.State(state, lighting);
                 Publish();
                 return false;
             case "session":
                 var nowSignedIn = WorkspaceModel.Bool(message, "session", "logged_in") == true;
                 var reload = nowSignedIn && (!signedIn || !loaded);
                 signedIn = nowSignedIn;
-                if (!signedIn) { copper = []; sfp = []; loaded = false; }
+                if (!signedIn) { copper = []; sfp = []; loaded = false; lighting = LightingState.Empty; }
                 Publish();
                 return reload;
             default:
@@ -200,8 +215,11 @@ public sealed class WorkspaceClient : IAsyncDisposable
         ports.AddRange(copper);
         foreach (var light in sfp)
             if (!copper.Exists(port => port.Port == light.Port)) ports.Add(light);
-        Changed?.Invoke(new WorkspaceSnapshot(title, status, isLive, ports));
+        Changed?.Invoke(new WorkspaceSnapshot(title, status, isLive, ports, lighting, effects));
     }
+
+    static bool SameSfp(IReadOnlyDictionary<int, SfpSettings> a, IReadOnlyDictionary<int, SfpSettings> b) =>
+        a.Count == b.Count && a.All(item => b.TryGetValue(item.Key, out var other) && other == item.Value);
 
     async Task<JsonDocument> GetAsync(string path, CancellationToken token)
     {

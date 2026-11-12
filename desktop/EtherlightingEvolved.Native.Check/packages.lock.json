@@ -31,6 +31,15 @@
         "resolved": "11.3.2",
         "contentHash": "qHDToxto1e3hci5YqbG9n0Ty8mlp3zBUN5wT66wKqaDVzXyQ0do3EnRILd4Ke9jpvsktaPpgE0YjEk7hornryQ=="
       },
+      "Avalonia.Controls.ColorPicker": {
+        "type": "Transitive",
+        "resolved": "11.3.23",
+        "contentHash": "jmWC3uogt2GDaMWtggVOXxPZcXImrZYfb72qtYWKlPrSmJPlOO/PjziAk1Mmw8ov6/GuQgTkyd3Lyhij1/TD3A==",
+        "dependencies": {
+          "Avalonia": "11.3.23",
+          "Avalonia.Remote.Protocol": "11.3.23"
+        }
+      },
       "Avalonia.Desktop": {
         "type": "Transitive",
         "resolved": "11.3.23",
@@ -193,10 +202,11 @@
           "System.IO.Pipelines": "8.0.0"
         }
       },
-      "EtherlightingEvolvedNative": {
+      "EtherlightingEvolved": {
         "type": "Project",
         "dependencies": {
           "Avalonia": "[11.3.23, )",
+          "Avalonia.Controls.ColorPicker": "[11.3.23, )",
           "Avalonia.Desktop": "[11.3.23, )",
           "Avalonia.Fonts.Inter": "[11.3.23, )",
           "Avalonia.Themes.Fluent": "[11.3.23, )"

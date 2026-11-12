@@ -1,8 +1,10 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Immutable;
+using Avalonia.Rendering;
 
 namespace EtherlightingEvolved.Native;
 
@@ -10,7 +12,7 @@ namespace EtherlightingEvolved.Native;
 /// Draws the port faceplate. It redraws only when a port's color or text changes; steady lighting costs nothing.
 /// Rows hold up to ten ports, Ethernet first, then the SFP cages.
 /// </summary>
-public sealed class PortMap : Control
+public sealed class PortMap : Control, ICustomHitTest
 {
     const double Gap = 12, SectionGap = 26, HeadingHeight = 26, MaxTile = 128, MinTile = 76, Padding = 12;
 
@@ -28,6 +30,7 @@ public sealed class PortMap : Control
     static readonly Typeface Strong = new(new FontFamily("fonts:Inter#Inter, $Default"), FontStyle.Normal, FontWeight.SemiBold);
 
     readonly List<Tile> tiles = [];
+    HashSet<int> selected = [];
     readonly List<(FormattedText Text, Point At)> headings = [];
     double laidOutWidth = -1, height;
 
@@ -36,6 +39,31 @@ public sealed class PortMap : Control
     public int RenderCount { get; private set; }
 
     public int TileCount => tiles.Count;
+
+    public PortMap() => Cursor = new Cursor(StandardCursorType.Hand);
+
+    /// <summary>A port tile was pressed, with the keyboard modifiers held at the time.</summary>
+    public event Action<int, KeyModifiers>? PortPressed;
+
+    public IReadOnlyList<int> PortOrder => tiles.Select(tile => tile.View.Port).ToList();
+
+    public void SetSelection(IReadOnlyCollection<int> ports)
+    {
+        if (selected.SetEquals(ports)) return;
+        selected = [.. ports];
+        Invalidate();
+    }
+
+    public bool HitTest(Point point) => true;
+
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        base.OnPointerPressed(e);
+        var point = e.GetPosition(this);
+        if (tiles.FirstOrDefault(tile => tile.Bounds.Contains(point)) is not { } hit) return;
+        PortPressed?.Invoke(hit.View.Port, e.KeyModifiers);
+        e.Handled = true;
+    }
 
     /// <summary>The colored socket of a port, in this control's coordinates.</summary>
     public Rect SocketOf(int port) => tiles.FirstOrDefault(tile => tile.View.Port == port)?.Socket ?? default;
@@ -151,14 +179,14 @@ public sealed class PortMap : Control
     {
         RenderCount++;
         foreach (var (text, at) in headings) context.DrawText(text, at);
-        foreach (var tile in tiles) Draw(context, tile);
+        foreach (var tile in tiles) Draw(context, tile, selected.Contains(tile.View.Port));
     }
 
-    static void Draw(DrawingContext context, Tile tile)
+    static void Draw(DrawingContext context, Tile tile, bool chosen)
     {
         var bounds = tile.Bounds;
         if (tile.TextWidth != bounds.Width) BuildText(tile);
-        context.DrawRectangle(Palette.Tile, Palette.TileEdge, new RoundedRect(bounds, 10));
+        context.DrawRectangle(chosen ? Palette.TileSelected : Palette.Tile, chosen ? Palette.Selected : Palette.TileEdge, new RoundedRect(bounds, 10));
         var socket = tile.Socket;
         if (tile.Glow is { } glow)
             context.DrawEllipse(glow, null, socket.Center, socket.Width * 0.66, socket.Height * 0.95);
@@ -209,4 +237,8 @@ static class Palette
     public static readonly IBrush Dim = new ImmutableSolidColorBrush(Color.Parse("#5c6372"));
     public static readonly IBrush Live = new ImmutableSolidColorBrush(Color.Parse("#7fd9a6"));
     public static readonly IBrush Waiting = new ImmutableSolidColorBrush(Color.Parse("#f2c66d"));
+    public static readonly IBrush Error = new ImmutableSolidColorBrush(Color.Parse("#ff8f8f"));
+    public static readonly IBrush TileSelected = new ImmutableSolidColorBrush(Color.Parse("#252b3a"));
+    public static readonly IPen Selected = new ImmutablePen(new ImmutableSolidColorBrush(Color.Parse("#8fb4ff")), 2);
+    public static readonly IBrush Panel = new ImmutableSolidColorBrush(Color.Parse("#1a1d25"));
 }

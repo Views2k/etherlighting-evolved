@@ -8,7 +8,8 @@ namespace EtherlightingEvolved.Native;
 public sealed record PortView(int Port, bool Sfp, byte R, byte G, byte B, string Label, string Link, bool Online,
     bool Uplink, string Power);
 
-public sealed record WorkspaceSnapshot(string Title, string Status, bool Live, IReadOnlyList<PortView> Ports);
+public sealed record WorkspaceSnapshot(string Title, string Status, bool Live, IReadOnlyList<PortView> Ports,
+    LightingState? Lighting = null, IReadOnlyList<EffectInfo>? Effects = null);
 
 /// <summary>Reads the EE workspace payloads. Mirrors the browser workspace's port-display and port-map rules.</summary>
 public static partial class WorkspaceModel
