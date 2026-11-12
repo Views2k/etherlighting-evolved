@@ -47,6 +47,7 @@ AppBuilder.Configure<App>()
     .SetupWithoutStarting();
 
 ShellChecks.Contracts(Check);
+ControllerConnectionChecks.Run(Check);
 
 // 1. Payload reading
 const string frame = """
