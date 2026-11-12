@@ -1275,9 +1275,18 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .inline-banks .selection-toolbar .button { padding-inline: 7px; }
 }
 @media (max-height: 360px) and (min-width: 900px) {
+  .studio-content { grid-template-columns: minmax(0, 1fr) clamp(224px, 25vw, 320px); }
   .port-map.inline-banks { gap: 1px 6px; padding-block: 1px 2px; }
   .inline-banks .canvas-heading h1 { font-size: 14px; }
   .inline-banks .canvas-heading > div:first-child { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+  .inline-banks .canvas-heading .demo-badge { padding-block: 0; vertical-align: baseline; }
+  .inline-banks .canvas-heading .uplink-bandwidth { display: grid; gap: 1px; }
+  .inline-banks .canvas-heading .bandwidth-heading { flex-direction: row; align-items: baseline; gap: 6px; min-height: 0; max-width: none; }
+  .inline-banks .canvas-heading .bandwidth-status { margin: 0; }
+  .inline-banks .canvas-heading .bandwidth-heading :is(h2, .bandwidth-status) { line-height: 14px; }
+  .inline-banks .selection-toolbar .button { padding-inline: 4px; font-size: 12px; }
+  .port-map.inline-banks .port-label { min-height: 14px; line-height: 14px; }
+  .port-map.inline-banks .port-label:not(:has(:nth-child(3))) { max-height: none; }
   .port-map.inline-banks .port-group-heading, .port-map.inline-banks .canvas-footer { display: none; }
   .inline-banks .uplink-badge:empty { display: none; }
   .inline-banks .port-number { white-space: nowrap; }
@@ -1285,7 +1294,7 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
   .port-map.inline-banks .port-heading { min-height: 18px; }
   .port-map.inline-banks .port-number { line-height: 18px; }
   .port-map.inline-banks .port-led { margin-block: 0 2px; }
-  .port-map.inline-banks .port-tile { padding-block: 0; }
+  .port-map.inline-banks .port-tile { padding: 0; }
 }
 @media (max-width: 700px) {
   .port-map { gap: 10px; }
