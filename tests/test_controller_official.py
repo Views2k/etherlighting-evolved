@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_controller import FakeConnection, FakeResponse, queued_connections
+from test_controller_credentials import windows
 from test_controller_reconnect import Store
 
 from etherlighting_evolved import controller_credentials as storage
@@ -279,6 +280,36 @@ def test_key_record_is_encrypted_and_legacy_record_shape_is_not_repurposed(tmp_p
         with pytest.raises(CredentialStoreError):
             store.save(bad)
     assert store.load() == RECORD
+
+
+@pytest.mark.anyio
+@windows
+async def test_remembered_key_reopens_from_protected_file_and_rejects_bad_replacement(tmp_path, monkeypatch):
+    responses = connected_responses() + [reply({}, status=401)] + connected_responses()
+    connections = queued_connections(monkeypatch, IntegrationClient, responses)
+    sessions = SimpleNamespace(host=HOST, simulated=False, engine=SimpleNamespace(connected=True))
+    integration = ControllerIntegration(sessions, data_dir=tmp_path)
+    live = await integration.connect(ControllerLogin(**RECORD, remember=True))
+    target = {name: RECORD[name] for name in ("url", "auth_method", "controller_kind", "console_id")}
+    assert live["connected"] and live["saved_login_matches_connection"] and live["saved_target"] == target
+    path = tmp_path / "controller-login.json"
+    envelope = path.read_bytes()
+    assert json.loads(envelope)["protection"] == "windows-dpapi" and KEY.encode() not in envelope
+    with pytest.raises(ControllerError) as rejected:
+        await integration.connect(ControllerLogin(**{**RECORD, "api_key": "wrong-fixture-key"}, remember=True))
+    assert rejected.value.code == "authentication_failed"
+    assert path.read_bytes() == envelope and integration.status()["saved_login_matches_connection"]
+    await integration.close()
+    restored = ControllerIntegration(sessions, data_dir=tmp_path)
+    before = restored.status()
+    assert before["saved_target"] == target and not before["connected"] and not before["saved_login_matches_connection"]
+    await restored.tick()
+    status = restored.status()
+    assert status["connected"] and status["saved_login_matches_connection"] and status["site"] == SITE
+    assert all(status[k] == v for k, v in target.items())
+    assert all(c.calls[0][3]["X-API-Key"] == KEY for c in connections[-3:])
+    assert KEY not in json.dumps(status) and path.read_bytes() == envelope
+    await restored.close()
 
 
 @pytest.mark.anyio

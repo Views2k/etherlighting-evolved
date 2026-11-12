@@ -2,6 +2,7 @@
 
 ## 0.5.0
 
+- Settings can save a UniFi OS API key when connecting. EE remembers the controller and sign-in method across restarts and updates.
 - Workspace owners can approve individual tagged Tailscale devices. Linux clients can use the private workspace address when local DNS cannot resolve it.
 - The uplink graph scrolls the last minute of download and upload traffic using each existing switch counter reading. A delayed measurement is labeled “Last reading.”
 - Choose Quit in the Windows tray to close EE. EE can recover the lighting connection during shutdown so the switch can resume its saved scene.

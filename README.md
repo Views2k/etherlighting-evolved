@@ -51,7 +51,7 @@ $env:EE_PREVIEW_LIVE = '1'
 npm start
 ```
 
-Enter the switch's SSH credentials in the login form. **Save login on this PC** stores the login using Windows account protection. Use the UniFi Network section in Settings to connect the controller and retrieve device names and telemetry.
+Enter the switch's SSH credentials in the login form. **Save login on this PC** stores the login using Windows account protection. In Settings → UniFi Network, select your controller and sign-in method. To reuse a UniFi OS API key after restarting or updating EE, check **Reconnect controller automatically** and choose **Connect and save login**.
 
 Use **Handoff to UniFi** to release EE's lighting control. Wait for its result before starting another lighting controller. Profiles and saved logins remain available for the next connection.
 

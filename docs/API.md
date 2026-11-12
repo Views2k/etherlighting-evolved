@@ -217,6 +217,8 @@ Returns cached status without making a controller request:
   "error": null,
   "mapped_ports": 7,
   "preferences_supported": true,
+  "remember_on_connect_supported": true,
+  "saved_target": null,
   "auto_reconnect": false,
   "saved_login_available": false,
   "saved_login_matches_connection": false,
@@ -297,8 +299,12 @@ the top-level status and telemetry keep describing that connection until the can
 site has been read and matched successfully. Canceling or failing that selection preserves the
 working connection. Saving a login is unavailable while a site choice is pending.
 
-By default, credentials and session cookies remain in server memory for this process. Saving requires the
-separate explicit preferences action below; connecting does not save or replace a saved login.
+Omit `remember` or send `false` for a session-only connection. The previous saved login stays intact.
+When `remember_on_connect_supported` is true, send `"remember": true` to save the new login after EE
+authenticates it and matches the selected site to the connected switch. Include the flag on the final
+request after certificate approval or site selection. Check `saved_login_matches_connection` in the result.
+If Windows cannot save the login, the connection stays active and `saved_login_error` describes the failure.
+The preferences endpoint can retry the save using that active connection.
 Subsequent requests to the same origin, controller type, sign-in method and console ID
 may leave the selected credential fields blank to continue that pending or active connection. An omitted fingerprint
 retains the certificate already approved for that target. A failed replacement connection preserves a different
@@ -416,7 +422,8 @@ also preserves the saved opt-in.
 
 This endpoint accepts only a JSON boolean `auto_reconnect` and rejects unknown fields. Enabling requires a
 currently authenticated, fresh controller session that successfully matched the connected real switch.
-It saves that session's canonical HTTPS origin, controller type, username, password, site and approved certificate pin under
+It saves that session's canonical HTTPS origin, controller type, selected site, approved certificate pin and
+sign-in credentials (account login or API key, including the selected cloud console ID when applicable) under
 current-user Windows DPAPI, using a separate atomic controller record. Verification codes and cookies are never
 saved. An unprotected plaintext record is rejected. A save failure leaves the current connection and prior
 saved record intact. Existing protected records without a controller type load as `self_hosted` without rewriting
@@ -437,6 +444,9 @@ Account-based controller requests may include an `operation` with a `controller_
 
 `reconnect_state` is `off`, `waiting`, `connecting`, `retrying`, `connected`, `paused`, or `attention`.
 `saved_login_error` is null or a sanitized `{code,message}` object. No saved credential fields are returned.
+`saved_target` is null without a readable saved login. Otherwise it contains only `url`, `controller_kind`,
+`auth_method` and `console_id`. A disconnected form can restore these choices while waiting for the switch.
+Only an active or pending controller session can reuse credentials during a manual connection.
 After a live switch session is established, the protected controller login is restored automatically within
 the next local lifecycle tick. No restore runs for a missing, disconnected, or simulated switch session.
 The controller's usual TLS validation and approved pin comparison remain mandatory.
