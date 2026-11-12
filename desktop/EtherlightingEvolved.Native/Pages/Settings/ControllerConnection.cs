@@ -341,8 +341,9 @@ public sealed class ControllerConnection : Border
     {
         if (dirty && FormChanged()) return;
         dirty = false;
-        var target = current.Truthy("pending_site_choice") && current["pending_site_choice"] is JsonObject candidate ? candidate : current;
-        if (target.Str("url") is { Length: > 0 } url) SetText(address, url);
+        var target = current["pending_site_choice"] as JsonObject
+            ?? (current.Truthy("url") ? current : current["saved_target"] as JsonObject ?? current);
+        SetText(address, target.Str("url") ?? "");
         RenderChoices(target.Str("controller_kind") is { Length: > 0 } chosenKind ? chosenKind : "self_hosted", target.Str("auth_method") is { Length: > 0 } method ? method : "password");
         ShowConsoles(target.Str("console_id") is { Length: > 0 } console ? console : "");
         lastKind = kind.Value;
@@ -373,6 +374,9 @@ public sealed class ControllerConnection : Border
 
     void PendingSiteMessage() => Status("Choose the site that contains your switch to finish this connection change.");
 
+    bool RememberOnConnect() => current.Bool("remember_on_connect_supported") == true
+        && Connections.ControllerReconnectControls(current, reconnectDraft) is { Supported: true, Checked: true };
+
     void SetBusy()
     {
         if (!active) return;
@@ -397,6 +401,7 @@ public sealed class ControllerConnection : Border
         editConnection.SetLabel(editorOpen ? "Hide connection details" : "Edit connection");
         editorHint.IsVisible = !(editorOpen || !FormChanged());
         submit.SetLabel(busy && !savingPreference && !discovering ? "Connecting…"
+            : RememberOnConnect() ? "Connect and save login"
             : current.Truthy("pending_site_choice") && MatchesForm(current["pending_site_choice"]) ? "Connect selected site"
             : current.Truthy("connected") ? "Update connection" : "Connect controller");
         var preference = Connections.ControllerReconnectControls(current, reconnectDraft);
@@ -411,7 +416,8 @@ public sealed class ControllerConnection : Border
             ? $"Saving this preference removes the saved controller login.{(current.Truthy("connected") ? " The current connection stays active." : "")}"
             : preference.Checked ? "Save this controller login securely on this PC and reconnect when EE opens."
             : "Enable this to save the controller login and reconnect when EE opens.";
-        reconnectHint.Text = preference.Changed && preference.Checked && !current.Truthy("can_save_login") ? "Connect your controller to save this login."
+        reconnectHint.Text = RememberOnConnect() && editorOpen ? ""
+            : preference.Changed && preference.Checked && !current.Truthy("can_save_login") ? "Connect your controller to save this login."
             : preference.Checked && current.Truthy("auto_reconnect") && current.Truthy("can_save_login") && current.Bool("saved_login_matches_connection") == false
                 ? "Save reconnect preference to save the current controller login."
             : preference.Checked && current.Truthy("auto_reconnect") && current.Str("reconnect_state") == "paused" ? "Reconnect will resume when EE opens again." : "";
@@ -462,7 +468,7 @@ public sealed class ControllerConnection : Border
         SetBusy();
     }
 
-    void Perform(Func<Task<JsonNode?>> action, string label, string actionKind = "status")
+    void Perform(Func<Task<JsonNode?>> action, string label, string actionKind = "status", bool remember = false)
     {
         if (!active || pending is not null) return;
         var canceledTarget = actionKind == "cancel" && current.Truthy("pending_site_choice") ? current["pending_site_choice"] : null;
@@ -504,6 +510,19 @@ public sealed class ControllerConnection : Border
                     SetText(username, "");
                     editingConnection = false;
                     focusSummary = true;
+                    if (remember)
+                    {
+                        if (Connections.ControllerReconnectConfirmed(result, true))
+                        {
+                            reconnectDraft = null;
+                            Status("Controller connected and login saved.");
+                        }
+                        else
+                        {
+                            reconnectDraft = true;
+                            preferenceNotice.Set("Controller connected. Select Save reconnect preference to retry saving this login.", true);
+                        }
+                    }
                 }
                 if (canceled && resetCanceledForm)
                 {
@@ -618,6 +637,8 @@ public sealed class ControllerConnection : Border
             return;
         }
         var payload = new JsonObject { ["url"] = target.Url!.Trim(), ["controller_kind"] = target.ControllerKind, ["site"] = site.Value.Length > 0 ? site.Value : null };
+        var remember = RememberOnConnect();
+        if (remember) payload["remember"] = true;
         if (current.ContainsKey("supported_auth_methods")) payload["auth_method"] = target.AuthMethod;
         if (target.ControllerKind == "cloud_connector") payload["console_id"] = target.ConsoleId;
         else payload["certificate_sha256"] = certificate;
@@ -629,7 +650,7 @@ public sealed class ControllerConnection : Border
             if (SupportsVerification()) payload["verification_code"] = code.Trim();
         }
         SetText(verification, "");
-        Perform(() => request("/api/controller/connect", "POST", payload), "Connecting to UniFi Network…", "connect");
+        Perform(() => request("/api/controller/connect", "POST", payload), "Connecting to UniFi Network…", "connect", remember);
     }
 
     void FindConsoles()
@@ -746,7 +767,7 @@ public sealed class ControllerConnection : Border
                  {
                      "configured", "controller_kind", "auth_method", "console_id", "supported_auth_methods", "capabilities", "pending_site_choice", "site", "sites", "switch_name",
                      "mapped_ports", "error.code", "error.operation", "error.upstream_status", "preferences_supported", "auto_reconnect", "can_save_login", "saved_login_available",
-                     "saved_login_matches_connection", "reconnect_state",
+                     "saved_login_matches_connection", "saved_login_error", "reconnect_state", "remember_on_connect_supported", "saved_target", "url",
                  })
             keyParts.Add(value.At(name)?.DeepClone());
         var key = keyParts.ToJsonString();

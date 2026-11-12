@@ -29,6 +29,7 @@ class ControllerLogin(BaseModel):
     site: str | None = Field(default=None, max_length=64)
     certificate_sha256: str | None = Field(default=None, max_length=128)
     verification_code: str | None = Field(default=None, max_length=8, repr=False)
+    remember: StrictBool = False
 
 
 class ControllerPreferences(BaseModel):
@@ -82,7 +83,11 @@ class ControllerIntegration:
                  else "attention" if self._saved_error
                  else "waiting" if not self.switch_host()
                  else "connected" if status.get("connected") else "waiting")
-        return {**status, "preferences_supported": True, "auto_reconnect": self._enabled,
+        saved_target = ({"url": self._saved["url"], "controller_kind": self._saved["controller_kind"],
+                         "auth_method": self._saved.get("auth_method", "password"),
+                         "console_id": self._saved.get("console_id")} if self._saved else None)
+        return {**status, "preferences_supported": True, "remember_on_connect_supported": True,
+                "saved_target": saved_target, "auto_reconnect": self._enabled,
                 "saved_login_available": self._saved is not None,
                 "can_save_login": can_save, "saved_login_matches_connection": bool(self._saved_active and can_save),
                 "reconnect_state": phase, "saved_login_error": self._saved_error}
@@ -155,7 +160,8 @@ class ControllerIntegration:
                     self._failure(result["error"])
                 elif result.get("connected"):
                     self._failures = 0
-                    self._saved_error = None
+                    if not self._saved_error or self._saved_error["code"] != "controller_login_save_failed":
+                        self._saved_error = None
                     self._next_due = self._clock() + 15
                 else:
                     self._failure({"code": "controller_login_required",
@@ -176,19 +182,25 @@ class ControllerIntegration:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), 1)
 
+    def _save_login(self, record):
+        if self._saved != record:
+            self.store.save(record)
+            self._saved = record
+        self._enabled = self._saved_active = True
+
+    def _save_failed(self):
+        self._saved_error = {"code": "controller_login_save_failed",
+                             "message": "Could not save the controller login. Apply automatic reconnect to try again."}
+
     async def preferences(self, enabled: bool):
         async with self._lock:
             if enabled:
                 record = await self.manager.login_for_saving(self.switch_host())
                 try:
-                    self.store.save(record)
+                    self._save_login(record)
                 except CredentialStoreError as exc:
-                    self._saved_error = {"code": "controller_login_save_failed",
-                                         "message": "Could not save the protected controller login. Try again."}
+                    self._save_failed()
                     raise ControllerError(**self._saved_error, status=500) from exc
-                self._saved = record
-                self._saved_active = True
-                self._enabled = True
                 self._paused = self._blocked = False
                 self._failures = 0
                 self._next_due = self._clock() + 15
@@ -208,33 +220,44 @@ class ControllerIntegration:
 
     async def connect(self, body: ControllerLogin):
         async with self._lock:
-            host = self.switch_host()
-            if not host:
-                raise ControllerError("switch_required", "Connect your switch before adding its controller.", 409)
-            target = (id(self.sessions.engine), host)
-            try:
-                result = await self._complete(self.manager.connect(**body.model_dump(), switch_host=host))
-            except ControllerError as exc:
-                if not self.manager.status().get("connected"):
-                    self._blocked = True
-                    self._saved_error = {"code": exc.code, "message": exc.message}
-                raise
-            if target != (id(self.sessions.engine), self.switch_host()):
-                await self._complete(self.manager.disconnect())
-                raise ControllerError("switch_required", "Connect your switch before adding its controller.", 409)
-            if result.get("pending_site_choice"):
-                return self.status()
-            self._target = target
-            self._paused = False
-            self._blocked = bool(result.get("error"))
-            self._failures = 0
-            self._saved_error = None
+            return await self._complete(self._connect(body))
+
+    async def _connect(self, body: ControllerLogin):
+        host = self.switch_host()
+        if not host:
+            raise ControllerError("switch_required", "Connect your switch before adding its controller.", 409)
+        target = (id(self.sessions.engine), host)
+        try:
+            result = await self.manager.connect(**body.model_dump(exclude={"remember"}), switch_host=host)
+        except ControllerError as exc:
+            if not self.manager.status().get("connected"):
+                self._blocked = True
+                self._saved_error = {"code": exc.code, "message": exc.message}
+            raise
+        record = None
+        if (not result.get("pending_site_choice") and result.get("connected")
+                and (body.remember or self._saved is not None)):
+            record = await self.manager.login_for_saving(host)
+        if target != (id(self.sessions.engine), self.switch_host()):
+            await self.manager.disconnect()
             self._saved_active = False
-            if result.get("connected") and self._saved is not None:
-                self._saved_active = await self.manager.login_for_saving(host) == self._saved
-            self._next_due = self._clock() + 15
-            self._wake.set()
+            raise ControllerError("switch_required", "Connect your switch before adding its controller.", 409)
+        if result.get("pending_site_choice"):
             return self.status()
+        self._target = target
+        self._paused = False
+        self._blocked = bool(result.get("error"))
+        self._failures = 0
+        self._saved_error = None
+        self._saved_active = record is not None and record == self._saved
+        if body.remember and record is not None:
+            try:
+                self._save_login(record)
+            except CredentialStoreError:
+                self._save_failed()
+        self._next_due = self._clock() + 15
+        self._wake.set()
+        return self.status()
 
     async def disconnect(self):
         async with self._lock:

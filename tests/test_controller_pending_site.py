@@ -131,7 +131,7 @@ async def test_integration_pending_choice_keeps_saved_record_and_refresh_cancel_
     saved = dict(store.saved)
     old = manager._client
     pending = await integration.connect(ControllerLogin(url=NEW_URL, username="candidate-user",
-        password="candidate-secret", controller_kind="unifi_os"))
+        password="candidate-secret", controller_kind="unifi_os", remember=True))
     assert pending["connected"] and pending["pending_site_choice"] and not pending["can_save_login"]
     assert not integration._blocked and not integration._paused
     with pytest.raises(ControllerError):
@@ -145,6 +145,27 @@ async def test_integration_pending_choice_keeps_saved_record_and_refresh_cancel_
     assert canceled["auto_reconnect"] and not canceled["pending_site_choice"]
     assert store.saved == saved and store.saves == 1
     await integration.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("remember", [True, False])
+async def test_remember_site_choice_uses_final_choice_after_target_validation(tmp_path, remember):
+    sessions = SimpleNamespace(host=HOST, simulated=False, engine=SimpleNamespace(connected=True))
+    store = Store()
+    integration = ControllerIntegration(sessions, make_manager(), data_dir=tmp_path, store=store)
+    candidate = {"url": NEW_URL, "controller_kind": "unifi_os"}
+    pending = await integration.connect(ControllerLogin(**candidate, username="fixture-user",
+        password="fixture-secret", remember=True))
+    assert pending["pending_site_choice"] and not store.saves
+    with pytest.raises(ControllerError):
+        await integration.connect(ControllerLogin(**candidate, site="absent", remember=True))
+    assert not store.saves
+    result = await integration.connect(ControllerLogin(**candidate, site="south", remember=remember))
+    assert result["connected"] and not result["pending_site_choice"]
+    assert result["saved_login_matches_connection"] is remember
+    assert store.saves == int(remember)
+    if remember:
+        assert store.saved["site"] == "south" and store.saved["url"] == NEW_URL
 
 
 @pytest.mark.anyio

@@ -95,7 +95,7 @@ public sealed class HelpPage : Page
                 "Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. Your saved logins, profiles, and lighting setup are kept. EE waits until you connect again.",
                 "When you want to resume EE, choose Connect with saved login or enter your SSH login. Choose Retry handoff when it is offered. If EE requests a recovery review, keep it disconnected until that review is complete.",
                 "Connect UniFi Network in Settings to display device names from your controller. Enter its HTTPS address and account details. If prompted, verify the controller certificate fingerprint before approving it.",
-                "To reconnect when EE opens, check Reconnect controller automatically and choose Save reconnect preference. Turning it off and applying removes the saved controller login while keeping the current connection.",
+                "To reconnect after restarting or updating EE, check Reconnect controller automatically and choose Connect and save login. For an already connected controller, choose Save reconnect preference. To remove its saved login, clear the checkbox and save the preference.",
                 "If applying lighting fails, keep your changes and retry after the connection returns. A saved profile gives you a known setup to apply.",
                 "The Demo badge identifies simulated ports used to explore the interface.",
             ]),

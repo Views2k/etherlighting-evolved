@@ -8,6 +8,7 @@ const disconnected={configured:false,connected:false,controller_kind:null,sites:
 const credentials={controller_kind:'self_hosted',url:'https://fixture-controller:8443',username:'fixture-user',password:'fixture-secret'};
 const supportedMethods={self_hosted:['password'],unifi_os:['password','api_key'],cloud_connector:['api_key']};
 const keySupport={...disconnected,supported_auth_methods:supportedMethods,console_discovery_supported:true};
+const rememberSupport={...keySupport,remember_on_connect_supported:true};
 
 function controllerDom(context){
   const dom=rendererDom(context),create=dom.doc.createElement,original=Object.getOwnPropertyDescriptor(globalThis,'Option');
@@ -23,6 +24,91 @@ function controllerDom(context){
     form:()=>dom.findAll(dom.host,item=>item.tagName==='form')[0],submit:()=>dom.findAll(dom.host,item=>item.tagName==='form')[0].listeners.get('submit')({preventDefault(){}})};
 }
 function fill(dom,values=credentials){for(const [name,value] of Object.entries(values)){const field=dom.field(name);field.value=value;field.listeners.get(field.tagName==='select'?'change':'input')?.();}dom.form().listeners.get('input')();}
+function setReconnect(dom,checked){const field=dom.field('auto_reconnect');field.checked=checked;field.listeners.get('change')();}
+
+test('connect saves the selected controller login only when supported and checked',async context=>{
+  for (const [label,initial,checked,expectSave] of [
+    ['new saved login',rememberSupport,true,true],
+    ['replacement for old saved login',{...rememberSupport,auto_reconnect:true,saved_login_available:true},true,true],
+    ['session only',rememberSupport,false,false],
+    ['unchecked replacement',{...rememberSupport,auto_reconnect:true,saved_login_available:true},false,false],
+    ['older server',keySupport,true,false],
+  ]) await context.test(label,async sub=>{
+    const dom=controllerDom(sub),sent=[];
+    const target={url:'https://fixture-console',controller_kind:'unifi_os',auth_method:'api_key'};
+    const cleanup=renderControllerConnection(dom.host,{request:async(path,method,payload)=>{
+      if(!method)return initial;
+      sent.push([path,method,payload]);
+      return {...initial,...target,connected:true,configured:true,can_save_login:true,auto_reconnect:expectSave,
+        saved_login_available:expectSave,saved_login_matches_connection:expectSave};
+    }});dom.after(cleanup);
+    await flush();fill(dom,{...target,api_key:'fixture-key'});setReconnect(dom,checked);
+    assert.equal(Boolean(dom.button('Connect and save login')),expectSave);
+    dom.submit();await cleanup.canLeave();
+    assert.equal(sent.length,1);assert.deepEqual(sent[0].slice(0,2),['/api/controller/connect','POST']);
+    assert.equal(sent[0][2].api_key,'fixture-key');assert.equal(sent[0][2].remember,expectSave?true:undefined);
+    assert.equal(dom.field('api_key').value,'');assert.equal(dom.form().hidden,true);
+    assert.equal(/login saved/.test(dom.byClass(dom.host,'connection-notice')[0].textContent),expectSave);
+  });
+});
+
+test('storage failure keeps the new session active and retries saving without entering credentials again',async context=>{
+  const dom=controllerDom(context),sent=[];
+  const connected={...rememberSupport,...workingController,auto_reconnect:true,saved_login_available:true,saved_login_matches_connection:false};
+  const failed={...connected,saved_login_error:{code:'controller_login_save_failed'}};
+  const cleanup=renderControllerConnection(dom.host,{request:async(path,method,payload)=>{
+    if(!method)return {...rememberSupport,auto_reconnect:true,saved_login_available:true};
+    sent.push([path,method,payload]);
+    return method==='POST'?failed:{...connected,saved_login_matches_connection:true};
+  }});dom.after(cleanup);
+  await flush();fill(dom,{...credentials,url:workingController.url});dom.submit();await cleanup.canLeave();
+  assert.equal(sent[0][2].remember,true);assert.equal(dom.form().hidden,true);assert.equal(dom.field('password').value,'');
+  assert.equal(dom.byClass(dom.host,'connection-state')[0].textContent,'Controller connected');
+  assert.match(dom.byClass(dom.host,'connection-notice')[1].textContent,/could not be saved/);
+  assert.doesNotMatch(dom.byClass(dom.host,'connection-notice')[0].textContent,/login saved/);
+  const retry=dom.button('Save reconnect preference');assert.equal(retry.disabled,false);assert.equal(retry.parentNode.hidden,false);
+  retry.click();await cleanup.canLeave();
+  assert.deepEqual(sent[1],['/api/controller/preferences','PUT',{auto_reconnect:true}]);
+  assert.match(dom.byClass(dom.host,'connection-notice')[1].textContent,/login saved/);assert.equal(cleanup.hasChanges(),false);
+});
+
+test('a disconnected saved target restores form choices while preserving drafts and requiring fresh credentials',async context=>{
+  const dom=controllerDom(context),sent=[];
+  const local={url:'https://fixture-console:9443',controller_kind:'unifi_os',auth_method:'api_key',console_id:null};
+  const saved={...rememberSupport,auto_reconnect:true,saved_login_available:true,saved_target:local};
+  const cleanup=renderControllerConnection(dom.host,{request:async(...args)=>{sent.push(args);return saved;}});dom.after(cleanup);
+  await flush();
+  for(const name of ['url','controller_kind','auth_method'])assert.equal(dom.field(name).value,local[name]);
+  assert.equal(dom.field('api_key').value,'');dom.submit();assert.equal(sent.length,1);assert.equal(dom.doc.activeElement,dom.field('api_key'));
+  const cloud={url:'https://api.ui.com',controller_kind:'cloud_connector',auth_method:'api_key',console_id:'fixture-console'};
+  cleanup.update({...saved,saved_target:cloud});
+  assert.equal(dom.field('url').value,cloud.url);assert.equal(dom.field('console_id').value,cloud.console_id);
+  dom.submit();assert.equal(sent.length,1);
+  fill(dom,{controller_kind:'unifi_os',url:'https://draft-console',api_key:'fixture-draft-key'});
+  cleanup.update({...saved,saved_target:local});
+  assert.equal(dom.field('url').value,'https://draft-console');assert.equal(dom.field('api_key').value,'fixture-draft-key');
+});
+
+test('the selected site finishes the pending connection and preserves the save choice on both requests',async context=>{
+  const dom=controllerDom(context),sent=[];
+  const ready={...workingController,...rememberSupport,configured:true,connected:true,url:workingController.url,
+    controller_kind:'self_hosted',auth_method:'password',saved_target:{url:'https://prior-console',controller_kind:'unifi_os',auth_method:'api_key'}};
+  const cleanup=renderControllerConnection(dom.host,{request:async(path,method,payload)=>{
+    if(!method)return ready;
+    sent.push(payload);
+    return payload.site?{...ready,...candidate,site:payload.site,auto_reconnect:true,saved_login_available:true,saved_login_matches_connection:true}
+      :{...ready,pending_site_choice:candidate};
+  }});dom.after(cleanup);
+  await flush();assert.equal(dom.field('url').value,workingController.url);
+  dom.button('Edit connection').click();setReconnect(dom,true);
+  fill(dom,{...credentials,url:candidate.url,controller_kind:candidate.controller_kind});dom.submit();await cleanup.canLeave();
+  assert.equal(dom.field('password').value,credentials.password);assert.equal(dom.form().hidden,false);
+  assert.match(dom.byClass(dom.host,'connection-notice')[0].textContent,/Choose the site/);
+  dom.field('site').value='site-two';dom.submit();await cleanup.canLeave();
+  assert.deepEqual(sent.map(payload=>[payload.site,payload.remember]),[[null,true],['site-two',true]]);
+  assert.match(dom.byClass(dom.host,'connection-notice')[0].textContent,/login saved/);
+  assert.equal(dom.field('password').value,'');
+});
 
 test('fresh controller validation requires type, a direct HTTPS origin, and both credentials',()=>{
   assert.equal(controllerConnectionProblem(credentials),null);
