@@ -181,7 +181,8 @@ public sealed class ControllerConnection : Border
             }
             else if (lastKind == "cloud_connector" && chosen != lastKind) SetText(address, localAddress);
             dirty = true;
-            RenderChoices(chosen, methodDrafts.TryGetValue(chosen, out var method) && method.Length > 0 ? method : "password", true);
+            var methods = Connections.ControllerSupportedMethods(current).GetValueOrDefault(chosen) ?? [];
+            RenderMethods(methods, methodDrafts.TryGetValue(chosen, out var method) && method.Length > 0 ? method : "password", useDefault: true);
             lastKind = chosen;
             ResetControllerChallenge();
             ShowKind();
@@ -271,16 +272,20 @@ public sealed class ControllerConnection : Border
 
     void Status(string text = "", bool error = false, string tone = "") => message.Set(text, error, tone);
 
-    void RenderChoices(string selectedKind, string selectedMethod, bool useDefault = false)
+    void RenderChoices(string selectedKind, string selectedMethod)
     {
         var supported = Connections.ControllerSupportedMethods(current);
         var kinds = new[] { ("self_hosted", "Self-hosted Network"), ("unifi_os", "UniFi Console or OS Server"), ("cloud_connector", "UniFi cloud connector") }
             .Where(item => supported[item.Item1].Count > 0).Select(item => (item.Item1, item.Item2, false)).ToList();
         kind.SetOptions(kinds, supported.TryGetValue(selectedKind, out var list) && list.Count > 0 ? selectedKind : "");
-        var methods = supported.TryGetValue(kind.Value, out var available) ? available : [];
+        RenderMethods(supported.GetValueOrDefault(kind.Value) ?? [], selectedMethod);
+        authField.IsVisible = supported.Values.Any(item => item.Contains("api_key"));
+    }
+
+    void RenderMethods(List<string> methods, string selectedMethod, bool useDefault = false)
+    {
         auth.SetOptions(methods.Select(value => (value, value == "api_key" ? "API key" : "Controller account", false)),
             methods.Contains(selectedMethod) ? selectedMethod : useDefault ? methods.FirstOrDefault() ?? "" : "");
-        authField.IsVisible = supported.Values.Any(item => item.Contains("api_key"));
     }
 
     bool SupportsVerification() => kind.Value == "self_hosted" && auth.Value == "password";
