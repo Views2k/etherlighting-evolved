@@ -4,7 +4,7 @@ import pytest
 from test_native_switch import Clock, frame, ready
 from test_sfp_precision_transport import SfpPrecisionTransport
 
-from etherlighting_evolved import timing
+from etherlighting_evolved import device_playback, timing
 from etherlighting_evolved.color import Color
 from etherlighting_evolved.engine import Engine
 from etherlighting_evolved.ownership import OutputJournal, OutputOwnershipError
@@ -150,3 +150,53 @@ async def test_handoff_failed_recovery_retains_ownership(tmp_path, clock):
     assert engine.mode == 'released' and not engine.connected
     assert not switch.output_lease.closed
     assert all(path.exists() for path in switch.output_lease.paths)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", [None, "offline", "identity", "grant"])
+async def test_quit_with_resident_scene_and_lost_sfp_connection(tmp_path, clock, monkeypatch, failure):
+    switch, transport = await ready(SfpPrecisionTransport())
+    transport.host_key_fingerprint = PEER
+    owner = "a" * 48
+    lease = OutputJournal(tmp_path).player_lease("fixture.invalid", 22, PEER, owner)
+    lease.keep_for_player = True
+    switch.output_lease = lease
+    await switch.write(frame(()), sfp={9: PortOutput(Color(0, 0, 255), 100)})
+    assert switch.sfp_status(9)["owned"] and not switch.native_uncertain
+    engine = Engine(switch, rules=[])
+    engine.connected = True
+    engine._lost(TransportError("connection lost"))
+    assert switch.sfp_status(9)["state"] == "uncertain" and not switch.native_uncertain
+    transport.events.clear()
+
+    async def reconnect():
+        if failure == "offline":
+            raise TransportError("offline")
+        transport.connected = True
+        transport.lighting_generation = object()
+        if failure == "identity":
+            transport.host_key_fingerprint = PEER + "-different"
+
+    async def player_command(_, command):
+        if "mv -f desktop.next desktop.request" in command:
+            transport.events.append("grant")
+            return "" if failure == "grant" else "granted"
+        assert "rm -f desktop.request" in command
+        transport.events.append("release")
+        return ""
+
+    transport.connect = reconnect
+    transport.desktop_output = device_playback.DesktopOutput(transport, owner)
+    monkeypatch.setattr(device_playback, "_run", player_command)
+    if failure:
+        with pytest.raises(TransportError):
+            await engine.stop()
+        assert lease.uncertain and not lease.closed
+        assert transport.events == (["grant"] if failure == "grant" else [])
+    else:
+        await engine.stop()
+        assert lease.closed and not lease.uncertain
+        assert transport.events == ["grant", ("behavior", "steady"), ("rgb", 9, "000000", 100),
+                                    ("mode", 9, False), "release"]
+    assert all(lease.owns(path) for path in lease.paths)
+    assert not transport.connected

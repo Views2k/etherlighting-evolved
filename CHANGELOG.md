@@ -2,6 +2,8 @@
 
 ## 0.5.0
 
+- Choose Quit in the Windows tray to close EE. EE can recover the lighting connection during shutdown so the switch can resume its saved scene.
+
 - The Windows app opens Lighting, Effects, Automation, Profiles, Settings and Help in a native desktop window. The installer includes the workspace service and lighting engine.
 - macOS and Linux desktop clients can connect to an existing EE workspace. The client remembers the workspace address for the next launch.
 - The native port map follows the switch's reported colors and traffic. Minimize the window or hide it in the notification area to pause the live display. Opening it again refreshes the readings.

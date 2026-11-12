@@ -649,10 +649,14 @@ class SessionManager:
         engine = candidate.engine
         switch, transport = engine.switch, engine.switch.transport
         record = self._playback.data
+        identity = device_identity(candidate.fingerprint)
+        if (transport.host_key_fingerprint != candidate.fingerprint
+                or (record and record.get("device") != identity)):
+            raise OutputOwnershipError("The connected switch does not match the saved lighting.")
         if record is None:
             saved = self.saved.load()
             pinned = self.host_keys.get(saved["host"], saved.get("port", 22)) if saved else None
-            if not pinned or device_identity(pinned) != device_identity(candidate.fingerprint):
+            if not pinned or device_identity(pinned) != identity:
                 return
         absent = await playback.available(transport)
         if absent:
@@ -664,15 +668,19 @@ class SessionManager:
                 self._offline_error = str(exc)
                 return
             owner = record["owner"] if record else secrets.token_hex(24)
-            record = {"state": "preparing", "device": device_identity(candidate.fingerprint), "owner": owner}
-            self._playback.save(record)
+            preparing = {"state": "preparing", "device": identity, "owner": owner}
+            if not record:
+                self._playback.save(preparing)
             self._reserve_player_output(switch, owner)
+            if record and record != preparing:
+                # Keep the last receipt until this player has reclaimed its local output lease.
+                self._playback.save(preparing)
             await playback.stage(transport, owner, config, palette)
             await playback.start(transport, owner)
-            record = {**record, "state": "last_playing", "scene_hash": self._offline_scene_hash(engine)}
+            record = {**preparing, "state": "last_playing", "scene_hash": self._offline_scene_hash(engine)}
             self._playback.save(record)
         else:
-            if not record or record.get("device") != device_identity(candidate.fingerprint):
+            if not record:
                 raise OutputOwnershipError("Another EE session owns this switch.")
             owner = record["owner"]
             self._reserve_player_output(switch, owner)

@@ -13,10 +13,12 @@ public sealed class ServiceHost
 {
     readonly string node, script, root, dataDirectory;
     readonly bool packaged, demo;
+    readonly object stopLock = new();
+    Task<bool>? stopping;
     Process? process;
     TaskCompletionSource<Uri>? ready;
 
-    ServiceHost(string node, string script, string root, bool packaged, bool demo, string dataDirectory)
+    internal ServiceHost(string node, string script, string root, bool packaged, bool demo, string dataDirectory)
     {
         (this.node, this.script, this.root, this.packaged, this.demo, this.dataDirectory) = (node, script, root, packaged, demo, dataDirectory);
     }
@@ -91,37 +93,56 @@ public sealed class ServiceHost
         }
     }
 
-    /// <summary>Asks the gateway to close its session and stop the engine. True only when shutdown is confirmed.</summary>
-    public async Task<bool> StopAsync()
+    /// <summary>All desktop exit paths share one close request and its final result.</summary>
+    public Task<bool> StopAsync()
+    {
+        lock (stopLock) return stopping ??= Task.Run(StopOwnedServiceAsync);
+    }
+
+    async Task<bool> StopOwnedServiceAsync()
     {
         var running = process;
         if (running is null) return true;
-        if (running.HasExited) return running.ExitCode == 0;
-        if (Address is { } address)
+        var confirmed = false;
+        try
         {
-            try
+            if (!running.HasExited)
             {
-                using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(45) };
-                using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null).ConfigureAwait(false);
-                using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
-                if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+                if (Address is { } address)
+                {
+                    using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
+                    using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+                    if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
+                }
+                running.StandardInput.Close();
+                await running.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             }
-            catch (Exception) { return false; }
+            confirmed = running.ExitCode == 0;
+            return confirmed;
         }
-        try { running.StandardInput.Close(); } catch (Exception) { }
-        try { await running.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25)).ConfigureAwait(false); }
-        catch (TimeoutException) { return false; }
-        return running.ExitCode == 0;
+        catch (Exception) { return false; }
+        finally
+        {
+            if (!confirmed)
+            {
+                try { Kill(); }
+                finally { Locations.RecordUnconfirmedExit(dataDirectory); }
+            }
+        }
     }
 
-    /// <summary>Last resort after an unconfirmed shutdown. EE recovers the lighting record at its next start.</summary>
+    /// <summary>Stops only the gateway started by this instance and its local descendants.</summary>
     public void Kill()
     {
         var running = process;
         if (running is null || running.HasExited) return;
-        try { running.StandardInput.Close(); } catch (Exception) { }
-        if (running.WaitForExit(8000)) return;
-        try { running.Kill(entireProcessTree: true); } catch (Exception) { }
+        try { running.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) when (running.HasExited) { return; }
+        if (!running.WaitForExit(5000))
+            throw new TimeoutException("The local EE service did not exit.");
     }
 
     static int FreePort(int preferred)

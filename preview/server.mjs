@@ -9,7 +9,7 @@ import {createPrivateAccessManager} from './private-access.mjs';
 import {keepPrivateAccessAvailable} from './private-access-retry.mjs';
 import {resolveRuntimeConfig} from './runtime-config.mjs';
 import {createWorkspaceCloser} from './workspace-close.mjs';
-import {watchDesktopParent} from './parent-lifetime.mjs';
+import {watchDesktopParent, whenWorkspaceGone} from './parent-lifetime.mjs';
 import {createServiceDiagnostics} from './service-diagnostics.mjs';
 
 const runtime=resolveRuntimeConfig();
@@ -124,6 +124,7 @@ if(process.env.EE_DESKTOP_HOST==='1') watchDesktopParent({input:process.stdin,cl
 },exhausted:({attempts})=>{
   diagnostics.record('parent_cleanup_exhausted',{attempts});
   if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;
+  whenWorkspaceGone(process.stdin,child,()=>process.exit(1));
 }});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{workspaceClosing=true;privateRetry.stop();void privateAccess.close();server.close();child.stdin.end('quit\n');});
 server.listen(port,'127.0.0.1',()=>{console.log(`Browser preview: http://127.0.0.1:${port}`);if(live)void privateAccess.initialize().catch(()=>{}).then(()=>privateRetry.observe());});
