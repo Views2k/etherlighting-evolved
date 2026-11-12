@@ -24,6 +24,13 @@ internal static class ShellChecks
         check(earlier["ports"] is JsonArray { Count: 1 } && earlier.ContainsKey("identify") && earlier["identify"] is null
             && earlier.Bool("connected") == true && earlier.Str("type") == "frame",
             "combined frames retain the last port reading and honor explicit clears");
+        earlier["uplink_bandwidth"] = new JsonObject { ["sequence"] = 7 };
+        Workspace.MergeFrame(earlier, new JsonObject { ["ports"] = new JsonArray(2) });
+        check(earlier.Bool("connected") == true && earlier.Int("uplink_bandwidth.sequence") == 7,
+            "a partial port frame keeps the connection and uplink measurement");
+        Workspace.MergeFrame(earlier, new JsonObject { ["connected"] = false, ["uplink_bandwidth"] = null });
+        check(earlier.Bool("connected") == false && earlier["uplink_bandwidth"] is null, "an explicit disconnect clears bandwidth");
+        UplinkBandwidthChecks.Run(check);
         check(AppShell.TryWorkspaceAddress("https://example.test:8443", out _) &&
               AppShell.TryWorkspaceAddress("http://127.0.0.1:4180", out _) &&
               !AppShell.TryWorkspaceAddress("https://example.test/?token=example", out _) &&

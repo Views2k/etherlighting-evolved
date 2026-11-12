@@ -2,6 +2,7 @@
 
 ## 0.5.0
 
+- Uplink bandwidth keeps download and upload speeds visible between samples. A delayed measurement is labeled “Last reading.”
 - Choose Quit in the Windows tray to close EE. EE can recover the lighting connection during shutdown so the switch can resume its saved scene.
 
 - The Windows app opens Lighting, Effects, Automation, Profiles, Settings and Help in a native desktop window. The installer includes the workspace service and lighting engine.

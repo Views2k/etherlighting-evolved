@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
@@ -22,16 +21,14 @@ internal sealed class BandwidthPlot : Control
 
     public bool HasHistory => values.Count >= 2;
 
-    public void Update(IReadOnlyList<JsonArray> records)
+    public void Update(IReadOnlyList<BandwidthPoint> records)
     {
         values.Clear();
         scale = 1;
         foreach (var row in records)
         {
-            var up = row[1].Num()!.Value;
-            var down = row[2].Num()!.Value;
-            values.Add((1 + row[0].Num()!.Value / 60000, up, down));
-            scale = Math.Max(scale, Math.Max(up, down));
+            values.Add((1 + row.Offset / 60000, row.Up, row.Down));
+            scale = Math.Max(scale, Math.Max(row.Up, row.Down));
         }
         InvalidateVisual();
     }

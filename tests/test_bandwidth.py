@@ -8,7 +8,7 @@ from etherlighting_evolved.engine import Engine
 from etherlighting_evolved.hardware import PRO_XG8
 from etherlighting_evolved.links import PortLink, parse_port_show
 from etherlighting_evolved.switch import EtherlightSwitch
-from etherlighting_evolved.transport import SimulatedTransport, TransportError
+from etherlighting_evolved.transport import PortSampleUnavailable, SimulatedTransport, TransportError
 
 
 def uplink(port=5, rx=0, tx=0, **changes):
@@ -316,6 +316,44 @@ def test_physical_optical_uplink_is_measured_without_lighting_capability():
     sample = engine._bandwidth.snapshot(now=5)
     assert sample["ports"] == [10]
     assert sample["download_bps"] == 1_000_000
+
+
+@pytest.mark.anyio
+async def test_missing_link_sample_ages_on_original_generation_and_resumes(monkeypatch):
+    engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)))
+    engine.connected = True
+    updates = []
+    clock = [0.0]
+
+    async def read_links():
+        if len(updates) == 1:
+            raise PortSampleUnavailable("fixture timeout")
+        return {5: uplink(rx=int(clock[0] * 125_000))}
+
+    async def pause(delay):
+        assert delay == engine.link_poll
+        clock[0] += 3.0
+        updates.append(engine.telemetry_state())
+        if len(updates) == 3:
+            raise asyncio.CancelledError
+
+    async def read_poe():
+        return {}
+
+    async def read_cpu():
+        return None
+
+    monkeypatch.setattr(engine.switch, "read_links", read_links)
+    monkeypatch.setattr(engine.switch, "read_poe", read_poe)
+    monkeypatch.setattr(engine.switch, "read_cpu", read_cpu)
+    monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
+    monkeypatch.setattr("etherlighting_evolved.engine.asyncio.sleep", pause)
+    with pytest.raises(asyncio.CancelledError):
+        await engine._status_loop()
+    assert [sample["sequence"] for sample in updates] == [1, 1, 2]
+    assert [sample["stale"] for sample in updates] == [False, True, False]
+    assert len({sample["generation"] for sample in updates}) == 1
+    assert engine.connected and engine.mode == "running" and engine.error is None
 
 
 @pytest.mark.anyio

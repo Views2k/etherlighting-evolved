@@ -17,6 +17,8 @@ public sealed class Workspace : IAsyncDisposable
     CancellationTokenSource? socketStop;
     DispatcherTimer? retry;
     bool paused, socketOpen;
+    long streamRevision, fullStateRevision, nextRefresh, appliedRefresh, bandwidthReceivedAt;
+    readonly Dictionary<string, long> frameRevisions = [];
 
     public Workspace(Uri baseUri) => Api = new EeApi(baseUri);
 
@@ -43,6 +45,9 @@ public sealed class Workspace : IAsyncDisposable
     public int Busy { get; private set; }
 
     public string? WorkspaceId => Session.Str("workspace_id");
+
+    internal UplinkMeasurements Bandwidth { get; } = new();
+    void ReceiveBandwidth() => Bandwidth.Receive(State, WorkspaceId, Disconnected, bandwidthReceivedAt);
 
     public bool Connected => State.Bool("connected") == true;
 
@@ -119,16 +124,52 @@ public sealed class Workspace : IAsyncDisposable
     /// <summary>Reads state and ports again (port of refresh). Pages update from the Refreshed event.</summary>
     public async Task Refresh(bool rebuild = true)
     {
-        var workspace = WorkspaceId;
+        var start = BeginRefresh();
         var send = WorkspaceRequest();
-        var stateTask = send("/api/state", "GET", null);
+        var stateTask = ReadState();
         var portsTask = send("/api/ports", "GET", null);
         await Task.WhenAll(stateTask, portsTask);
-        if (workspace != WorkspaceId) return;
-        var next = (await stateTask)?.AsObject() ?? [];
-        ScheduleClock.Receive(next["schedule_clock"]);
-        next["ports"] = (await portsTask)?.DeepClone();
-        State = next;
+        var (next, receivedAt) = await stateTask;
+        ApplyRefresh(start, next, await portsTask, receivedAt, rebuild);
+
+        async Task<(JsonObject, long)> ReadState()
+        {
+            var state = await send("/api/state", "GET", null).ConfigureAwait(false);
+            return (state?.AsObject() ?? [], Environment.TickCount64);
+        }
+    }
+
+    internal readonly record struct RefreshStart(string? Workspace, long StreamRevision, long Request);
+    internal RefreshStart BeginRefresh() => new(WorkspaceId, streamRevision, ++nextRefresh);
+    internal void ApplyRefresh(RefreshStart start, JsonObject next, JsonNode? ports, long receivedAt, bool rebuild)
+    {
+        if (start.Workspace != WorkspaceId || start.Request < appliedRefresh) return;
+        appliedRefresh = start.Request;
+        // A full state message supplies the entire configuration. Otherwise overlay just the
+        // fields the stream delivered since this request began, keeping the HTTP configuration.
+        if (fullStateRevision <= start.StreamRevision)
+        {
+            var reportedGeneration = next.Str("telemetry.generation");
+            next["ports"] = ports?.DeepClone();
+            foreach (var (field, revision) in frameRevisions)
+                if (revision > start.StreamRevision) next[field] = State[field]?.DeepClone();
+            if (frameRevisions.GetValueOrDefault("uplink_bandwidth") <= start.StreamRevision)
+            {
+                bandwidthReceivedAt = receivedAt;
+                if (frameRevisions.GetValueOrDefault("telemetry") > start.StreamRevision
+                    && next.Str("telemetry.generation") != reportedGeneration)
+                    next["uplink_bandwidth"] = null;
+            }
+            State = next;
+            if (frameRevisions.GetValueOrDefault("schedule_clock") <= start.StreamRevision)
+                ScheduleClock.Receive(State["schedule_clock"]);
+        }
+        else if (frameRevisions.GetValueOrDefault("ports") <= start.StreamRevision)
+        {
+            // The state message carries no Ethernet port list.
+            State["ports"] = ports?.DeepClone();
+        }
+        ReceiveBandwidth();
         ConnectionChanged?.Invoke();
         Refreshed?.Invoke(rebuild);
     }
@@ -207,6 +248,7 @@ public sealed class Workspace : IAsyncDisposable
     {
         socketOpen = true;
         Disconnected = false;
+        ReceiveBandwidth();
         ConnectionChanged?.Invoke();
         StreamRestored?.Invoke();
     }
@@ -220,6 +262,7 @@ public sealed class Workspace : IAsyncDisposable
         socketOpen = false;
         if (Closing || paused || lifetime.IsCancellationRequested) return;
         Disconnected = true;
+        ReceiveBandwidth();
         ConnectionChanged?.Invoke();
         StreamLost?.Invoke();
         retry ??= new DispatcherTimer(TimeSpan.FromMilliseconds(1500), DispatcherPriority.Background, (_, _) => { retry!.Stop(); ConnectFrames(); });
@@ -229,25 +272,34 @@ public sealed class Workspace : IAsyncDisposable
     // Coalesce adjacent frame messages. A session or state change ends the batch so messages retain wire order.
     sealed class StreamDelivery(Workspace owner, CancellationTokenSource stream)
     {
+        sealed class Delivery(JsonObject message, long receivedAt)
+        {
+            public JsonObject Message { get; } = message;
+            public long ReceivedAt { get; set; } = receivedAt;
+        }
         readonly object gate = new();
-        JsonObject? pending;
+        Delivery? pending;
 
         public void Receive(JsonObject message)
         {
+            var now = Environment.TickCount64;
+            Delivery item;
             lock (gate)
             {
-                if (message.Str("type") != "frame") pending = null;
-                else if (pending is not null)
+                var frame = message.Str("type") == "frame";
+                if (frame && pending is not null)
                 {
-                    MergeFrame(pending, message);
+                    if (message.ContainsKey("uplink_bandwidth")) pending.ReceivedAt = now;
+                    MergeFrame(pending.Message, message);
                     return;
                 }
-                else pending = message;
+                item = new(message, now);
+                pending = frame ? item : null;
             }
             Dispatcher.UIThread.Post(() =>
             {
-                lock (gate) { if (ReferenceEquals(pending, message)) pending = null; }
-                if (owner.socketStop == stream && !owner.Closing) owner.Handle(message);
+                lock (gate) { if (ReferenceEquals(pending, item)) pending = null; }
+                if (owner.socketStop == stream && !owner.Closing) owner.Handle(item.Message, item.ReceivedAt);
             }, DispatcherPriority.Background);
         }
     }
@@ -257,31 +309,37 @@ public sealed class Workspace : IAsyncDisposable
 
     // Frames own their JSON. Move incoming readings into place without copying entire port arrays.
     // The wire format distinguishes "no new reading" from explicitly clearing identify, bandwidth or an error.
-    internal static void MergeFrame(JsonObject destination, JsonObject incoming)
+    internal static void MergeFrame(JsonObject destination, JsonObject incoming, Dictionary<string, long>? revisions = null, long revision = 0)
     {
         foreach (var key in retainedFields)
             if (incoming[key] is not null) Move(key);
         foreach (var key in nullableFields)
             if (incoming.ContainsKey(key)) Move(key);
-        Move("connected");
-        Move("mode");
+        if (incoming.ContainsKey("connected")) Move("connected");
+        if (incoming.ContainsKey("mode")) Move("mode");
 
         void Move(string key)
         {
             var value = incoming[key];
             incoming.Remove(key);
             destination[key] = value;
+            if (revisions is not null) revisions[key] = revision;
         }
     }
 
-    void Handle(JsonObject message)
+    internal void Handle(JsonObject message, long receivedAt)
     {
         switch (message.Str("type"))
         {
             case "frame" when Ready:
                 ScheduleClock.Receive(message["schedule_clock"]);
-                Session["connected"] = message["connected"]?.DeepClone();
-                MergeFrame(State, message);
+                if (message.ContainsKey("connected")) Session["connected"] = message["connected"]?.DeepClone();
+                if (!message.ContainsKey("uplink_bandwidth") && message["telemetry"] is JsonObject telemetry &&
+                    telemetry.ContainsKey("generation") && State.Str("telemetry.generation") != telemetry.Str("generation"))
+                    message["uplink_bandwidth"] = null;
+                if (message.ContainsKey("uplink_bandwidth")) bandwidthReceivedAt = receivedAt;
+                MergeFrame(State, message, frameRevisions, ++streamRevision);
+                ReceiveBandwidth();
                 ConnectionChanged?.Invoke();
                 Frame?.Invoke();
                 break;
@@ -291,6 +349,9 @@ public sealed class Workspace : IAsyncDisposable
                 var replaced = (JsonObject)next.DeepClone();
                 replaced["ports"] = State["ports"]?.DeepClone();
                 State = replaced;
+                fullStateRevision = ++streamRevision;
+                bandwidthReceivedAt = receivedAt;
+                ReceiveBandwidth();
                 StateMessage?.Invoke();
                 break;
             case "session":

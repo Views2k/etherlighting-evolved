@@ -563,6 +563,7 @@ public sealed class AppShell : UserControl
         current?.Leave();
         current = null;
         Workspace.State = [];
+        Workspace.Bandwidth.Reset();
         Studio.Reset();
         Workspace.Ready = false;
         WorkspaceReset?.Invoke();

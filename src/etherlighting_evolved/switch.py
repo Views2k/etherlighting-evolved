@@ -27,7 +27,16 @@ from .health import parse_health
 from .links import PortLink, parse_port_show
 from .ownership import OutputLease, OutputOwnershipError
 from .poe import PoePort, PoeSample, parse_poe_sample
-from .transport import NativeOutputUncertain, SimulatedTransport, SSHTransport, Transport, TransportError
+from .transport import (
+    READ_CPU,
+    READ_POE,
+    READ_PORTS,
+    NativeOutputUncertain,
+    SimulatedTransport,
+    SSHTransport,
+    Transport,
+    TransportError,
+)
 
 WRITE_FAILED = "__EE_LED_WRITE_FAILED__"
 MCU_SCHEMA_EXIT = "__EE_MCU_SCHEMA_EXIT__"
@@ -1023,9 +1032,7 @@ class EtherlightSwitch:
 
         Uses the shell's own `read`, so it doesn't start any process on the switch.
         """
-        out = await self.transport.run(
-            'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "$b"', channel="links", timeout=5
-        )
+        out = await self.transport.run(READ_CPU, channel="links", timeout=5)
         lines = out.splitlines()
         try:
             ticks = [int(v) for v in lines[0].split()[1:]]
@@ -1047,14 +1054,14 @@ class EtherlightSwitch:
         await self._send_port(port, color, level)
 
     async def read_links(self) -> dict[int, PortLink]:
-        out = await self.transport.run("swctrl port show", channel="links", timeout=10)
+        out = await self.transport.run(READ_PORTS, channel="links", timeout=10)
         return parse_port_show(out)
 
     async def read_poe(self) -> dict[int, PoePort]:
         """PoE status per port. Empty on switches (or firmware) without PoE or with an unfamiliar format."""
         if self._has_poe is False:
             return {}
-        out = await self.transport.run("swctrl poe show 2>/dev/null", channel="links", timeout=10)
+        out = await self.transport.run(READ_POE, channel="links", timeout=10)
         self.poe_sample = parse_poe_sample(out)
         ports = self.poe_sample.ports
         if self._has_poe is None:
