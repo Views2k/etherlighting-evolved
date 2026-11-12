@@ -12,7 +12,7 @@ from etherlighting_evolved.config import Config
 from etherlighting_evolved.effects import create_effect
 from etherlighting_evolved.engine import Engine, Zone
 from etherlighting_evolved.hardware import PRO_XG8
-from etherlighting_evolved.ownership import device_identity
+from etherlighting_evolved.ownership import OutputOwnershipError, device_identity
 from etherlighting_evolved.session import LoginError, SessionManager
 from etherlighting_evolved.sfp import SfpLight, SfpSync
 from etherlighting_evolved.switch import EtherlightSwitch
@@ -211,6 +211,57 @@ async def test_unacknowledged_transfer_never_starts_a_second_writer(tmp_path, mo
     assert player.PlaybackRecord(record.path).data["state"] == "preparing"
     with pytest.raises(ValueError, match="owner"):
         await player.start(None, "invalid")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("condition", ["absent", "other_device", "other_lease", "occupied", "offline", "probe_denied"])
+async def test_reopening_saved_glow_after_switch_ram_loss(config, monkeypatch, condition):
+    manager = SessionManager(config)
+    owner = "a" * 48
+    receipt = {"state": "last_playing", "device": IDENTITY, "owner": owner, "applied_edit": "b" * 64}
+    manager._playback.save(receipt)
+    engine = scene()
+    engine.snapshot = lambda: {"mode": "running"}
+    engine.revision = 5
+    transport = SimpleNamespace(host="switch.invalid", port=22, host_key_fingerprint=KEY,
+                                lighting_generation=object())
+    engine.switch.transport = transport
+    candidate = SimpleNamespace(engine=engine, fingerprint=KEY)
+    if condition == "other_device":
+        candidate.fingerprint = transport.host_key_fingerprint = "SHA256:another-fixture-identity"
+    lease_owner = "f" * 48 if condition == "other_lease" else owner
+    manager.output_journal.player_lease(transport.host, transport.port, KEY, lease_owner)
+    replies = {"absent": "available", "other_lease": "available", "occupied": "occupied",
+               "probe_denied": "permission denied"}
+    async def run(_, command):
+        if "then echo occupied" in command:
+            if condition == "offline":
+                raise TransportError("offline")
+            return replies[condition]
+        if "desktop.next" in command:
+            return "granted"
+        pytest.fail("unexpected switch operation")
+    monkeypatch.setattr(player, "_run", run)
+    stage, start = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(player, "stage", stage)
+    monkeypatch.setattr(player, "start", start)
+    upgrade = AsyncMock(side_effect=TransportError("existing player belongs to another owner"))
+    monkeypatch.setattr(player, "upgrade_player", upgrade)
+    if condition != "absent":
+        with pytest.raises((TransportError, OutputOwnershipError)):
+            await manager._prepare_offline_lighting(candidate)
+        stage.assert_not_awaited()
+        start.assert_not_awaited()
+        assert upgrade.await_count == int(condition == "occupied")
+        assert manager._playback.data == receipt
+        return
+    await manager._prepare_offline_lighting(candidate)
+    stage.assert_awaited_once_with(transport, owner, *player.compile_scene(engine))
+    start.assert_awaited_once_with(transport, owner)
+    upgrade.assert_not_awaited()
+    assert engine.switch.output_lease.keep_for_player
+    assert manager._playback.data == {"state": "last_playing", "device": IDENTITY, "owner": owner,
+                                      "scene_hash": manager._offline_scene_hash(engine)}
 
 
 @pytest.mark.anyio

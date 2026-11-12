@@ -203,18 +203,22 @@ public static class Locations
     }
 
     /// <summary>The same record the earlier desktop app kept when shutdown could not be confirmed.</summary>
-    public static void RecordUnconfirmedExit(string version)
+    internal static void RecordUnconfirmedExit(string directory)
     {
+        var file = Path.Combine(directory, "last-session.json");
+        var temporary = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            var directory = Workspace(false);
             Directory.CreateDirectory(directory);
-            File.WriteAllText(Path.Combine(directory, "last-session.json"), JsonSerializer.Serialize(new
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new
             {
-                time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"), stage = "desktop_exit", outcome = "cleanup_unconfirmed", build = version,
+                time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"), stage = "desktop_exit", outcome = "cleanup_unconfirmed",
+                build = typeof(App).Assembly.GetName().Version?.ToString(3),
             }) + "\n");
+            File.Move(temporary, file, overwrite: true);
         }
         catch (Exception) { }
+        finally { try { File.Delete(temporary); } catch (Exception) { } }
     }
 }
 

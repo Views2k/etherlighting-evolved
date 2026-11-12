@@ -319,8 +319,11 @@ class Engine:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks = []
-        if (cleanup_error is not None and self.switch.native_uncertain
-                and self.switch.output_lease is not None):
+        lease = self.switch.output_lease
+        desktop_output = getattr(self.switch.transport, "desktop_output", None)
+        if (cleanup_error is not None and lease is not None
+                and (self.switch.native_uncertain or
+                     (desktop_output is not None and lease.keep_for_player and self._sfp_release_pending))):
             outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=True)
                        for color, brightness in self._shown]
             try:
@@ -330,8 +333,7 @@ class Engine:
                 # Keep ownership records when reconnection or device cleanup is unconfirmed.
                 pass
         try:
-            desktop_output = getattr(self.switch.transport, "desktop_output", None)
-            if desktop_output is not None and self.connected:
+            if desktop_output is not None and self.switch.connected:
                 with contextlib.suppress(TimeoutError, TransportError):
                     await asyncio.wait_for(desktop_output.release(), timeout=2)
             await self.switch.close()

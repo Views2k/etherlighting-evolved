@@ -84,8 +84,8 @@ public sealed class App : Application
 }
 
 /// <summary>
-/// The desktop program: starts the EE service when it is bundled, keeps EE in the notification area, and returns
-/// the switch lighting through the service's confirmed shutdown before quitting.
+/// The desktop program starts its bundled workspace, keeps the window available from the tray,
+/// and asks the service to finish its current lighting session on exit.
 /// </summary>
 sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime desktop, Options options, SingleInstance instance, string dataDirectory)
 {
@@ -94,7 +94,8 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
     Workspace? workspace;
     ServiceHost? service;
     TrayIcon? tray;
-    bool quitting, forceArmed;
+    bool quitting;
+    Task? quitTask;
 
     public void Start()
     {
@@ -119,11 +120,13 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         }
         catch (Exception)
         {
+            if (quitting) return;
             Open(new Uri("http://127.0.0.1:9/"));
             window!.Shell.Notify("The EE service did not start. Close any other EE window, then open EE again.", true);
             if (options.Smoke is not null) desktop.Shutdown(1);
             return;
         }
+        if (quitting) return;
         Open(address);
         await window!.Shell.Start();
         if (options.Shot is { } shot) _ = ShotAsync(shot);
@@ -191,7 +194,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         }
         menu.Add(new NativeMenuItemSeparator());
         var quitItem = new NativeMenuItem("Quit");
-        quitItem.Click += (_, _) => _ = QuitAsync(false);
+        quitItem.Click += (_, _) => _ = QuitAsync();
         menu.Add(quitItem);
         WindowIcon? icon = null;
         try { icon = new WindowIcon(AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/ee.ico"))); }
@@ -203,7 +206,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
 
     void ShowWindow()
     {
-        if (window is null) return;
+        if (window is null || quitting) return;
         window.Show();
         if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
         window.Activate();
@@ -216,55 +219,53 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
             ShowWindow();
             return "ok";
         }
-        // The installer must be able to replace the files, so its request ends EE even if cleanup is unconfirmed.
-        await QuitAsync(true);
-        return "closed";
+        await QuitAsync();
+        return service?.Running == true ? "service_still_running" : "closed";
     }
 
-    async Task QuitAsync(bool force)
+    Task QuitAsync() => quitTask ??= CloseDesktopAsync();
+
+    void PrepareToQuit()
     {
         if (quitting) return;
         quitting = true;
-        window?.Shell.Status("Closing the workspace…");
-        var confirmed = service is null || await service.StopAsync();
-        if (!confirmed && !force && !forceArmed)
+        if (workspace is not null)
         {
-            quitting = false;
-            forceArmed = true;
-            ShowWindow();
-            window?.Shell.Notify("The workspace has not confirmed shutdown. Choose Quit again to close anyway.", true);
-            return;
+            workspace.Closing = true;
+            workspace.StopFrames();
         }
-        if (!confirmed)
-        {
-            service?.Kill();
-            Locations.RecordUnconfirmedExit(version);
-        }
-        await Finish(confirmed ? 0 : 1);
+    }
+
+    async Task CloseDesktopAsync()
+    {
+        var code = 0;
+        try { PrepareToQuit(); window?.Shell.Status("Closing the workspace…"); }
+        catch (Exception) { code = 1; }
+        try { if (service is not null && !await service.StopAsync()) code = 1; }
+        catch (Exception) { code = 1; }
+        await Finish(code);
     }
 
     async Task Finish(int code)
     {
-        window?.Shell.Studio.SaveUiState(window.Shell.PageName);
-        if (workspace is not null) await workspace.DisposeAsync();
-        tray?.Dispose();
+        try { window?.Shell.Studio.SaveUiState(window.Shell.PageName); }
+        catch (Exception) { code = 1; }
+        try { if (workspace is not null) await workspace.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)); }
+        catch (Exception) { code = 1; }
+        try { tray?.Dispose(); }
+        catch (Exception) { code = 1; }
         if (window is not null) window.AllowClose = true;
         desktop.Shutdown(code);
     }
 
-    // Sign-out and shutdown: return the lighting before the session ends, asking Windows to wait meanwhile.
+    // Windows sign-out can overlap an existing tray or installer request. The owned service
+    // closes on a worker thread so the OS can wait for the same result while the UI is blocked.
     void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
-        if (quitting) return;
-        quitting = true;
         using (SessionEnd.Block(window?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero))
         {
-            var confirmed = service is null || service.StopAsync().GetAwaiter().GetResult();
-            if (!confirmed)
-            {
-                service?.Kill();
-                Locations.RecordUnconfirmedExit(version);
-            }
+            try { PrepareToQuit(); } catch (Exception) { }
+            try { service?.StopAsync().GetAwaiter().GetResult(); } catch (Exception) { }
         }
         if (window is not null) window.AllowClose = true;
     }
@@ -301,7 +302,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         {
             await File.WriteAllTextAsync(Path.Combine(folder, "shot-error.txt"), exception.ToString());
         }
-        if (service is not null && !await service.StopAsync()) service.Kill();
+        if (service is not null && !await service.StopAsync()) code = 1;
         await Finish(code);
     }
 
@@ -389,7 +390,6 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         result["service_stopped_cleanly"] = confirmed;
         result["passed"] = passed && confirmed;
         await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
-        if (!confirmed) service?.Kill();
         await Finish(passed && confirmed ? 0 : 1);
     }
 }

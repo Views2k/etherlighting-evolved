@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
-import {watchDesktopParent} from '../preview/parent-lifetime.mjs';
+import {EventEmitter, once} from 'node:events';
+import {watchDesktopParent, whenWorkspaceGone} from '../preview/parent-lifetime.mjs';
 import {connectionLabel,switchConnectionStatus} from '../preview/workspace-session.mjs';
 
 test('parent EOF requests one graceful close without killing children', async()=>{
@@ -9,6 +10,29 @@ test('parent EOF requests one graceful close without killing children', async()=
   watchDesktopParent({input,close:async()=>{closes++;}});
   input.end();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(closes,1);
+});
+
+test('an exhausted gateway exits only when both its desktop and engine have gone',async()=>{
+  for(const order of ['already gone','engine first','desktop first']){
+    const input=new PassThrough(),engine=new EventEmitter();
+    engine.exitCode=null;engine.signalCode=null;
+    input.resume();
+    async function endDesktop(){
+      const ended=once(input,'end');input.end();await ended;
+    }
+    let exits=0;
+    if(order==='already gone'){await endDesktop();engine.exitCode=1;}
+    whenWorkspaceGone(input,engine,()=>exits++);
+    if(order==='engine first'){
+      engine.signalCode='SIGTERM';engine.emit('exit',null);assert.equal(exits,0);
+      await endDesktop();
+    }
+    if(order==='desktop first'){
+      await endDesktop();assert.equal(exits,0);
+      engine.exitCode=1;engine.emit('exit',1);
+    }
+    assert.equal(exits,1);
+  }
 });
 
 test('an unconfirmed close can retry rather than pretending output stopped',async()=>{

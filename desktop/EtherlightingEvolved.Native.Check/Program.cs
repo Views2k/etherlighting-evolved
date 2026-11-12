@@ -31,6 +31,12 @@ void Check(bool ok, string name)
     if (!ok) failures.Add(name);
 }
 
+if (args.Contains("--service") || args.Contains("--quit-check"))
+{
+    ShutdownChecks.Run(output, Check).GetAwaiter().GetResult();
+    if (args.Contains("--quit-check")) return failures.Count == 0 ? 0 : 1;
+}
+
 ModelChecks.Run(Check);
 AppBuilder.Configure<App>()
     .UseSkia()

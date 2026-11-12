@@ -18,3 +18,14 @@ export function watchDesktopParent({input, close, report = () => {}, exhausted =
   input.resume();
   return stop;
 }
+
+// After an unconfirmed shutdown the gateway can still support recovery while
+// either its desktop or engine is alive. Once both are gone it only holds ports.
+export function whenWorkspaceGone(input, engine, finish) {
+  function waitForEngine() {
+    if (engine.exitCode !== null || engine.signalCode != null) finish();
+    else engine.once('exit', finish);
+  }
+  if (input.readableEnded) waitForEngine();
+  else input.once('end', waitForEngine);
+}

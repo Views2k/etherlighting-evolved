@@ -166,8 +166,12 @@ async def _run(transport, command):
 
 
 async def available(transport):
-    # Fail closed on command or transport errors, including a dangling path.
-    return await _run(transport, f'd={LOCATION}; [ ! -e "$d" ] && [ ! -L "$d" ] && echo available') == "available"
+    command = (f'd={LOCATION}; cd /tmp && [ "$(pwd -P)" = /tmp ] && [ -x . ] || exit 1\n'
+               'if [ -e "$d" ] || [ -L "$d" ]; then echo occupied; else echo available; fi')
+    result = await _run(transport, command)
+    if result not in {"occupied", "available"}:
+        raise TransportError("The switch could not confirm its saved lighting directory.")
+    return result == "available"
 
 
 def _owned(owner):
@@ -263,6 +267,9 @@ done"""
 
     async def release(self):
         self.until = 0
+        if (self.generation is None or self.transport.lighting_generation is not self.generation
+                or self.transport.host_key_fingerprint != self.fingerprint):
+            return
         command = _owned(self.owner) + (
             f'if read -r ticket expiry < desktop.request && [ "$ticket" = {self.ticket} ]; '
             'then rm -f desktop.request; fi')

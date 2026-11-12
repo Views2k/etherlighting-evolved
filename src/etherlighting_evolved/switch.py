@@ -353,6 +353,10 @@ class EtherlightSwitch:
             generation = self.transport.lighting_generation
             if generation is None:
                 raise OutputOwnershipError("The lighting connection could not be verified.")
+            desktop_output = getattr(self.transport, "desktop_output", None)
+            if desktop_output is not None:
+                # The resident player may have resumed while the previous connection was down.
+                await desktop_output.renew()
             await self.initialize_output()
             self._native_active = {port: (generation, target) for port, (_, target) in copper.items()}
             self._sfp_owned = dict.fromkeys(sfp, generation)
