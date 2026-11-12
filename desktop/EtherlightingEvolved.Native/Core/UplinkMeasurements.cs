@@ -3,12 +3,14 @@ using System.Text.Json.Nodes;
 namespace EtherlightingEvolved.Native.Core;
 
 internal readonly record struct BandwidthPoint(double Offset, double Up, double Down);
-internal sealed record UplinkSample(int Sequence, int[] Ports, double Download, double Upload, List<BandwidthPoint> History);
+internal sealed record UplinkSample(int Sequence, int[] Ports, double Download, double Upload, List<BandwidthPoint> History,
+                                   long Series, double CapturedAt, double Interval, double Period);
 
 internal sealed class UplinkMeasurements
 {
     string? workspaceId, generation;
     bool knownGeneration;
+    long series;
     JsonObject? previousReading;
     public UplinkSample? Last { get; private set; }
     public double ExpiresAt { get; private set; }
@@ -24,6 +26,7 @@ internal sealed class UplinkMeasurements
 
     void Clear(string status)
     {
+        if (Last is not null) series++;
         Last = null;
         EmptyStatus = status;
     }
@@ -79,7 +82,10 @@ internal sealed class UplinkMeasurements
             if (row.Count == 3 && row[0].Num() is <= 0 and > -60_000 and { } offset &&
                 row[1].Num() is >= 0 and { } sent && row[2].Num() is >= 0 and { } received)
                 history.Add(new(offset, sent, received));
-        Last = new(sequence.Value, ports!.Select(p => p.Int()!.Value).ToArray(), down, up, history);
+        var period = reading.Num("sample_period_ms")!.Value;
+        var interval = reading.Num("refresh_interval_ms") is > 0 and { } advertised ? advertised : period;
+        Last = new(sequence.Value, ports!.Select(p => p.Int()!.Value).ToArray(), down, up, history,
+                   series, now - age.Value, interval, period);
         ExpiresAt = deadline;
     }
 

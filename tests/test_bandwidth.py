@@ -31,7 +31,7 @@ def test_directional_rate_uses_actual_elapsed_time_and_not_the_nominal_refresh()
     sample = meter.snapshot(now=7.25)
     assert sample == {"status": "ready", "ports": [5], "upload_bps": 500_000.0,
                       "download_bps": 1_000_000.0, "history": [[0, 500_000, 1_000_000]], "sample_period_ms": 6000.0,
-                      "sample_age_ms": 250.0, "sequence": 1, "refresh_interval_ms": 5000}
+                      "sample_age_ms": 250.0, "sequence": 1, "refresh_interval_ms": 1000}
 
 
 def test_uplink_history_keeps_the_test_burst_after_traffic_returns_to_idle():
@@ -239,55 +239,29 @@ def test_discontinuity_before_publication_discards_cached_counters(change):
     assert sample["upload_bps"] is None and sample["sequence"] == 0
 
 
-def test_engine_publication_stays_on_five_second_deadlines_despite_poll_and_wake_jitter(monkeypatch):
+@pytest.mark.anyio
+async def test_released_lighting_delivers_bandwidth_in_regular_frames(monkeypatch):
     engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)))
     engine.connected = True
-    engine._subscribers = {object()}
-    clock = [0.0]
-    polls = iter([0.01, 1.011, 2.009, 3.01, 4.018, 5.025, 6.012, 7.016,
-                  8.014, 9.012, 10.024, 11.015, 12.01, 13.011, 14.009])
-    pending = [next(polls)]
-    publications, waits = [], []
+    engine.mode = "released"
+    engine._bandwidth = ready_meter()
+    subscriber = engine.subscribe()
+    ticks = 0
 
-    async def sleep(delay):
-        waits.append(delay)
-        if len(waits) > 3:
-            raise asyncio.CancelledError
-        clock[0] += delay + 0.002
-        while pending[0] is not None and pending[0] <= clock[0]:
-            at = pending[0]
-            engine._bandwidth.update({5: uplink(rx=round(at * 125_000), tx=round(at * 62_500))}, now=at)
-            pending[0] = next(polls, None)
+    async def tick(delay, event=None):
+        nonlocal ticks
+        ticks += 1
+        engine._stopping = ticks > 1
 
-    monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
-    monkeypatch.setattr("etherlighting_evolved.engine.asyncio.sleep", sleep)
-    monkeypatch.setattr(engine, "_publish", lambda frame: publications.append((clock[0], frame["uplink_bandwidth"])))
-    # Every fixture await completes immediately; no event-loop clock or real sleep is involved.
-    with pytest.raises(asyncio.CancelledError):
-        engine._bandwidth_loop().send(None)
-    assert [at for at, _ in publications] == pytest.approx([5.002, 10.002, 15.002])
-    assert [sample["sequence"] for _, sample in publications] == [1, 2, 3]
-    assert [sample["sample_period_ms"] for _, sample in publications] == pytest.approx([4008, 4994, 4997])
-    assert all(sample["upload_bps"] == pytest.approx(500_000, abs=2) for _, sample in publications)
-    assert all(sample["download_bps"] == pytest.approx(1_000_000, abs=2) for _, sample in publications)
-    assert len(waits) == 4
-
-
-def test_delayed_publication_skips_missed_deadlines_without_catchup_bursts(monkeypatch):
-    engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)))
-    clock, waits = [0.0], []
-
-    async def sleep(delay):
-        waits.append(delay)
-        if len(waits) > 1:
-            raise asyncio.CancelledError
-        clock[0] = 17.0
-
-    monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
-    monkeypatch.setattr("etherlighting_evolved.engine.asyncio.sleep", sleep)
-    with pytest.raises(asyncio.CancelledError):
-        engine._bandwidth_loop().send(None)
-    assert waits == [5, 3]
+    monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: 5.25)
+    monkeypatch.setattr("etherlighting_evolved.engine.timing.wait", tick)
+    await engine._render_loop()
+    assert len(subscriber) == 1
+    frame = await subscriber.get()
+    assert frame["type"] == "frame"
+    assert frame["uplink_bandwidth"]["download_bps"] == 1_000_000
+    assert frame["uplink_bandwidth"]["sample_age_ms"] == 250
+    assert engine.switch.stats.attempted_commands == 0
 
 
 def test_engine_state_and_frames_include_the_same_readonly_measurement(monkeypatch):
@@ -357,20 +331,24 @@ async def test_missing_link_sample_ages_on_original_generation_and_resumes(monke
 
 
 @pytest.mark.anyio
-async def test_status_poll_reuses_existing_reads_without_extra_commands(monkeypatch):
-    engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)))
+@pytest.mark.parametrize("interval", [0.5, 1.0, 5.0])
+async def test_each_status_poll_publishes_actual_counter_delta_without_extra_commands(monkeypatch, interval):
+    engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)), link_poll=interval)
     engine.connected = True
     calls = []
     clock = [0.0]
+    readings = []
 
     async def read_links():
         calls.append("links")
-        if calls.count("links") > 2:
+        if len(readings) == 3:
             raise asyncio.CancelledError
-        return {5: uplink(rx=int(clock[0] * 125_000), tx=int(clock[0] * 62_500))}
+        clock[0] += (0.1, 0.2, 0.4)[len(readings)]
+        return {5: uplink(rx=round(clock[0] * 125_000), tx=round(clock[0] * 62_500))}
 
     async def read_poe():
         calls.append("poe")
+        readings.append(engine.frame_message()["uplink_bandwidth"])
         return {}
 
     async def read_cpu():
@@ -379,7 +357,7 @@ async def test_status_poll_reuses_existing_reads_without_extra_commands(monkeypa
 
     async def sleep(delay):
         assert delay == engine.link_poll
-        clock[0] += 5
+        clock[0] += delay
 
     monkeypatch.setattr(engine.switch, "read_links", read_links)
     monkeypatch.setattr(engine.switch, "read_poe", read_poe)
@@ -388,7 +366,12 @@ async def test_status_poll_reuses_existing_reads_without_extra_commands(monkeypa
     monkeypatch.setattr("etherlighting_evolved.engine.asyncio.sleep", sleep)
     with pytest.raises(asyncio.CancelledError):
         await engine._status_loop()
-    assert calls == ["links", "poe", "cpu", "links", "poe", "cpu", "links"]
-    assert engine._bandwidth.snapshot(now=5)["status"] == "waiting"
-    engine._bandwidth.publish(now=5)
-    assert engine._bandwidth.snapshot(now=5)["upload_bps"] == 500_000
+    assert calls == ["links", "poe", "cpu"] * 3 + ["links"]
+    assert [r["sequence"] for r in readings] == [0, 1, 2]
+    assert readings[0]["status"] == "waiting"
+    assert [r["sample_period_ms"] for r in readings[1:]] == pytest.approx([(interval + 0.2) * 1000,
+                                                                             (interval + 0.4) * 1000])
+    assert all(r["refresh_interval_ms"] == interval * 1000 for r in readings)
+    assert all(r["download_bps"] == pytest.approx(1_000_000) for r in readings[1:])
+    assert all(r["upload_bps"] == pytest.approx(500_000) for r in readings[1:])
+    assert len(readings[-1]["history"]) == 2

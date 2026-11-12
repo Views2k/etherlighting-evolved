@@ -30,9 +30,9 @@ Use the existing handoff endpoint to return lighting to UniFi.
 
 State and frame messages include `uplink_bandwidth`, measured from the existing physical-port byte counters.
 Upload is transmitted traffic and download is received traffic across the detected active uplink ports.
-New measurements publish on five-second deadlines using the latest captured counters. Rates use the actual
-elapsed time between counter samples; `sample_period_ms` records that interval, which can differ from the
-publication interval. A missing counter sample does not produce a new measurement.
+Each successful port-status read supplies a counter sample. Once two compatible samples are available,
+the next workspace frame includes their measured rate. `sample_period_ms` records the actual time between
+captures, including switch response time. A missed read leaves the last measurement at its original capture time.
 Each physical uplink is counted once, including optical uplinks. Virtual aggregation rows are excluded.
 
 | Field | Meaning |
@@ -43,7 +43,7 @@ Each physical uplink is counted once, including optical uplinks. Virtual aggrega
 | `history` | Measured intervals from the last minute as `[offset_ms, upload_bps, download_bps]`, relative to the newest sample. Clears when counters or uplink membership reset. |
 | `sample_period_ms`, `sample_age_ms` | Measurement duration and age in milliseconds |
 | `sequence` | Increases for each completed measurement |
-| `refresh_interval_ms` | Publication interval, currently `5000` |
+| `refresh_interval_ms` | Configured delay between port-status polls in milliseconds (default `1000`) |
 
 Counter resets, uplink membership changes, and reconnection start a new measurement window. A reading is
 current for ten seconds from capture. Each frame reports its age at the time of the snapshot.

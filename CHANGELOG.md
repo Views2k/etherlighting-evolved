@@ -3,7 +3,7 @@
 ## 0.5.0
 
 - Workspace owners can approve individual tagged Tailscale devices. Linux clients can use the private workspace address when local DNS cannot resolve it.
-- Uplink bandwidth keeps download and upload speeds visible between samples. A delayed measurement is labeled “Last reading.”
+- The uplink graph scrolls the last minute of download and upload traffic using each existing switch counter reading. A delayed measurement is labeled “Last reading.”
 - Choose Quit in the Windows tray to close EE. EE can recover the lighting connection during shutdown so the switch can resume its saved scene.
 
 - The Windows app opens Lighting, Effects, Automation, Profiles, Settings and Help in a native desktop window. The installer includes the workspace service and lighting engine.

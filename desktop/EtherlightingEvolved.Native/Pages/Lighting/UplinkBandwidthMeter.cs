@@ -15,6 +15,8 @@ internal sealed class UplinkBandwidthMeter : Grid
     readonly StackPanel chart;
     readonly TextBlock chartLabel = U.Text("Last minute", "small muted");
     UplinkSample? displayed;
+    bool pageVisible = true;
+    double renderedDeadline;
 
     public UplinkBandwidthMeter()
     {
@@ -47,11 +49,25 @@ internal sealed class UplinkBandwidthMeter : Grid
         return U.Column(1, U.Text(label, "small muted"), U.Row(5, rate, unit), peak);
     }
 
-    public void ShowChart(bool visible) => chart.IsVisible = visible;
+    public void ShowChart(bool visible)
+    {
+        chart.IsVisible = visible;
+        plot.SetActive(pageVisible && visible);
+    }
+
+    public void SetPageVisible(bool visible)
+    {
+        pageVisible = visible;
+        plot.SetActive(visible && chart.IsVisible);
+    }
+
+    public bool NeedsReading(UplinkMeasurements measurements) =>
+        !ReferenceEquals(measurements.Last, displayed) || renderedDeadline != measurements.ExpiresAt;
 
     public double? RenderReading(UplinkMeasurements measurements, long now)
     {
         var reading = measurements.Last;
+        renderedDeadline = measurements.ExpiresAt;
         if (!ReferenceEquals(reading, displayed))
         {
             displayed = reading;
@@ -60,8 +76,9 @@ internal sealed class UplinkBandwidthMeter : Grid
             var history = reading?.History ?? [];
             downloadPeak.Text = history.Count > 0 ? $"Peak {Rate(history.Max(p => p.Down))} Mbps" : "Peak —";
             uploadPeak.Text = history.Count > 0 ? $"Peak {Rate(history.Max(p => p.Up))} Mbps" : "Peak —";
-            plot.Update(history);
+            plot.Update(reading, now);
         }
+        plot.SetDeadline(reading is null ? 0 : measurements.ExpiresAt, now);
         var delayed = reading is not null && now >= measurements.ExpiresAt;
         status.Text = reading is null ? measurements.EmptyStatus switch
         {

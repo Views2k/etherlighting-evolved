@@ -59,6 +59,20 @@ async function screenshot(name) {
 async function bounds(selector) {
   return evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};})()`);
 }
+async function observeBandwidthPlot() {
+  const chart = document.querySelector('.rack-meter-slot .bandwidth-chart');
+  if (!chart || !chart.getBoundingClientRect().width) throw new Error('Rack bandwidth graph is hidden');
+  const lines = ['download', 'upload'].map(direction => chart.querySelector('path.' + direction));
+  const sequence = async () => (await (await fetch('/api/state')).json()).uplink_bandwidth.sequence;
+  const first = await sequence();
+  const shapes = lines.map(() => new Set());
+  const end = performance.now() + 1600;
+  while (performance.now() < end) {
+    await new Promise(requestAnimationFrame);
+    lines.forEach((line, index) => { if (line?.getAttribute('d')) shapes[index].add(line.getAttribute('d')); });
+  }
+  return {readings: (await sequence()) - first, downloadFrames: shapes[0].size, uploadFrames: shapes[1].size};
+}
 async function checkFaceplate(width, height) {
   const rack = height <= 500;
   const geometry = await evaluate(`(() => {
@@ -287,19 +301,20 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.navigate', {url});
   await until(() => evaluate('document.querySelectorAll(".port-socket-rim").length === 10'), 'port map');
-  const firstSample = await until(async () => {
-    const value = (await (await fetch(url + 'api/state')).json()).uplink_bandwidth;
-    return value?.status === 'ready' ? value : null;
-  }, 'first bandwidth sample');
-  const firstObserved = performance.now();
-  const secondSample = await until(async () => {
-    const value = (await (await fetch(url + 'api/state')).json()).uplink_bandwidth;
-    return value?.status === 'ready' && value.sequence > firstSample.sequence ? value : null;
-  }, 'next bandwidth sample');
-  const observedInterval = performance.now() - firstObserved;
-  assert.ok(observedInterval > 4500 && observedInterval < 5500, 'Bandwidth publication must follow five-second deadlines');
-  assert.ok(secondSample.sample_period_ms > 0 && secondSample.sample_period_ms < 6500);
-  report.bandwidth = {first: firstSample, second: secondSample, observed_interval_ms: observedInterval};
+  const readBandwidthAfter = sequence => until(async () => {
+    const {uplink_bandwidth: reading, telemetry} = await (await fetch(url + 'api/state')).json();
+    return reading?.status === 'ready' && reading.sequence > sequence ? {reading, telemetry} : null;
+  }, 'new bandwidth measurement');
+  const first = await readBandwidthAfter(-1);
+  const second = await readBandwidthAfter(first.reading.sequence);
+  assert.equal(second.telemetry.generation, first.telemetry.generation);
+  assert.equal(second.reading.sequence - first.reading.sequence, second.telemetry.sequence - first.telemetry.sequence,
+    'Each new port-counter reading produces one bandwidth measurement');
+  assert.equal(second.reading.refresh_interval_ms, 1000, 'The default switch polling interval stays at one second');
+  assert.ok(second.reading.sample_period_ms > 0);
+  assert.ok(Math.abs(second.reading.sample_age_ms - second.telemetry.sample_age_ms) < 10,
+    'The plotted measurement uses the latest counters');
+  report.bandwidth = {first: first.reading, second: second.reading};
   report.bandwidth.display = await until(async () => {
     const readings = await evaluate(`(async () => {
     const {formatBandwidth}=await import('/preview/uplink-bandwidth.mjs');
@@ -342,6 +357,14 @@ try {
     const layout = await evaluate(`({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth})`);
     assert.ok(layout.scrollWidth <= width + 1, 'Page overflows viewport');
     if (width >= 1100 || width >= 1024 && height <= 500) layout.faceplate = await checkFaceplate(width, height);
+    if (width === 1280 && height === 400) {
+      await send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'no-preference'}]});
+      const scrolling = await evaluate('(' + observeBandwidthPlot.toString() + ')()');
+      for (const frames of [scrolling.downloadFrames, scrolling.uploadFrames])
+        assert.ok(frames > scrolling.readings + 3, 'Each uplink trace must move between real readings');
+      report.bandwidth.scrolling = scrolling;
+      await send('Emulation.setEmulatedMedia', {features: []});
+    }
     report.sizes.push(layout);
     if (width >= 1100 || width >= 900 && height <= 500) {
       const initial = await bounds('.canvas-area');

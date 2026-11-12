@@ -307,6 +307,7 @@ public sealed partial class LightingPage : Page
             if (!paint.IsEnabled) paint.Start();
         }
         if (now - lastTelemetry >= 250) { lastTelemetry = (long)now; PaintTelemetry(); }
+        else if (bandwidthPanel.NeedsReading(Workspace.Bandwidth)) PaintBandwidth();
     }
     void WakePreview()
     {
@@ -372,10 +373,11 @@ public sealed partial class LightingPage : Page
     }
     public override void VisibilityChanged(bool visible)
     {
+        bandwidthPanel.SetPageVisible(visible);
         if (!visible) { paint.Stop(); meterExpiry.Stop(); watch.Stop(); return; }
         if (alive) { watch.Start(); frames = new(); Frame(); PaintTelemetry(); WakePreview(); }
     }
-    public override void Leave() { alive = false; paint.Stop(); meterExpiry.Stop(); editor.Changed -= OnEdited; Workspace.ConnectionChanged -= ConnectionChanged; watch.Stop(); }
+    public override void Leave() { alive = false; paint.Stop(); meterExpiry.Stop(); bandwidthPanel.SetPageVisible(false); editor.Changed -= OnEdited; Workspace.ConnectionChanged -= ConnectionChanged; watch.Stop(); }
     void MapKey()
     {
         var content = U.Column(14, U.H2("Port map key"), U.P(string.Join("    ", PM.LinkSpeeds.Select(s => s.Label))), U.P("↑ Uplink     ϟ PoE"), U.P(PM.SelectionHint("Windows", editor.Multiple)), U.P("Default brightness applies to effects and SFP lighting. Fixed port colors and rules with their own brightness keep that setting."));
