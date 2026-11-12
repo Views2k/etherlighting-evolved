@@ -106,7 +106,10 @@ public static class Ui
     public static TextBox Input(string? value = null, string? placeholder = null, Action<string>? changed = null)
     {
         var box = new TextBox { Text = value ?? "", Watermark = placeholder };
-        if (changed is not null) box.TextChanged += (_, _) => changed(box.Text ?? "");
+        if (changed is not null) box.PropertyChanged += (_, change) =>
+        {
+            if (change.Property == TextBox.TextProperty) changed(box.Text ?? "");
+        };
         return box;
     }
 

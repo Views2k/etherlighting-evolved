@@ -1,7 +1,7 @@
-"""Collect installed dependency notices for the components in the Windows package.
+"""Collect installed dependency notices for the selected desktop package.
 
-Python components come from the modules inside the packaged engine. .NET components come from the desktop
-program's restore record (project.assets.json): the .NET runtime and every package in its Windows build.
+The Windows installer also carries Python notices for its bundled engine. Runtime and desktop package
+licenses come from the local restore record for the selected operating system and architecture.
 """
 
 import ast
@@ -12,12 +12,12 @@ import re
 import shutil
 import sys
 
-from PyInstaller.archive.readers import CArchiveReader
-
 NOTICE_WORDS = ('license', 'licence', 'copying', 'notice')
 
 
 def collect_python(app: Path, destination: Path, index: list[str]) -> int:
+    from PyInstaller.archive.readers import CArchiveReader
+
     mapping = importlib.metadata.packages_distributions()
     names = set()
     archive = CArchiveReader(str(app / 'engine/EEEngine.exe')).open_embedded_archive('PYZ.pyz')
@@ -49,12 +49,12 @@ def nuspec_field(text: str, tag: str) -> str:
     return match.group(1).strip() if match else ''
 
 
-def collect_dotnet(assets: Path, destination: Path, index: list[str]) -> int:
+def collect_dotnet(assets: Path, destination: Path, index: list[str], runtime: str) -> int:
     record = json.loads(assets.read_text('utf-8'))
     packages_root = Path(record['packageFolders'] and next(iter(record['packageFolders'])))
-    target = next((value for key, value in record['targets'].items() if key.endswith('/win-x64')), None)
+    target = next((value for key, value in record['targets'].items() if key.endswith('/' + runtime)), None)
     if target is None:
-        raise SystemExit('The desktop restore record has no Windows build target.')
+        raise SystemExit(f'The desktop restore record has no {runtime} build target.')
     count = 0
     for key, package in sorted(target.items(), key=lambda item: item[0].lower()):
         if package.get('type') != 'package':
@@ -77,7 +77,7 @@ def collect_dotnet(assets: Path, destination: Path, index: list[str]) -> int:
     # The .NET runtime carried by the self-contained build is a runtime pack, listed with the downloads.
     framework = next(iter(record['project']['frameworks'].values()))
     for dependency in framework.get('downloadDependencies', []):
-        if dependency['name'].lower() != 'microsoft.netcore.app.runtime.win-x64':
+        if dependency['name'].lower() != f'microsoft.netcore.app.runtime.{runtime}':
             continue
         version = dependency['version'].strip('[]').split(',')[0].strip()
         folder = packages_root / dependency['name'].lower() / version
@@ -90,16 +90,18 @@ def collect_dotnet(assets: Path, destination: Path, index: list[str]) -> int:
     return count
 
 
-def collect(app: Path, assets: Path):
+def collect(app: Path, assets: Path, client_runtime: str | None = None):
     destination = app / 'licenses'
     destination.mkdir(exist_ok=True)
-    index = ['Third-party components', '', 'Engine (Python)', '']
-    python = collect_python(app, destination, index)
+    index = ['Third-party components']
+    if client_runtime is None:
+        index += ['', 'Engine (Python)', '']
+        collect_python(app, destination, index)
     index += ['', 'Desktop program (.NET)', '']
-    dotnet = collect_dotnet(assets, destination, index)
+    dotnet = collect_dotnet(assets, destination, index, client_runtime or 'win-x64')
     (destination / 'COMPONENTS.txt').write_text('\n'.join(index) + '\n', encoding='utf-8')
-    print(f'Preserved notices for {python} Python dependencies, Python, {dotnet} .NET packages and the .NET runtime.')
+    print(f'Preserved notices for {dotnet} .NET packages and the .NET runtime.')
 
 
 if __name__ == '__main__':
-    collect(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
+    collect(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), *sys.argv[3:])

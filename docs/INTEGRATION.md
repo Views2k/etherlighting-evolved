@@ -1,6 +1,6 @@
 # Workspace integration
 
-The current workspace is served by `preview/server.mjs`. It starts the Python service through `packaging/native_service.py` in development, or the packaged `EEEngine` executable in a desktop build. The browser uses same-origin `/api/` requests and `/api/ws`.
+The native desktop client and browser workspace both use the gateway in `preview/server.mjs`. It starts the Python service through `packaging/native_service.py` in development, or the packaged `EEEngine` executable in a Windows installation. The browser uses same-origin `/api/` requests and `/api/ws`. The native client sends requests to the selected workspace and checks its identity on switch-scoped operations.
 
 The gateway creates a session token, supplies it through private process input, and adds it to forwarded engine requests. The engine binds to a dynamically assigned loopback port. Connection secrets stay on the service side; the workspace submits login forms without placing credentials in URLs or browser storage.
 
@@ -20,9 +20,13 @@ REST mutations take effect when the engine accepts them. The client serializes d
 | Return a port to group lighting | `DELETE /api/ports/{port}` |
 | Apply a group effect | `PUT /api/zones/{id}/effect` |
 | Update effect settings | `PATCH /api/zones/{id}/params` |
-| Save groups or rules | `PUT /api/zones`, `PUT /api/rules` |
+| Apply an edited scene or rule priority | `GET /api/scene`, then `PUT /api/scene` with the expected revision and output confirmation |
+| Test rules for a port and time | `POST /api/rules/test` |
+| Save, edit, delete, or run a weekly schedule | `/api/schedules`, `/api/schedules/{id}`, `/api/schedules/{id}/run` |
 | Change default brightness | `PUT /api/brightness` |
-| Save or apply a profile | `POST /api/presets`, `POST /api/presets/{name}/apply` |
+| Save a profile or preview | `POST /api/presets` |
+| List or edit profile records | `GET /api/profiles`, `PATCH /api/profiles/{id}` |
+| Apply a saved profile | Read its revision and layout, then commit its scene with `PUT /api/scene` |
 | Release or resume output | `POST /api/release`, `POST /api/resume` |
 
 Effect selection can request `clear_overrides: true` for its group. The engine accepts the effect and clears that group's manual colors together. Port membership, optical indicators, and available controls come from the session's qualified topology.
@@ -45,7 +49,9 @@ Closing the web session uses `/api/workspace/close` to coordinate engine shutdow
 
 ## Desktop host
 
-The packaged desktop host launches the same gateway and workspace. `preview/desktop-chrome.mjs` and `preview/titlebar-drag.mjs` coordinate the native window controls and drag region. A browser session uses browser navigation and window behavior.
+The Windows installer launches the Avalonia window and a bundled EE gateway. `ServiceHost` verifies the gateway’s live or demo mode before connecting. The native shell owns navigation, the tray, window controls, sign-in and switch-scoped editor state. Hiding the window pauses its live frame subscription. Opening it again refreshes the workspace. Quitting an owned service calls the confirmed workspace-close path.
+
+The standalone macOS and Linux clients use the same pages with an existing workspace service. Changing the workspace address first verifies the target's workspace response. Quitting a client connected by address leaves that service running. Client startup and packaging commands are in the [desktop guide](../desktop/README.md).
 
 The legacy standalone frontend and alternative WPF client remain in the repository as separate consumers. Their source and build paths are described in [DEVELOPMENT.md](DEVELOPMENT.md#retained-interfaces).
 

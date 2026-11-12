@@ -168,12 +168,14 @@ public static class Autostart
 /// <summary>Where this program keeps its own settings and finds the workspace data.</summary>
 public static class Locations
 {
-    public static string AppData => OperatingSystem.IsWindows()
+    internal static string? TestDataDirectory { get; set; }
+
+    public static string AppData => TestDataDirectory ?? (OperatingSystem.IsWindows()
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Etherlighting Evolved")
         : OperatingSystem.IsMacOS()
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", "Etherlighting Evolved")
             : Path.Combine(Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") is { Length: > 0 } config ? config
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config"), "etherlighting-evolved");
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config"), "etherlighting-evolved"));
 
     public static string Workspace(bool demo) => Path.Combine(AppData, demo ? "demo" : "workspace");
 
@@ -230,7 +232,7 @@ public static class SessionEnd
     public static IDisposable Block(IntPtr window)
     {
         if (!OperatingSystem.IsWindows() || window == IntPtr.Zero) return new Release(() => { });
-        try { ShutdownBlockReasonCreate(window, "Returning the switch lighting to UniFi"); }
+        try { ShutdownBlockReasonCreate(window, "Closing the Etherlighting Evolved workspace"); }
         catch (Exception) { return new Release(() => { }); }
         return new Release(() => { try { ShutdownBlockReasonDestroy(window); } catch (Exception) { } });
     }

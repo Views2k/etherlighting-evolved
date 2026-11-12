@@ -1,5 +1,5 @@
 using System.Net.WebSockets;
-using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Avalonia.Threading;
 
@@ -17,7 +17,6 @@ public sealed class Workspace : IAsyncDisposable
     CancellationTokenSource? socketStop;
     DispatcherTimer? retry;
     bool paused, socketOpen;
-    JsonObject? pendingFrame;
 
     public Workspace(Uri baseUri) => Api = new EeApi(baseUri);
 
@@ -154,7 +153,7 @@ public sealed class Workspace : IAsyncDisposable
         if (value)
         {
             retry?.Stop();
-            socketStop?.Cancel();
+            StopFrames();
             return;
         }
         ConnectFrames();
@@ -167,6 +166,7 @@ public sealed class Workspace : IAsyncDisposable
     async Task ReadStreamAsync(CancellationTokenSource stop)
     {
         var token = stop.Token;
+        var delivery = new StreamDelivery(this, stop);
         try
         {
             using var socket = new ClientWebSocket();
@@ -174,7 +174,7 @@ public sealed class Workspace : IAsyncDisposable
             socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
             var address = new UriBuilder(Api.BaseUri) { Scheme = Api.BaseUri.Scheme == "https" ? "wss" : "ws", Path = "/api/ws" }.Uri;
             await socket.ConnectAsync(address, token).ConfigureAwait(false);
-            Dispatcher.UIThread.Post(Opened);
+            Dispatcher.UIThread.Post(() => { if (socketStop == stop && !token.IsCancellationRequested) Opened(); });
             var buffer = new byte[64 * 1024];
             using var message = new MemoryStream();
             while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
@@ -190,7 +190,12 @@ public sealed class Workspace : IAsyncDisposable
                 } while (!result.EndOfMessage);
                 if (result.MessageType == WebSocketMessageType.Close) break;
                 if (result.MessageType != WebSocketMessageType.Text) continue;
-                if (Json.Parse(Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length)) is JsonObject parsed) Receive(parsed);
+                try
+                {
+                    if (JsonNode.Parse(message.GetBuffer().AsSpan(0, (int)message.Length)) is JsonObject parsed)
+                        delivery.Receive(parsed);
+                }
+                catch (JsonException) { }
             }
         }
         catch (Exception) when (!token.IsCancellationRequested) { }
@@ -208,66 +213,75 @@ public sealed class Workspace : IAsyncDisposable
 
     void Closed(CancellationTokenSource stop)
     {
-        var intentional = stop.IsCancellationRequested;
-        if (socketStop == stop) socketStop = null;
+        var current = socketStop == stop;
         stop.Dispose();
+        if (!current) return;
+        socketStop = null;
         socketOpen = false;
         if (Closing || paused || lifetime.IsCancellationRequested) return;
         Disconnected = true;
         ConnectionChanged?.Invoke();
         StreamLost?.Invoke();
-        if (intentional) return;
         retry ??= new DispatcherTimer(TimeSpan.FromMilliseconds(1500), DispatcherPriority.Background, (_, _) => { retry!.Stop(); ConnectFrames(); });
         retry.Start();
     }
 
-    // Frames arrive at the engine's rate. Consecutive frames are merged so the UI thread handles the newest values
-    // once, with the same result as handling each in turn.
-    void Receive(JsonObject message)
+    // Coalesce adjacent frame messages. A session or state change ends the batch so messages retain wire order.
+    sealed class StreamDelivery(Workspace owner, CancellationTokenSource stream)
     {
-        if (message.Str("type") == "frame")
+        readonly object gate = new();
+        JsonObject? pending;
+
+        public void Receive(JsonObject message)
         {
-            lock (lifetime)
+            lock (gate)
             {
-                if (pendingFrame is not null)
+                if (message.Str("type") != "frame") pending = null;
+                else if (pending is not null)
                 {
-                    foreach (var (key, value) in message.ToList())
-                    {
-                        message.Remove(key);
-                        pendingFrame[key] = value;
-                    }
+                    MergeFrame(pending, message);
                     return;
                 }
-                pendingFrame = message;
+                else pending = message;
             }
             Dispatcher.UIThread.Post(() =>
             {
-                JsonObject frame;
-                lock (lifetime) { frame = pendingFrame!; pendingFrame = null; }
-                Handle(frame);
+                lock (gate) { if (ReferenceEquals(pending, message)) pending = null; }
+                if (owner.socketStop == stream && !owner.Closing) owner.Handle(message);
             }, DispatcherPriority.Background);
-            return;
         }
-        Dispatcher.UIThread.Post(() => Handle(message));
     }
 
-    /// <summary>Applies one stream message (port of the socket message handler).</summary>
-    public void Handle(JsonObject message)
+    static readonly string[] retainedFields = ["schedule_clock", "telemetry", "poe_summary", "ports", "sfp", "sfp_sync", "controller", "stats", "reconnect_required"];
+    static readonly string[] nullableFields = ["identify", "uplink_bandwidth", "error"];
+
+    // Frames own their JSON. Move incoming readings into place without copying entire port arrays.
+    // The wire format distinguishes "no new reading" from explicitly clearing identify, bandwidth or an error.
+    internal static void MergeFrame(JsonObject destination, JsonObject incoming)
+    {
+        foreach (var key in retainedFields)
+            if (incoming[key] is not null) Move(key);
+        foreach (var key in nullableFields)
+            if (incoming.ContainsKey(key)) Move(key);
+        Move("connected");
+        Move("mode");
+
+        void Move(string key)
+        {
+            var value = incoming[key];
+            incoming.Remove(key);
+            destination[key] = value;
+        }
+    }
+
+    void Handle(JsonObject message)
     {
         switch (message.Str("type"))
         {
             case "frame" when Ready:
                 ScheduleClock.Receive(message["schedule_clock"]);
-                var state = State;
-                void Take(string key, bool own = false)
-                {
-                    if (own ? message.ContainsKey(key) : message[key] is not null) state[key] = message[key]?.DeepClone();
-                }
-                foreach (var key in new[] { "schedule_clock", "telemetry", "poe_summary", "ports", "sfp", "sfp_sync", "controller", "stats", "reconnect_required" }) Take(key);
-                foreach (var key in new[] { "identify", "uplink_bandwidth", "error" }) Take(key, own: true);
-                state["connected"] = message["connected"]?.DeepClone();
-                state["mode"] = message["mode"]?.DeepClone();
                 Session["connected"] = message["connected"]?.DeepClone();
+                MergeFrame(State, message);
                 ConnectionChanged?.Invoke();
                 Frame?.Invoke();
                 break;
@@ -288,13 +302,18 @@ public sealed class Workspace : IAsyncDisposable
     public void StopFrames()
     {
         retry?.Stop();
-        socketStop?.Cancel();
+        var stop = socketStop;
+        socketStop = null;
+        socketOpen = false;
+        stop?.Cancel();
     }
 
     public bool StreamOpen => socketOpen;
 
     public async ValueTask DisposeAsync()
     {
+        Closing = true;
+        StopFrames();
         lifetime.Cancel();
         retry?.Stop();
         await Idle().ConfigureAwait(false);

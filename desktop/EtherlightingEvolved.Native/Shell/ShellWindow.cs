@@ -1,12 +1,13 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Platform;
 
 namespace EtherlightingEvolved.Native.Shell;
 
 /// <summary>
-/// The desktop window: 1200 × 800, at least 900 × 600, without the system title bar so the workspace title bar and
+/// The desktop window: 1200 × 800, at least 900 × 320, without the system title bar so the workspace title bar and
 /// its window buttons take its place, as in the earlier desktop app. Closing hides EE to the notification area.
 /// </summary>
 public sealed class ShellWindow : Window
@@ -15,10 +16,11 @@ public sealed class ShellWindow : Window
     {
         Shell = shell;
         Title = "Etherlighting Evolved";
+        ShowInTaskbar = !OperatingSystem.IsWindows();
         Width = 1200;
         Height = 800;
         MinWidth = 900;
-        MinHeight = 600;
+        MinHeight = 320;
         Background = new SolidColorBrush(Color.Parse("#151618"));
         ExtendClientAreaToDecorationsHint = true;
         ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome;
@@ -30,6 +32,20 @@ public sealed class ShellWindow : Window
         shell.HideRequested += Hide;
         shell.ToggleMaximizeRequested += () => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
         shell.DragRequested += BeginMoveDrag;
+        KeyDown += async (_, e) =>
+        {
+            if (e.KeyModifiers != KeyModifiers.Alt || e.Key is not (Key.Left or Key.Right) || shell.Overlay.HasDialog) return;
+            e.Handled = true;
+            await shell.MoveHistory(e.Key == Key.Left ? -1 : 1);
+        };
+        PointerPressed += async (_, e) =>
+        {
+            if (shell.Overlay.HasDialog) return;
+            var button = e.GetCurrentPoint(this).Properties.PointerUpdateKind;
+            if (button is not (PointerUpdateKind.XButton1Pressed or PointerUpdateKind.XButton2Pressed)) return;
+            e.Handled = true;
+            await shell.MoveHistory(button == PointerUpdateKind.XButton1Pressed ? -1 : 1);
+        };
     }
 
     public AppShell Shell { get; }

@@ -220,7 +220,10 @@ public static class Look
         Add(s => s.Is<ToggleButton>().Class(":disabled"), (Visual.OpacityProperty, 0.42));
 
         // Range: 3px track with the gradient progress and a 12px thumb
-        Add(s => s.OfType<Slider>(), (TemplatedControl.TemplateProperty, SliderTemplate()), (Layoutable.MinWidthProperty, 70.0), (Layoutable.HeightProperty, 22.0));
+        var horizontalSlider = new ControlTheme(typeof(Slider));
+        horizontalSlider.Setters.Add(new Setter(TemplatedControl.TemplateProperty, SliderTemplate()));
+        Add(s => s.OfType<Slider>().Class(":horizontal"), (StyledElement.ThemeProperty, horizontalSlider),
+            (Layoutable.MinWidthProperty, 70.0), (Layoutable.HeightProperty, 22.0));
         Add(s => s.OfType<Slider>().Class(":disabled"), (Visual.OpacityProperty, 0.42));
 
         // Scroll bars: 8px rounded thumbs on a clear track
@@ -278,25 +281,34 @@ public static class Look
 
     static IControlTemplate SliderTemplate() => new FuncControlTemplate<Slider>((slider, scope) =>
     {
-        var progress = new RepeatButton { Height = 3, CornerRadius = new CornerRadius(2), Focusable = false, Padding = default, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center };
-        progress.Template = new FuncControlTemplate<RepeatButton>((button, _) => new Border
+        RepeatButton Rail(string name, string fill)
         {
-            CornerRadius = new CornerRadius(2), Height = 3,
-            [!Border.BackgroundProperty] = Res("range-progress-fill"),
-        });
-        var rest = new RepeatButton { Height = 3, Focusable = false, Padding = default, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center };
-        rest.Template = new FuncControlTemplate<RepeatButton>((button, _) => new Border
-        {
-            CornerRadius = new CornerRadius(2), Height = 3,
-            [!Border.BackgroundProperty] = Res("range-track"),
-        });
+            var button = new RepeatButton
+            {
+                Name = name, Focusable = false, MinWidth = 0, MinHeight = 0, Padding = default,
+                HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+                Template = new FuncControlTemplate<RepeatButton>((_, _) => new Grid
+                {
+                    Background = Brushes.Transparent,
+                    Children = { new Border { Height = 3, CornerRadius = new CornerRadius(2), VerticalAlignment = VerticalAlignment.Center,
+                        [!Border.BackgroundProperty] = Res(fill) } },
+                }),
+            };
+            button.RegisterInNameScope(scope);
+            return button;
+        }
         var knob = new Border
         {
             Width = 12, Height = 12, CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
             BoxShadow = BoxShadows.Parse("0 1 3 0 #55000000"), RenderTransformOrigin = RelativePoint.Center,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             [!Border.BorderBrushProperty] = Res("range-thumb-border"), [!Border.BackgroundProperty] = Res("range-thumb"),
         };
-        var thumb = new Thumb { Template = new FuncControlTemplate<Thumb>((_, _) => knob), VerticalAlignment = VerticalAlignment.Center };
+        var thumb = new Thumb
+        {
+            Width = 12, VerticalAlignment = VerticalAlignment.Stretch,
+            Template = new FuncControlTemplate<Thumb>((_, _) => new Grid { Background = Brushes.Transparent, Children = { knob } }),
+        };
         var dragging = false;
         void Paint()
         {
@@ -308,7 +320,8 @@ public static class Look
         thumb.PropertyChanged += (_, e) => { if (e.Property == InputElement.IsPointerOverProperty) Paint(); };
         var track = new Track
         {
-            Name = "PART_Track", Orientation = Orientation.Horizontal, DecreaseButton = progress, IncreaseButton = rest, Thumb = thumb,
+            Name = "PART_Track", Orientation = Orientation.Horizontal, DecreaseButton = Rail("PART_DecreaseButton", "range-progress-fill"),
+            IncreaseButton = Rail("PART_IncreaseButton", "range-track"), Thumb = thumb,
             [!Track.MinimumProperty] = slider[!RangeBase.MinimumProperty], [!Track.MaximumProperty] = slider[!RangeBase.MaximumProperty],
             [!!Track.ValueProperty] = slider[!!RangeBase.ValueProperty], [!Track.IsDirectionReversedProperty] = slider[!Slider.IsDirectionReversedProperty],
         };

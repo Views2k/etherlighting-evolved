@@ -7,7 +7,7 @@ namespace EtherlightingEvolved.Native;
 
 /// <summary>
 /// Starts and stops the EE service: the local workspace gateway, which starts the lighting engine. Shutdown goes
-/// through the gateway's confirmed close, which returns the switch lighting before the engine exits.
+/// through the gateway so it can finish the current switch scene before the engine exits.
 /// </summary>
 public sealed class ServiceHost
 {
@@ -91,7 +91,7 @@ public sealed class ServiceHost
         }
     }
 
-    /// <summary>Asks the gateway to return the lighting and stop the engine. True only when shutdown is confirmed.</summary>
+    /// <summary>Asks the gateway to close its session and stop the engine. True only when shutdown is confirmed.</summary>
     public async Task<bool> StopAsync()
     {
         var running = process;

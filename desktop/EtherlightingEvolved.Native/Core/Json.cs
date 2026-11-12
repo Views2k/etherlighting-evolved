@@ -18,7 +18,7 @@ public static class Json
             node = node switch
             {
                 JsonObject obj => obj.TryGetPropertyValue(segment, out var value) ? value : null,
-                JsonArray array when int.TryParse(segment, NumberStyles.None, CultureInfo.InvariantCulture, out var index) && index < array.Count => array[index],
+                JsonArray array when int.TryParse(segment, NumberStyles.None, CultureInfo.InvariantCulture, out var index) && index >= 0 && index < array.Count => array[index],
                 _ => null,
             };
             if (node is null) return null;
@@ -35,9 +35,7 @@ public static class Json
     public static double? Num(this JsonNode? node, string? path = null)
     {
         var value = path is null ? node : node.At(path);
-        if (value is not JsonValue json || json.GetValueKind() != JsonValueKind.Number) return null;
-        var number = json.GetValue<double>();
-        return double.IsFinite(number) ? number : null;
+        return Model.Js.Num(value) is { } number && double.IsFinite(number) ? number : null;
     }
 
     public static int? Int(this JsonNode? node, string? path = null) => node.Num(path) is { } number && number == Math.Floor(number) ? (int)number : null;
@@ -58,7 +56,7 @@ public static class Json
         {
             JsonValueKind.False or JsonValueKind.Null or JsonValueKind.Undefined => false,
             JsonValueKind.String => json.GetValue<string>().Length > 0,
-            JsonValueKind.Number => json.GetValue<double>() is var number && number != 0 && !double.IsNaN(number),
+            JsonValueKind.Number => json.Num() is { } number && number != 0,
             _ => true,
         };
     }

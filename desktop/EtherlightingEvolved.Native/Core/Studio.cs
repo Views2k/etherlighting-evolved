@@ -5,7 +5,7 @@ namespace EtherlightingEvolved.Native.Core;
 /// <summary>
 /// The lighting editor state shared across pages, as in preview/app.mjs: the port selection, the unapplied preview
 /// (draft), remembered effect settings, and the actions other pages call (choose an effect, apply a profile, undo).
-/// The Lighting page provides the implementation; until it is registered, <see cref="Studio.Empty"/> stands in.
+/// The Lighting page registers the shared editor during startup.
 /// </summary>
 public interface IStudio
 {
@@ -62,35 +62,4 @@ public interface IStudio
 
     /// <summary>State was read again while Lighting is shown.</summary>
     void Refreshed(bool rebuild);
-}
-
-public static class Studio
-{
-    /// <summary>A stand-in with no lighting editor: nothing is selected and nothing is previewed.</summary>
-    public static readonly IStudio Empty = new None();
-
-    sealed class None : IStudio
-    {
-        public IReadOnlyCollection<int> Selected => [];
-        public IReadOnlyDictionary<string, JsonObject> RememberedEffects { get; } = new Dictionary<string, JsonObject>();
-        public JsonObject Draft { get; } = [];
-        public JsonObject GalleryState { get; } = [];
-        public string? RequestedRuleId { get; set; }
-        public bool HasEdits => false;
-        public bool HasPendingPlan => false;
-        public bool CanUndoApply => false;
-        public string DraftSummary() => "";
-        public Task<bool> ConfirmDraft() => Task.FromResult(true);
-        public Task ChooseEffect(JsonObject config) => Task.CompletedTask;
-        public Task ChooseSfpEffect(JsonObject effect, IReadOnlyList<int> ports) => Task.CompletedTask;
-        public Task ChangeSelection() => Task.CompletedTask;
-        public Task ApplyProfile(JsonNode reference) => Task.CompletedTask;
-        public JsonObject? PreviewScene() => null;
-        public Task SavePreviewProfile(string name) => Task.CompletedTask;
-        public Task UndoLastApply() => Task.CompletedTask;
-        public Task<string?> Restore() => Task.FromResult<string?>(null);
-        public void Reset() { }
-        public void SaveUiState(string page) { }
-        public void Refreshed(bool rebuild) { }
-    }
 }

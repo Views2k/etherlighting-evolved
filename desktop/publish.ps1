@@ -1,4 +1,5 @@
 param(
+    [ValidateSet('win-x64', 'win-arm64', 'osx-arm64', 'osx-x64', 'linux-x64', 'linux-arm64')]
     [string[]]$Runtime = @('win-x64', 'osx-arm64', 'osx-x64', 'linux-x64'),
     [string]$PythonExe,
     [string]$OutputRoot
@@ -8,33 +9,39 @@ param(
 # desktop entry and icon. Packages must already be restored (see README.md); nothing is downloaded.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$project = Join-Path $PSScriptRoot 'EtherlightingEvolved.Native\EtherlightingEvolved.Native.csproj'
-if (-not $PythonExe) { $PythonExe = Join-Path $root '.venv\Scripts\python.exe' }
-if (-not $OutputRoot) { $OutputRoot = Join-Path $root 'outputs\native' }
+$project = Join-Path $PSScriptRoot 'EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj'
+if (-not $PythonExe) {
+    $venvPython = if ($IsWindows -or $env:OS -eq 'Windows_NT') { '.venv/Scripts/python.exe' } else { '.venv/bin/python' }
+    $PythonExe = Join-Path $root $venvPython
+}
+if (-not $OutputRoot) { $OutputRoot = Join-Path $root 'outputs/native' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
-if (-not (Test-Path -LiteralPath (Join-Path (Split-Path $project -Parent) 'obj\project.assets.json') -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath (Join-Path (Split-Path $project -Parent) 'obj/project.assets.json') -PathType Leaf)) {
     throw 'Restore the desktop packages first (see README.md). No packages were downloaded.'
 }
 $version = ([xml](Get-Content -LiteralPath $project -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-$icon = Join-Path $root 'src\etherlighting_evolved\assets\ee.png'
+$icon = Join-Path $root 'src/etherlighting_evolved/assets/ee.png'
 $env:AVALONIA_TELEMETRY_OPTOUT = '1'
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
 foreach ($rid in $Runtime) {
     $build = Join-Path $OutputRoot $rid
-    if (Test-Path -LiteralPath $build) { Remove-Item -LiteralPath $build -Recurse -Force }
+    if (Test-Path -LiteralPath $build) { throw "Choose an empty output directory for $rid." }
     dotnet publish $project -c Release -r $rid --no-restore -o $build *> (Join-Path $OutputRoot "$rid.log")
     if ($LASTEXITCODE) { throw "The $rid build failed. See $rid.log." }
     $licenses = Join-Path $build 'licenses'
     New-Item -ItemType Directory -Path $licenses -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $build 'LICENSE.txt')
+    $assets = Join-Path (Split-Path $project -Parent) 'obj/project.assets.json'
+    & $PythonExe -I (Join-Path $root 'tools/collect-package-notices.py') $build $assets $rid
+    if ($LASTEXITCODE) { throw "The $rid component licenses could not be collected." }
 
     if ($rid -like 'osx-*') {
         # EtherlightingEvolved.app/Contents/{Info.plist, MacOS/<program>, Resources/ee.icns}
-        $bundle = Join-Path $OutputRoot "$rid-app\EtherlightingEvolved.app"
-        if (Test-Path -LiteralPath (Split-Path $bundle -Parent)) { Remove-Item -LiteralPath (Split-Path $bundle -Parent) -Recurse -Force }
-        $macos = Join-Path $bundle 'Contents\MacOS'
-        $resources = Join-Path $bundle 'Contents\Resources'
+        $bundle = Join-Path $OutputRoot "$rid-app/EtherlightingEvolved.app"
+        if (Test-Path -LiteralPath $bundle) { throw "Choose an empty output directory for the $rid bundle." }
+        $macos = Join-Path $bundle 'Contents/MacOS'
+        $resources = Join-Path $bundle 'Contents/Resources'
         New-Item -ItemType Directory -Path $macos, $resources -Force | Out-Null
         Get-ChildItem -LiteralPath $build | Copy-Item -Destination $macos -Recurse -Force
         & $PythonExe -I -c "import sys; from PIL import Image; Image.open(sys.argv[1]).convert('RGBA').save(sys.argv[2], sizes=[(16,16),(32,32),(64,64),(128,128),(256,256)])" $icon (Join-Path $resources 'ee.icns')
@@ -57,7 +64,7 @@ foreach ($rid in $Runtime) {
 </dict>
 </plist>
 "@
-        [IO.File]::WriteAllText((Join-Path $bundle 'Contents\Info.plist'), $plist.Replace("`r`n", "`n"))
+        [IO.File]::WriteAllText((Join-Path $bundle 'Contents/Info.plist'), $plist.Replace("`r`n", "`n"))
         $archive = Join-Path $OutputRoot "EtherlightingEvolved-$version-$rid.zip"
         & $PythonExe -I (Join-Path $PSScriptRoot 'make_archive.py') zip $bundle $archive EtherlightingEvolved
         if ($LASTEXITCODE) { throw 'The macOS archive could not be made.' }

@@ -5,6 +5,7 @@ The archive holds SOURCE_DIR itself for zip (an .app bundle) and its contents fo
 every directory get mode 755; other files get 644.
 """
 
+import shutil
 import sys
 import tarfile
 import time
@@ -23,13 +24,17 @@ def main() -> None:
                 name = path.relative_to(source.parent).as_posix()
                 if path.is_dir():
                     entry = zipfile.ZipInfo(name + '/', time.localtime(path.stat().st_mtime)[:6])
+                    entry.create_system = 3  # Unix: honor the archived mode even when packaged on Windows.
                     entry.external_attr = (0o40755 << 16) | 0x10
                     output.writestr(entry, b'')
                     continue
                 entry = zipfile.ZipInfo(name, time.localtime(path.stat().st_mtime)[:6])
+                entry.create_system = 3
                 entry.compress_type = zipfile.ZIP_DEFLATED
                 entry.external_attr = ((0o100755 if path.name in names else 0o100644) << 16)
-                output.writestr(entry, path.read_bytes())
+                entry.file_size = path.stat().st_size
+                with path.open('rb') as content, output.open(entry, 'w') as member:
+                    shutil.copyfileobj(content, member, length=1024 * 1024)
     elif kind == 'tgz':
         def mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
             info.uid = info.gid = 0

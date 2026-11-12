@@ -85,6 +85,8 @@ public sealed class SettingsPage : Page
         aboutBody.Children.Add(SettingsKit.P("Open-source UniFi Etherlighting controller.", "muted"));
         aboutBody.Children.Add(SettingsKit.P("Unofficial community project. Not affiliated with Ubiquiti.", "muted"));
         aboutBody.Children.Add(SettingsKit.ActionButton("Open help", () => Shell.Navigate("Help"), "quiet"));
+        if (shell.OpenWorkspaceAddress is not null)
+            aboutBody.Children.Add(SettingsKit.ActionButton("Change workspace address", shell.ChooseWorkspaceAddress, "quiet"));
         about = SettingsKit.Panel(aboutBody, maxWidth: 720);
         about.Margin = new Thickness(0, 20, 0, 0);
 

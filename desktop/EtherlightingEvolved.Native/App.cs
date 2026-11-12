@@ -133,7 +133,10 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
     void Open(Uri address)
     {
         workspace = new Workspace(address);
-        window = new ShellWindow(new AppShell(workspace));
+        window = new ShellWindow(new AppShell(workspace)
+        {
+            OpenWorkspaceAddress = service is null && options.Smoke is null ? ChangeWorkspace : null,
+        });
         if (options.Smoke is not null)
         {
             // Checks run in a real window placed off screen, so nothing appears on the desktop.
@@ -144,6 +147,26 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         }
         if (!options.Background) window.Show();
         else _ = window.Shell.SetHidden(true);
+    }
+
+    async Task ChangeWorkspace(Uri address)
+    {
+        var previous = window!;
+        using (var probe = new EeApi(address))
+        {
+            if (await probe.GetAsync("/api/workspace") is not JsonObject info || info.Bool("live") is null)
+                throw new InvalidOperationException("That address did not respond as an EE workspace.");
+        }
+        await previous.Shell.Workspace.Idle();
+        previous.Shell.Studio.SaveUiState(previous.Shell.PageName);
+        Locations.SavedWorkspace = address;
+        await previous.Shell.Workspace.DisposeAsync();
+        previous.Shell.ResetWorkspace();
+        previous.AllowClose = true;
+        previous.Close();
+        Open(address);
+        ShowWindow();
+        await window!.Shell.Start();
     }
 
     void CreateTray()
@@ -202,15 +225,14 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
     {
         if (quitting) return;
         quitting = true;
-        window?.Shell.Status("Returning the switch lighting…");
+        window?.Shell.Status("Closing the workspace…");
         var confirmed = service is null || await service.StopAsync();
         if (!confirmed && !force && !forceArmed)
         {
             quitting = false;
             forceArmed = true;
             ShowWindow();
-            window?.Shell.Notify("EE could not confirm that the switch lighting was returned. Choose Quit again to close anyway; " +
-                                 "EE recovers the lighting the next time it connects.", true);
+            window?.Shell.Notify("The workspace has not confirmed shutdown. Choose Quit again to close anyway.", true);
             return;
         }
         if (!confirmed)
@@ -265,7 +287,11 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
                 await Task.Delay(200);
             }
             if (options.ShotPage != "Connect" && shell.PageName != options.ShotPage) await shell.Navigate(options.ShotPage);
+            if (shell.PageName != options.ShotPage || shell.CurrentPage is null)
+                throw new InvalidOperationException($"The requested {options.ShotPage} page did not open.");
             await Task.Delay(2500);
+            if (Math.Abs(window.Bounds.Width - options.ShotSize.Width) > 1 || Math.Abs(window.Bounds.Height - options.ShotSize.Height) > 1)
+                throw new InvalidOperationException("The window did not reach the requested size.");
             using var bitmap = new RenderTargetBitmap(options.ShotSize);
             bitmap.Render(window);
             bitmap.Save(Path.Combine(folder, "shot.png"));
@@ -296,16 +322,9 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
             }
             result["page"] = shell.PageName;
             result["simulated"] = shell.Workspace.Session.Bool("simulated");
-            // A visible change through the workspace API: a rainbow on ports 1–4.
-            using (var api = new WorkspaceApi(shell.Workspace.Api.BaseUri))
-            {
-                var stateNode = await shell.Workspace.Request("/api/state");
-                using var document = System.Text.Json.JsonDocument.Parse(stateNode!.ToJsonString());
-                var lighting = LightingModel.State(document.RootElement, LightingState.Empty);
-                result["apply_effect"] = await api.ApplyEffectAsync(lighting, [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
-            }
-            await Task.Delay(3000);
-            var process = Process.GetCurrentProcess();
+            if (service is null || shell.Workspace.Options.Bool("live") != false || shell.Workspace.Session.Bool("simulated") != true)
+                throw new InvalidOperationException("This desktop check requires its own simulator.");
+            using var process = Process.GetCurrentProcess();
             async Task<double> CpuAsync(int seconds)
             {
                 process.Refresh();
@@ -315,6 +334,17 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
                 process.Refresh();
                 return Math.Round((process.TotalProcessorTime - before).TotalSeconds / clock.Elapsed.TotalSeconds * 100, 2);
             }
+            result["logical_processors"] = Environment.ProcessorCount;
+            result["cpu_initial_percent"] = await CpuAsync(10);
+            // A visible change through the workspace API: a rainbow on ports 1–4.
+            using (var api = new WorkspaceApi(shell.Workspace.Api.BaseUri))
+            {
+                var stateNode = await shell.Workspace.Request("/api/state");
+                using var document = System.Text.Json.JsonDocument.Parse(stateNode!.ToJsonString());
+                var lighting = LightingModel.State(document.RootElement, LightingState.Empty);
+                result["apply_effect"] = await api.ApplyEffectAsync(lighting, [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
+            }
+            await Task.Delay(3000);
             result["cpu_visible_percent"] = await CpuAsync(20);
             var size = new PixelSize((int)Math.Max(1, window.Bounds.Width), (int)Math.Max(1, window.Bounds.Height));
             using (var bitmap = new RenderTargetBitmap(size))
@@ -330,13 +360,26 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
                 bitmap.Render(window);
                 bitmap.Save(Path.Combine(folder, $"window-{theme}.png"));
             }
+            foreach (var name in AppShell.PageNames)
+            {
+                await shell.Navigate(name);
+                if (shell.PageName != name || shell.CurrentPage is null)
+                    throw new InvalidOperationException($"The {name} page did not open.");
+                if (name == "Effects") result["cpu_effects_percent"] = await CpuAsync(12);
+                await Task.Delay(350);
+                using var bitmap = new RenderTargetBitmap(size);
+                bitmap.Render(window);
+                bitmap.Save(Path.Combine(folder, $"{name.ToLowerInvariant()}.png"));
+            }
+            await shell.Navigate("Effects");
             window.Hide();
             await Task.Delay(10000);
             result["cpu_hidden_percent"] = await CpuAsync(30);
+            result["hidden_stream_paused"] = !shell.Workspace.StreamOpen;
             process.Refresh();
             result["memory_mb"] = process.PrivateMemorySize64 / 1048576;
             result["working_set_mb"] = process.WorkingSet64 / 1048576;
-            passed = result["apply_effect"]?.GetValue<string>() == "ok";
+            passed = result["apply_effect"]?.GetValue<string>() == "ok" && !shell.Workspace.StreamOpen;
         }
         catch (Exception exception)
         {
@@ -358,6 +401,7 @@ internal static class Program
     {
         if (Options.Parse(args) is not { } options) return 2;
         if (options.Quit) return SingleInstance.QuitRunningCopy();
+        if (options.Smoke is { } output) Locations.TestDataDirectory = Path.Combine(output, "client");
         var data = options.Smoke is { } smoke ? Path.Combine(smoke, "data") : Locations.Workspace(options.Demo);
         // Development screenshots run beside the installed EE, so they never share its single-instance name.
         var suffix = options.Shot is { } shot ? SingleInstance.Suffix(true, shot) : SingleInstance.Suffix(options.Demo, data);
@@ -380,7 +424,8 @@ internal static class Program
     /// </summary>
     public static AppBuilder BuildAvaloniaApp()
     {
-        var builder = AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace();
+        var builder = AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace()
+            .With(new Avalonia.Rendering.Composition.CompositionOptions { UseRegionDirtyRectClipping = true });
         return Environment.GetEnvironmentVariable("EE_GPU_RENDERING") == "1"
             ? builder
             : builder.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Software] });

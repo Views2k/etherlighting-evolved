@@ -13,6 +13,7 @@ using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using EtherlightingEvolved.Native;
+using EtherlightingEvolved.Native.Check.Checks;
 
 string? Arg(string name)
 {
@@ -22,6 +23,7 @@ string? Arg(string name)
 
 var output = Path.GetFullPath(Arg("--output") ?? "native-check");
 Directory.CreateDirectory(output);
+Locations.TestDataDirectory = Path.Combine(output, "client");
 var failures = new List<string>();
 void Check(bool ok, string name)
 {
@@ -29,11 +31,13 @@ void Check(bool ok, string name)
     if (!ok) failures.Add(name);
 }
 
+ModelChecks.Run(Check);
 AppBuilder.Configure<App>()
     .UseSkia()
     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
-    
     .SetupWithoutStarting();
+
+ShellChecks.Contracts(Check);
 
 // 1. Payload reading
 const string frame = """
@@ -239,7 +243,11 @@ Check(catalog.Count == 2 && catalog[1].Params.Count == 4 && catalog[1].Params[1]
 // 4. Optional: start the simulator from this checkout and change its lighting through the same calls the window uses
 if (args.Contains("--service"))
 {
-    // Nothing pumps the headless UI dispatcher here, so awaits must not resume on it.
+    var page = Arg("--page-check");
+    if (page is not (null or "Lighting" or "Effects" or "Automation" or "Profiles"))
+        throw new ArgumentException("Unknown editing workflow.");
+    ShellChecks.ExerciseDesktop(output, Check, page);
+    // The API checks below run independently of the UI dispatcher.
     SynchronizationContext.SetSynchronizationContext(null);
     var data = Path.Combine(Path.GetTempPath(), $"ee-native-check-{Environment.ProcessId}");
     var host = ServiceHost.Locate(AppContext.BaseDirectory, true, data);

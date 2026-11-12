@@ -27,6 +27,8 @@ The script uses `.venv/Scripts/python.exe` by default. Use `-PythonExe` for anot
 
 EE Quality verifies source and simulator workflows on pull requests. The GitHub-hosted Windows runner uses the versions in `requirements-ci.txt`, Python 3.12.10, and Node 22.23.1. Workflow actions are pinned to commit IDs. Browser checks use a separate simulator data directory and browser profile.
 
+The native desktop checks exercise the editor against a separate simulator on Windows, macOS and Linux. The macOS and Linux jobs build both x64 and arm64 clients, inspect both archives, and launch the package that matches the runner. Each successful job keeps its private client archives under the workflow run.
+
 To prepare a release candidate, select **Run workflow** on `main` in EE Quality. The hosted runner verifies the pinned Inno Setup compiler and publisher, builds with `-ReleaseCandidate`, compares the package with the checkout, and tests the packaged simulator. Private builds use existing local tools. Updating a tool or dependency requires updating its pin and checking the affected build and tests together.
 
 ## Artifacts and records

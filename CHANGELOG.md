@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- The Windows app opens Lighting, Effects, Automation, Profiles, Settings and Help in a native desktop window. The installer includes the workspace service and lighting engine.
+- macOS and Linux desktop clients can connect to an existing EE workspace. The client remembers the workspace address for the next launch.
+- The native port map follows the switch's reported colors and traffic. Minimize the window or hide it in the notification area to pause the live display. Opening it again refreshes the readings.
+
 ## 0.4.28
 
 - EE uses far less processor and graphics time. A window in the notification area or minimized no longer renders or receives the live stream. With steady lighting the port map stops repainting; with moving lighting it repaints 30 times a second instead of at the display rate. Status text and readings are rewritten only a few times a second, and the ambient glow no longer uses a blur pass.

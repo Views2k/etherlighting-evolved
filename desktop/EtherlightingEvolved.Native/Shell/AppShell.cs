@@ -40,12 +40,14 @@ public sealed class AppShell : UserControl
     JsonObject? openingWorkspace;
     Task? opening;
     int navigationVersion;
+    readonly List<string> history = [];
+    int historyIndex = -1;
     bool startedOnce;
 
     public AppShell(Workspace workspace)
     {
         Workspace = workspace;
-        Studio = PageRegistry.StudioFactory?.Invoke(this) ?? Core.Studio.Empty;
+        Studio = PageRegistry.StudioFactory?.Invoke(this) ?? throw new InvalidOperationException("The Lighting editor is missing.");
         Overlay = new Overlay();
         reconnect = UiKit.Button("Reconnect switch");
         reconnect.Click += async (_, _) => await Run(async () =>
@@ -87,6 +89,36 @@ public sealed class AppShell : UserControl
     public string PageName { get; private set; } = "Lighting";
 
     public Page? CurrentPage => current;
+
+    // Desktop-only clients can choose the EE host. The bundled local workspace manages its own service.
+    public Func<Uri, Task>? OpenWorkspaceAddress { get; init; }
+
+    internal async Task ChooseWorkspaceAddress()
+    {
+        if (OpenWorkspaceAddress is null || current is not null && !await current.CanLeave()) return;
+        if (Studio.HasPendingPlan && !await Studio.ConfirmDraft()) return;
+        var input = UiKit.Input(Workspace.Api.BaseUri.AbsoluteUri);
+        var error = UiKit.Text("", "error", wrap: true);
+        var actions = UiKit.Row(8);
+        var content = UiKit.Column(14, UiKit.H2("Connect to a workspace"), UiKit.Field("Workspace address", input), error, actions);
+        var dialog = Overlay.Show(content, width: 440);
+        actions.Children.Add(UiKit.Button("Cancel", null, () => dialog.Close()));
+        var connect = UiKit.Button("Connect", "primary");
+        actions.Children.Add(connect);
+        connect.Click += (_, _) =>
+        {
+            if (TryWorkspaceAddress(input.Text, out _)) dialog.Close("connect");
+            else error.Text = "Enter the private HTTPS workspace address or a local address.";
+        };
+        input.Focus();
+        if (await dialog.Result == "connect" && TryWorkspaceAddress(input.Text, out var address))
+            await Run(() => OpenWorkspaceAddress(address!));
+    }
+
+    internal static bool TryWorkspaceAddress(string? text, out Uri? address) =>
+        Uri.TryCreate(text?.Trim(), UriKind.Absolute, out address) &&
+        (address.Scheme == "https" || address.Scheme == "http" && address.IsLoopback) &&
+        address.UserInfo.Length == 0 && address.AbsolutePath == "/" && address.Query.Length == 0 && address.Fragment.Length == 0;
 
     /// <summary>The window asks to hide to the notification area (traffic-light close and minimize).</summary>
     public event Action? HideRequested;
@@ -269,9 +301,7 @@ public sealed class AppShell : UserControl
 
     public void UpdateConnection()
     {
-        var session = (JsonObject)Workspace.Session.DeepClone();
-        session["reconnect_required"] = Workspace.State["reconnect_required"]?.DeepClone();
-        var (label, tone) = SwitchStatus(session, Workspace.Disconnected, Workspace.Busy > 0);
+        var (label, tone) = SwitchStatus(Workspace.Session, Workspace.Disconnected, Workspace.Busy > 0, Workspace.State.Truthy("reconnect_required"));
         connection.Set(label, tone);
         recovery.IsVisible = Workspace.Ready && Workspace.State.Bool("reconnect_required") == true;
         controller.IsVisible = Workspace.Ready && Workspace.Session.Bool("simulated") != true;
@@ -282,20 +312,20 @@ public sealed class AppShell : UserControl
     }
 
     /// <summary>Port of connectionLabel and switchConnectionStatus (workspace-session.mjs).</summary>
-    public static (string Label, string Tone) SwitchStatus(JsonNode? session, bool disconnected, bool busy)
+    public static (string Label, string Tone) SwitchStatus(JsonNode? session, bool disconnected, bool busy, bool? reconnectRequired = null)
     {
         string label;
         if (disconnected) label = "Reconnecting…";
         else if (session.Truthy("connecting")) label = "Connecting…";
         else if (!session.Truthy("logged_in")) label = "Not connected";
-        else if (session.Truthy("reconnect_required")) label = "Switch connection needs attention";
+        else if (reconnectRequired ?? session.Truthy("reconnect_required")) label = "Switch connection needs attention";
         else if (busy) label = "Saving…";
         else if (session.Truthy("simulated")) label = "Demo session";
         else label = session.Truthy("connected") ? "Switch connected" : "Switch reconnecting…";
         var tone = "is-disconnected";
         if (!session.Truthy("simulated"))
         {
-            if (session.Truthy("reconnect_required") && !disconnected) tone = "error";
+            if ((reconnectRequired ?? session.Truthy("reconnect_required")) && !disconnected) tone = "error";
             else if (disconnected || session.Truthy("connecting") || (session.Truthy("logged_in") && session.Bool("connected") != true)) tone = "waiting";
             else if (session.Bool("logged_in") == true && session.Bool("connected") == true) tone = "online";
         }
@@ -334,7 +364,7 @@ public sealed class AppShell : UserControl
     {
         if (Hidden) return;
         current?.Frame();
-        if (PageName is "Automation" or "Profiles" or "Settings") current?.Update();
+        if (PageName == "Settings") current?.Update();
     }
 
     void UpdatePage()
@@ -350,9 +380,10 @@ public sealed class AppShell : UserControl
     {
         if (Hidden == hidden) return;
         Hidden = hidden;
+        current?.VisibilityChanged(!hidden);
         if (hidden) Studio.SaveUiState(PageName);
         await Workspace.SetPaused(hidden);
-        if (hidden) return;
+        if (hidden || Hidden) return;
         UpdateConnection();
         current?.Update();
     }
@@ -361,6 +392,7 @@ public sealed class AppShell : UserControl
     {
         current?.Leave();
         current = page;
+        if (Hidden) page.VisibilityChanged(false);
         Control content = page;
         if (!page.FullBleed)
             content = new ScrollViewer
@@ -379,7 +411,15 @@ public sealed class AppShell : UserControl
     }
 
     /// <summary>Opens a page (port of navigate). keepDraft skips the unapplied-preview question.</summary>
-    public async Task Navigate(string target, bool keepDraft = false)
+    public Task Navigate(string target, bool keepDraft = false) => NavigateCore(target, keepDraft, null);
+
+    internal Task MoveHistory(int step)
+    {
+        var index = historyIndex + step;
+        return index >= 0 && index < history.Count ? NavigateCore(history[index], false, index) : Task.CompletedTask;
+    }
+
+    async Task NavigateCore(string target, bool keepDraft, int? destination)
     {
         if (!Workspace.Ready)
         {
@@ -405,6 +445,13 @@ public sealed class AppShell : UserControl
         Studio.SaveUiState(PageName);
         foreach (var (name, button) in pageButtons) button.Classes.Set("current", name == PageName);
         ShowPage(PageRegistry.Create(target, this) ?? new MissingPage(this, target));
+        if (destination is { } index) historyIndex = index;
+        else
+        {
+            history.RemoveRange(historyIndex + 1, history.Count - historyIndex - 1);
+            history.Add(target);
+            historyIndex = history.Count - 1;
+        }
         UpdateDraftBar();
     }
 
@@ -432,7 +479,9 @@ public sealed class AppShell : UserControl
         {
             var retry = UiKit.Button("Try again", "primary");
             retry.Click += async (_, _) => await Start();
-            ShowView(UiKit.EmptyState("Couldn’t open the workspace", "The local service is unavailable. Try connecting again.", retry));
+            Control actions = OpenWorkspaceAddress is null ? retry
+                : UiKit.Row(8, retry, UiKit.Button("Change workspace address", null, ChooseWorkspaceAddress));
+            ShowView(UiKit.EmptyState("Couldn’t open the workspace", "Check the workspace connection and try again.", actions));
             Status("Connection unavailable", true);
         }
     }
@@ -508,6 +557,8 @@ public sealed class AppShell : UserControl
     public void ResetWorkspace()
     {
         navigationVersion++;
+        history.Clear();
+        historyIndex = -1;
         Overlay.CloseAll();
         current?.Leave();
         current = null;

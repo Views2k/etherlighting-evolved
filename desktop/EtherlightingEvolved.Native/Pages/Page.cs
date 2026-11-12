@@ -40,6 +40,8 @@ public abstract class Page : UserControl
     /// <summary>A live frame arrived. Pages that show live values override this; it runs often.</summary>
     public virtual void Frame() { }
 
+    public virtual void VisibilityChanged(bool visible) { }
+
     /// <summary>The page is being removed (the renderer's cleanup).</summary>
     public virtual void Leave() { }
 }

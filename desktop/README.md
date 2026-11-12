@@ -1,75 +1,42 @@
-# Etherlighting Evolved native window
+# Etherlighting Evolved desktop
 
-A native desktop window for EE built with [Avalonia](https://avaloniaui.net/) 11.3 on .NET 8. It runs on Windows, macOS and Linux and draws with Skia on the GPU. It follows a running EE workspace and shows the live port faceplate.
+The desktop workspace uses Avalonia 11.3 and .NET 8. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
 
-## Status
+## Run the app
 
-This is the first part of the native client. It shows the switch name, the connection state, and every Ethernet port and SFP cage with its live lighting color, device name, link speed and PoE draw. Lighting is changed through the full EE controls, which the window opens in the default browser.
+The Windows installer includes the desktop app, gateway and lighting engine. Start Etherlighting Evolved from the Start menu, then connect to your switch or choose the demo. Closing the window hides it in the notification area. Use the tray menu to open it again or quit.
 
-The window only reads from EE. It sends no commands, so it cannot change the switch.
+For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime. Start an EE workspace service on the same computer, or connect to an existing one using its private HTTPS workspace address. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address. The default local address is `http://127.0.0.1:4180/`.
 
-## How it keeps CPU use low
+The macOS packaging script produces an application bundle with the executable permission set. Signing and notarization are separate distribution steps.
 
-- The port map redraws only when a port's color or text changes. Steady lighting causes no redraws.
-- Stream messages are applied at most once per UI turn; older ones are dropped.
-- A minimized window disconnects from the live stream and reconnects with a fresh state when restored.
-- There are no timers or animation loops.
+## Build and test
 
-Measured on a Windows PC while following a workspace for 40 seconds, including a software render of every change for the measurement:
-
-| Source | Frames received | Redraws | Process CPU | Memory |
-| --- | --- | --- | --- | --- |
-| Real switch, steady lighting | 1.5 per second | 53 | 3.5% of one core | 34 MB |
-| Simulator, Rainbow on every port | 3.9 per second | 147 | 4.5% of one core | 36 MB |
-
-## Requirements
-
-- An EE workspace running on the same computer, at `http://127.0.0.1:4180/` by default. Set another address with `--url` or the `EE_WORKSPACE_URL` environment variable.
-- The .NET 8 SDK to build. The published builds include the .NET runtime and need nothing installed.
-
-## Build
-
-Run from the repository root. `desktop/NuGet.Config` restores from nuget.org into `outputs/nuget-packages`, which is ignored by Git. The package lock files pin every version.
+Use the .NET 8 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
-$env:AVALONIA_TELEMETRY_OPTOUT = '1'
-dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --configfile desktop/NuGet.Config -p:SelfContained=true
 dotnet build desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj -c Release --no-restore
+dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
 ```
 
-Avalonia's build tools report build statistics to Avalonia by default. `desktop/Directory.Build.targets` replaces that step with an empty one, and the environment variable above disables it as well.
-
-## Check
-
-The check program runs without opening a window. It reads synthetic payloads, confirms that unchanged frames cause no redraw, and renders 8 + 2, 48 + 4 and 0 + 32 port layouts to PNG files, comparing drawn colors with the reported ones.
+The check program renders windows off screen. Its service checks use a simulator with isolated data. To use the app interactively from the same build, launch the source app in demo mode.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
-desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.exe --output outputs/native-check
+dotnet run --project desktop/EtherlightingEvolved.Native -c Release --no-build -- --demo
 ```
 
-Add `--live http://127.0.0.1:4180 --seconds 40` to follow a running workspace, read only, and report the frame rate, redraws, CPU and memory of the check process.
+## Package
 
-## Publish
-
-Each command produces a standalone build in `outputs/native/<runtime>`.
+Use `packaging/build.ps1` for the Windows installer with the gateway and engine. Use `desktop/publish.ps1` to create standalone clients for selected runtime identifiers. Both scripts use restored packages and an empty output directory. The macOS ZIP includes the application bundle. The Linux tarball includes a desktop entry and icon alongside the executable.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
-foreach ($rid in 'win-x64', 'osx-arm64', 'osx-x64', 'linux-x64') {
-  dotnet publish desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj -c Release -r $rid --self-contained --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o outputs/native/$rid
-}
+& .\desktop\publish.ps1 -Runtime osx-arm64,osx-x64,linux-x64 -OutputRoot .\outputs\desktop-clients
 ```
 
-The Windows and Linux builds are one executable file. The macOS builds are an executable with three Avalonia and Skia libraries beside it. The macOS and Linux builds have not been started on those systems yet. macOS builds are not signed by a developer certificate, so the first launch needs Open from the Finder context menu.
-
-## Not yet included
-
-- Editing lighting, effects, automation, profiles and settings in the native window.
-- A notification area icon and start with the computer.
-- A macOS app bundle and Linux packages.
-- Trimming the published builds, which are 85 to 98 MB.
+Follow the [repository workflow](../docs/WORKFLOW.md) for review, checks and release approval.

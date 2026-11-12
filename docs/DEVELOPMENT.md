@@ -1,6 +1,6 @@
 # Development
 
-Run commands from the repository root. The current application uses the browser workspace in `preview/`, the Python engine in `src/etherlighting_evolved/`, and the desktop host in `workspace_desktop.py`. Build and test paths resolve within this checkout.
+Run commands from the repository root. The desktop workspace is in `desktop/EtherlightingEvolved.Native/`, the gateway and browser workspace are in `preview/`, and the Python lighting engine is in `src/etherlighting_evolved/`. The native and browser clients use the same workspace API.
 
 Follow [WORKFLOW.md](WORKFLOW.md) for branches, review, CI, and delivery. The pinned Windows verification environment is recorded in `requirements-ci.txt`.
 
@@ -9,13 +9,14 @@ Follow [WORKFLOW.md](WORKFLOW.md) for branches, review, CI, and delivery. The pi
 - Node.js 20 or newer. The JavaScript project has no package dependencies.
 - Python 3.11 or newer with the project dependencies in `pyproject.toml`.
 - The `dev` Python extras for tests and linting.
-- The `desktop` and `build` Python extras, plus Inno Setup 6, for Windows packaging.
+- The .NET 8 SDK and the packages pinned by the desktop projects’ lock files. EE Quality restores the check project with `dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --locked-mode`.
+- The packaging dependencies in `requirements-ci.txt`, including PyInstaller and Pillow, and Inno Setup 6 for Windows Setup.
 
 Use an existing environment containing these dependencies. Build scripts check for tools and dependencies; they do not install them. The conventional local Python path is `.venv/Scripts/python.exe` on Windows or `.venv/bin/python` on other systems.
 
 ## Workspace
 
-Start the isolated simulator:
+For the native desktop app, build the native check project, then start the application with `--demo` to open an isolated simulator. For a separate source gateway and its browser workspace, use the repository’s start script. See the [desktop guide](../desktop/README.md#build-and-test) for native commands.
 
 [WINDOWS POWERSHELL]
 
@@ -85,13 +86,15 @@ Build the private Windows installer with the existing local tools.
 
 Open the printed path to `EtherlightingEvolved-Setup-<version>.exe`. The default destination is `outputs/releases/<version>/dist/`. Use a new `-OutputRoot` for a second build of the same version to preserve the earlier installer.
 
-The build uses the checkout's Python environment and the Node distribution under `outputs/build-tools/node/`, falling back to Node on the system path. Use `-PythonExe`, `-NodeExe`, or `-CompilerExe` to select an existing tool. Node needs its license beside the executable. Use `-SkipInstaller` to produce the app folder alone.
+The build publishes the native `win-x64` app, packages the Python engine and adds the gateway, browser workspace, Node runtime and component licenses. Restore the locked desktop project before packaging. The build uses the checkout's Python environment and the Node distribution under `outputs/build-tools/node/`, falling back to Node on the system path. Use `-PythonExe`, `-NodeExe`, or `-CompilerExe` to select an existing tool. Node needs its license beside the executable. Use `-SkipInstaller` to produce the app folder alone.
+
+Standalone macOS and Linux desktop clients connect to an existing EE workspace. See the [archive build and launch instructions](../desktop/README.md).
 
 Private builds check required application files, third-party notices, and exclusion of private data before compiling Setup. For a release candidate, run EE Quality manually on `main`. It passes `-ReleaseCandidate` for the full package comparison and then exercises the packaged simulator.
 
 ## Shared browser code and fixtures
 
-The current UI lives in `preview/`. It imports shared effect and color modules from `src/*.mjs`. Change a shared module at its owner and test both the workspace and any retained consumer.
+The browser workspace in `preview/` imports shared effect and color modules from `src/*.mjs`. The native client uses their C# counterparts in `desktop/EtherlightingEvolved.Native/Core/Model/`. For a changed scene, lighting or scheduling contract, verify the native and browser workflows against the same engine and fixtures.
 
 `src/catalog.mjs` is generated from backend metadata. Regenerate it when effect definitions change:
 

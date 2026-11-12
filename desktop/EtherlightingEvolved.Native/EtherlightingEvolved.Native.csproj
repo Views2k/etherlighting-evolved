@@ -34,6 +34,7 @@
     <PackageReference Include="Avalonia.Controls.ColorPicker" Version="11.3.23" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="EtherlightingEvolved.Native.Check" />
     <AvaloniaResource Include="../../src/etherlighting_evolved/assets/ee.ico" Link="Assets/ee.ico" />
     <AvaloniaResource Include="../../src/etherlighting_evolved/assets/ee.png" Link="Assets/ee.png" />
   </ItemGroup>
@@ -42,6 +43,7 @@
     <EmbeddedResource Include="../../preview/themes.css" LogicalName="themes.css" />
     <EmbeddedResource Include="../../preview/theme-catalog.mjs" LogicalName="theme-catalog.mjs" />
     <EmbeddedResource Include="../../src/icons.mjs" LogicalName="icons.mjs" />
+    <EmbeddedResource Include="../../src/catalog.mjs" LogicalName="catalog.mjs" />
     <AvaloniaResource Include="../../assets/logo.png" Link="Assets/logo.png" />
   </ItemGroup>
 </Project>
