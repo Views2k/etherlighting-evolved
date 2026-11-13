@@ -3,10 +3,12 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Core.Model;
 using EtherlightingEvolved.Native.Pages.Lighting;
@@ -340,6 +342,16 @@ internal static class LightingPageChecks
             await studio.SelectFromMap([]); var refused = false;
             try { studio.PreviewSavedEffect(saved); } catch (InvalidOperationException error) { refused = error.Message == "Select ports for these settings."; }
             check(refused && !studio.HasEdits, "saved effect settings ask for a selection first");
+
+            // The refusal above left its error notice on screen. A dialog opened now must cover it.
+            var notice = shell.Overlay.GetLogicalDescendants().OfType<Button>().Single(b => Equals(b.Content, "Dismiss"));
+            var content = new StackPanel { Width = 300, Height = 900 };
+            var dialog = shell.Overlay.Show(content, 320); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+            var top = window.InputHitTest(notice.TranslatePoint(new Point(notice.Bounds.Width / 2, notice.Bounds.Height / 2), window)!.Value) as Visual;
+            check(notice.IsEffectivelyVisible && top is not null && !ReferenceEquals(top, notice) && !notice.IsVisualAncestorOf(top),
+                "an error notice that stays on screen sits beneath an open dialog");
+            dialog.Close(); Dispatcher.UIThread.RunJobs();
+            notice.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
         }
         finally
         {
