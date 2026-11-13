@@ -2,6 +2,7 @@
 
 ## 0.5.0
 
+- In a rack window such as 1280 × 400, the desktop Lighting page fits without scrolling. The switch name shares a line with the selection buttons, uplink bandwidth is one line, the map legend moves to the bottom bar, and Port controls uses compact rows with tabs for effects that have many settings.
 - Fixed a desktop color picker crash when closing with a color field focused. Done stays visible while the color controls scroll.
 - Settings can save a UniFi OS API key when connecting. EE remembers the controller and sign-in method across restarts and updates.
 - Workspace owners can approve individual tagged Tailscale devices. Linux clients can use the private workspace address when local DNS cannot resolve it.

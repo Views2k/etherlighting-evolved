@@ -28,17 +28,41 @@ public sealed partial class LightingPage
     void BuildInspector()
     {
         invalidFields.Clear();
-        inspector.Children.Clear(); var heading = U.H2("Port controls");
-        var header = new Grid { ColumnDefinitions = new("*,Auto") };
+        inspector.Children.Clear(); ResetRackInspector();
+        FillInspector();
+        FinishRackInspector($"{string.Join(",", editor.Selected)}|{editor.Editor}|{CurrentEffect().Str("id")}");
+    }
+    void FillInspector()
+    {
         var collapse = U.IconButton("panel", "Hide port controls", () => { if (Bounds.Width >= 701) SetInspectorCollapsed(true); mobileInspector = false; Reflow(true); });
-        header.Children.Add(heading); header.Children.Add(collapse); Grid.SetColumn(collapse, 1); inspector.Children.Add(header);
+        var applied = U.Text("", "small muted");
+        if (rackLayout)
+        {
+            // One line: the title, the selection and its applied lighting, and the hide button.
+            var name = U.Text("Port controls"); name.FontSize = 15; name.FontWeight = Avalonia.Media.FontWeight.SemiBold; name.VerticalAlignment = VerticalAlignment.Center;
+            var scope = U.Text(editor.Selected.Count == 0 ? "" : editor.Scope(), "small muted"); scope.FontSize = applied.FontSize = 11;
+            var info = U.Column(0, scope, applied); info.VerticalAlignment = VerticalAlignment.Center;
+            var line = new Grid { ColumnDefinitions = new("Auto,*,Auto"), ColumnSpacing = 10, MinHeight = 30 };
+            line.Children.Add(name); line.Children.Add(info); Grid.SetColumn(info, 1); line.Children.Add(collapse); Grid.SetColumn(collapse, 2); inspector.Children.Add(line);
+        }
+        else
+        {
+            var heading = U.H2("Port controls");
+            var header = new Grid { ColumnDefinitions = new("*,Auto") };
+            header.Children.Add(heading); header.Children.Add(collapse); Grid.SetColumn(collapse, 1); inspector.Children.Add(header);
+        }
         if (editor.Selected.Count == 0) { inspector.Children.Add(U.P("Select a port on the map, or choose All ports.", "muted")); return; }
-        inspector.Children.Add(U.P(editor.Scope(), "muted"));
+        if (!rackLayout) inspector.Children.Add(U.P(editor.Scope(), "muted"));
         var sources = editor.Selected.Select(p => LS.ControlSource(State, p, Workspace.Effects)).ToList();
         var labels = sources.Select(s => s.Str("label")).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList();
-        if (labels.Count > 0) inspector.Children.Add(U.Text(labels.Count == 1 ? "•  Applied: " + labels[0] : "Multiple control sources", "small muted"));
+        if (labels.Count > 0)
+        {
+            var source = labels.Count == 1 ? "Applied: " + labels[0] : "Multiple control sources";
+            if (rackLayout) applied.Text = source;
+            else { applied.Text = labels.Count == 1 ? "•  " + source : source; inspector.Children.Add(applied); }
+        }
         if (sources.FirstOrDefault(s => s.Str("kind") == "rule") is { } rule)
-            inspector.Children.Add(Action("Edit automation", async () => { editor.RequestedRuleId = rule.Str("rule.id"); await Shell.Navigate("Automation"); }));
+            Tool(Action("Edit automation", async () => { editor.RequestedRuleId = rule.Str("rule.id"); await Shell.Navigate("Automation"); }));
         bool optical = editor.SelectedCopper.Count == 0, independent = optical && editor.GroupedOptical.Count == 0;
         if (independent) OpticalInspector();
         else
@@ -48,18 +72,29 @@ public sealed partial class LightingPage
             {
                 var fixedMode = U.Button("Fixed color", editor.Editor == "color" ? "primary" : "quiet", () => { editor.Editor = "color"; editor.Signal(); });
                 var effects = U.Button("Effect", editor.Editor == "effect" ? "primary" : "quiet", () => { editor.Editor = "effect"; editor.Signal(); });
-                var modes = U.Wrap(4, fixedMode, effects);
-                if (editor.Editor == "effect") modes.Children.Add(EffectChooser());
-                inspector.Children.Add(modes);
+                if (rackLayout)
+                {
+                    var modes = new Grid { ColumnDefinitions = new("Auto,Auto,*"), ColumnSpacing = 4 };
+                    modes.Children.Add(fixedMode); modes.Children.Add(effects); Grid.SetColumn(effects, 1);
+                    if (editor.Editor == "effect") { var chooser = EffectChooser(); chooser.HorizontalAlignment = HorizontalAlignment.Stretch; modes.Children.Add(chooser); Grid.SetColumn(chooser, 2); }
+                    inspector.Children.Add(modes);
+                }
+                else
+                {
+                    var modes = U.Wrap(4, fixedMode, effects);
+                    if (editor.Editor == "effect") modes.Children.Add(EffectChooser());
+                    inspector.Children.Add(modes);
+                }
             }
             if (optical) inspector.Children.Add(EffectChooser());
             if (editor.Editor == "color") FixedInspector(); else EffectInspector();
             if (editor.GroupedOptical.Count > 0)
-                inspector.Children.Add(U.Button("Return to SFP lighting", "quiet", () => editor.Edit(d => EffectDraft.LeaveSfpEffect(d, editor.GroupedOptical), true)));
+                Tool(U.Button("Return to SFP lighting", "quiet", () => editor.Edit(d => EffectDraft.LeaveSfpEffect(d, editor.GroupedOptical), true)));
         }
         var copy = U.Button("Copy appearance", "quiet", CopyAppearance); copy.IsEnabled = editor.Selected.Count == 1;
         var paste = U.Button("Paste appearance", "quiet", () => { try { PasteAppearance(); } catch (Exception ex) { Shell.Notify(ex.Message, true); } }); paste.IsEnabled = editor.Appearance.HasValue;
-        inspector.Children.Add(U.Wrap(5, copy, paste));
+        if (rackLayout) { Tool(copy); Tool(paste); }
+        else inspector.Children.Add(U.Wrap(5, copy, paste));
     }
     void Gallery(string type)
     {
@@ -102,31 +137,40 @@ public sealed partial class LightingPage
             if (type == "color")
             {
                 var bright = p.Str("brightness_param"); var random = p.Str("random_param");
-                target.Children.Add(ColorEditor(name, val.Str(), bright is null ? 100 : values.Num(bright) ?? 100, v => Edit(key, v), v => { if (bright is not null) Edit(bright, v); }, true, bright is not null));
-                if (!synced && random is not null) target.Children.Add(U.Check("Randomize", values.Bool(random) == true, v => Edit(random, v, true)));
+                var randomize = !synced && random is not null ? U.Check("Randomize", values.Bool(random) == true, v => Edit(random, v, true)) : null;
+                AddSetting(target, ColorEditor(name, val.Str(), bright is null ? 100 : values.Num(bright) ?? 100, v => Edit(key, v), v => { if (bright is not null) Edit(bright, v); }, true, bright is not null, false, rackLayout ? randomize : null));
+                if (!rackLayout && randomize is not null) target.Children.Add(randomize);
             }
-            else if (type == "bool") target.Children.Add(U.Check(name, val.Bool() == true, v => Edit(key, v, true)));
-            else if (type == "choice") target.Children.Add(U.Field(name, U.Select(p.Arr("choices").Select(n => (n.Str()!, Label(n.Str()!))).ToList(), val.Str(), v => Edit(key, v, true))));
-            else target.Children.Add(NumberRange(name, p.Num("min") ?? 0, p.Num("max") ?? 100, p.Num("step") ?? (type == "int" ? 1 : .1), val.Num() ?? 0,
+            else if (type == "bool") AddSetting(target, U.Check(name, val.Bool() == true, v => Edit(key, v, true)));
+            else if (type == "choice") AddSetting(target, Labeled(name, U.Select(p.Arr("choices").Select(n => (n.Str()!, Label(n.Str()!))).ToList(), val.Str(), v => Edit(key, v, true))));
+            else AddSetting(target, NumberRange(name, p.Num("min") ?? 0, p.Num("max") ?? 100, p.Num("step") ?? (type == "int" ? 1 : .1), val.Num() ?? 0,
                 v => Edit(key, type == "int" ? JsonValue.Create((int)Math.Round(v))! : JsonValue.Create(v)!),
                 v => key switch { "pace" => v switch { 1 => "Slow · 3.08 s", 2 => "Medium · 2 s", 3 => "Fast · 1 s", _ => v.ToString() }, "floor" => $"{v * 100:0}%", _ => v.ToString("0.###") + (p.Str("unit") switch { "%" => "%", "cycles/s" => " cycles / second", { } unit => " " + unit, null => "" }) }));
-            if (p.Str("description") is { } desc) target.Children.Add(U.P(desc, "small muted"));
+            if (p.Str("description") is { } desc)
+            {
+                if (!rackLayout) target.Children.Add(U.P(desc, "small muted"));
+                else if (target.Children.LastOrDefault() is { } described) ToolTip.SetTip(described, desc);
+            }
         }
-        foreach (var (name, section) in new[] { ("Appearance", color), ("Uplink", uplink), ("Motion", motion) }) if (section.Children.Count > 0) { inspector.Children.Add(U.H3(name)); inspector.Children.Add(section); }
-        if (more.Children.Count > 0)
+        foreach (var (name, section) in new[] { ("Appearance", color), ("Uplink", uplink), ("Motion", motion) })
+            if (section.Children.Count > 0) { if (rackLayout) RackSection(name, section); else { inspector.Children.Add(U.H3(name)); inspector.Children.Add(section); } }
+        if (more.Children.Count > 0 && rackLayout) RackSection("More", more);
+        else if (more.Children.Count > 0)
         {
             var expander = new Expander { Header = "More settings", Content = more, IsExpanded = moreOpen, HorizontalAlignment = HorizontalAlignment.Stretch };
             expander.PropertyChanged += (_, e) => { if (e.Property == Expander.IsExpandedProperty) moreOpen = expander.IsExpanded; }; inspector.Children.Add(expander);
         }
-        inspector.Children.Add(Action("Saved effect settings", () => Library("effect")));
+        Tool(Action("Saved effect settings", () => Library("effect")));
     }
     Control NumberRange(string label, double min, double max, double step, double value, Action<double> changed, Func<double, string> show, bool mixed = false)
     {
+        if (rackLayout) return CompactRange(label, min, max, step, value, changed, show, mixed);
         var display = U.Text(mixed ? "Mixed" : show(value), "muted"); var range = U.Range(min, max, step, value, n => { display.Text = show(n); changed(n); });
         AutomationProperties.SetName(range, label); return U.Column(4, U.Wrap(12, U.Text(label), display), range);
     }
-    Control ColorEditor(string label, string? color, double level, Action<string> changeColor, Action<double> brightness, bool relative = false, bool showLevel = true, bool mixedLevel = false)
+    Control ColorEditor(string label, string? color, double level, Action<string> changeColor, Action<double> brightness, bool relative = false, bool showLevel = true, bool mixedLevel = false, Control? trailing = null)
     {
+        if (rackLayout) return CompactColor(label, color, level, changeColor, brightness, relative, showLevel, mixedLevel, trailing);
         string initial = ColorMath.NormalizeHex(color) ?? "#808080";
         var sample = new Border { Width = 30, Height = 29, CornerRadius = new CornerRadius(4), Background = U.Brush(initial) };
         var swatch = U.Button(""); swatch.Content = sample; swatch.Padding = new Thickness(4); swatch.Width = 42; swatch.Height = 40; AutomationProperties.SetName(swatch, label);
@@ -155,9 +199,9 @@ public sealed partial class LightingPage
         var settings = editor.Selected.Select(p => LS.FixedColorSettings(State, p, editor.Draft)).ToList();
         var color = settings.Select(s => s.Str("color")).Distinct().Count() == 1 ? settings[0].Str("color") : null;
         var levels = settings.Select(s => LS.FixedColorBrightness(s, State, editor.Draft)).ToList();
-        inspector.Children.Add(U.H3("Appearance"));
-        inspector.Children.Add(ColorEditor("Color", color, levels[0], v => StageFixed("color", v), v => StageFixed("brightness", v), false, true, levels.Distinct().Count() > 1));
-        inspector.Children.Add(U.P("Apply keeps these ports at their previewed color and brightness.", "small muted"));
+        Heading("Appearance");
+        Row(ColorEditor("Color", color, levels[0], v => StageFixed("color", v), v => StageFixed("brightness", v), false, true, levels.Distinct().Count() > 1));
+        Note("Apply keeps these ports at their previewed color and brightness.");
         var follow = U.Button("Resume group effect", "quiet", () =>
         {
             editor.Editor = "effect"; editor.Edit(d =>
@@ -167,7 +211,7 @@ public sealed partial class LightingPage
             }, true);
         });
         follow.IsEnabled = editor.SelectedCopper.Any(id => editor.Draft.Obj("colors").ContainsKey(id.ToString()) || State.Obj("overrides").ContainsKey(id.ToString()) && !PortTopology.PortIds(editor.Draft["returnToEffect"]).Contains(id) && EffectDraft.EffectDraftForPort(editor.Draft, id).Bool("clearOverrides") != true);
-        inspector.Children.Add(follow);
+        Row(follow);
     }
     void StageFixed(string field, JsonNode value)
     {
@@ -194,8 +238,8 @@ public sealed partial class LightingPage
         bool Same(string key) => lights.All(l => JsonNode.DeepEquals(first[key], l[key]));
         if (State["sfp_sync"] is not null)
         {
-            inspector.Children.Add(U.H3("Synchronization"));
-            inspector.Children.Add(U.Field("SFP synchronization", U.Select(Options(("independent", "Independent"), ("together", "Together"), ("ethernet", "Follow Ethernet port")), sync.Str("mode"), mode =>
+            Heading("Synchronization");
+            Row(Labeled("SFP synchronization", U.Select(Options(("independent", "Independent"), ("together", "Together"), ("ethernet", "Follow Ethernet port")), sync.Str("mode"), mode =>
             {
                 var next = Js.Spread(sync, new JsonObject { ["mode"] = mode });
                 editor.Set("sfp_sync", next, true);
@@ -203,31 +247,31 @@ public sealed partial class LightingPage
             })));
             if (sync.Str("mode") == "ethernet")
             {
-                inspector.Children.Add(U.Field("Source port", U.Select(State.Objects("ports").Select(p => (p.Int("port").ToString()!, $"Port {p.Int("port")} · {Core.Model.PortMap.PortLabel(p).Str("text")}")).ToList(), sync.Int("source_port").ToString(), key => { if (int.TryParse(key, out var id)) editor.Set("sfp_sync", Js.Spread(sync, new JsonObject { ["source_port"] = id })); })));
-                inspector.Children.Add(U.Button("Browse port effects", "quiet", () => Gallery("ethernet"))); return;
+                Row(Labeled("Source port", U.Select(State.Objects("ports").Select(p => (p.Int("port").ToString()!, $"Port {p.Int("port")} · {Core.Model.PortMap.PortLabel(p).Str("text")}")).ToList(), sync.Int("source_port").ToString(), key => { if (int.TryParse(key, out var id)) editor.Set("sfp_sync", Js.Spread(sync, new JsonObject { ["source_port"] = id })); })));
+                Tool(U.Button("Browse port effects", "quiet", () => Gallery("ethernet"))); return;
             }
         }
         string? mode = Same("mode") ? first.Str("mode") : "mixed", effect = Same("effect") ? first.Str("effect") : "mixed";
         var modes = Options(("unmanaged", "Link status"), ("color", "Custom lighting"), ("off", "Off")).ToList();
         if (mode == "mixed") modes.Insert(0, ("mixed", "Mixed"));
-        inspector.Children.Add(U.H3("Appearance")); inspector.Children.Add(U.Field("Lighting", U.Select(modes, mode, v => { if (v != "mixed") StageOptical(_ => new JsonObject { ["mode"] = v }, true); })));
+        Heading("Appearance"); Row(Labeled("Lighting", U.Select(modes, mode, v => { if (v != "mixed") StageOptical(_ => new JsonObject { ["mode"] = v }, true); })));
         if (mode == "color")
         {
             var effects = Options(("steady", "Steady"), ("pulse", "Gentle pulse"), ("two_color", "Two-color fade"), ("color_cycle", "Color cycle")).ToList();
             if (effect == "mixed") effects.Insert(0, ("mixed", "Mixed"));
-            inspector.Children.Add(U.Field("Effect", U.Select(effects, effect, v => { if (v != "mixed") StageOptical(l => SfpSyncModel.SfpEffectChange(l, v, native), true); })));
-            void ColorField(string key, string dim, string name) => inspector.Children.Add(ColorEditor(name, Same(key) ? first.Str(key) : null, first.Num(dim) ?? 100, v => StageOptical(_ => new JsonObject { [key] = v }), v => StageOptical(_ => new JsonObject { [dim] = v }), true, true, !Same(dim)));
+            Row(Labeled("Effect", U.Select(effects, effect, v => { if (v != "mixed") StageOptical(l => SfpSyncModel.SfpEffectChange(l, v, native), true); })));
+            void ColorField(string key, string dim, string name) => Row(ColorEditor(name, Same(key) ? first.Str(key) : null, first.Num(dim) ?? 100, v => StageOptical(_ => new JsonObject { [key] = v }), v => StageOptical(_ => new JsonObject { [dim] = v }), true, true, !Same(dim)));
             if (effect != "color_cycle") ColorField("color", "color_brightness", "Primary color");
             if (effect == "two_color") ColorField("secondary_color", "secondary_brightness", "Secondary color");
-            if (effect == "color_cycle") inspector.Children.Add(NumberRange("Color level", 0, 100, 1, first.Num("color_brightness") ?? 100, v => StageOptical(_ => new JsonObject { ["color_brightness"] = v }), v => $"{v:0}%"));
+            if (effect == "color_cycle") Row(NumberRange("Color level", 0, 100, 1, first.Num("color_brightness") ?? 100, v => StageOptical(_ => new JsonObject { ["color_brightness"] = v }), v => $"{v:0}%"));
             if (effect is not ("steady" or "mixed"))
             {
-                var range = SfpSyncModel.SfpDurationRange(effect, first.Num("period") ?? 6, native); inspector.Children.Add(U.H3("Motion"));
-                inspector.Children.Add(NumberRange("Cycle duration", range.Num("min") ?? 1, range.Num("max") ?? 30, range.Num("step") ?? 1, range.Num("value") ?? 6, v => StageOptical(_ => new JsonObject { ["period"] = v }), n => $"{n:0.##} s", !Same("period")));
+                var range = SfpSyncModel.SfpDurationRange(effect, first.Num("period") ?? 6, native); Heading("Motion");
+                Row(NumberRange("Cycle duration", range.Num("min") ?? 1, range.Num("max") ?? 30, range.Num("step") ?? 1, range.Num("value") ?? 6, v => StageOptical(_ => new JsonObject { ["period"] = v }), n => $"{n:0.##} s", !Same("period")));
             }
         }
-        else inspector.Children.Add(U.P(mode switch { "off" => "The selected lights are turned off.", "unmanaged" => "The indicator follows the port’s link status.", _ => "Choose a lighting mode for the selected SFP ports." }, "small muted"));
-        inspector.Children.Add(U.Button("Browse port effects", "quiet", () => Gallery("ethernet")));
+        else Note(mode switch { "off" => "The selected lights are turned off.", "unmanaged" => "The indicator follows the port’s link status.", _ => "Choose a lighting mode for the selected SFP ports." });
+        Tool(U.Button("Browse port effects", "quiet", () => Gallery("ethernet")));
     }
     void StageOptical(Func<JsonObject, JsonObject> change, bool rebuild = false)
     {
