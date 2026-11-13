@@ -46,7 +46,9 @@ public sealed partial class LightingPage : Page
     readonly Dictionary<string, EffectClockPair> clocks = [];
     readonly Dictionary<int, EffectAnimationState> animations = [];
     readonly Stopwatch watch = Stopwatch.StartNew();
-    readonly DispatcherTimer paint = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    // Port colors are smoothed between engine frames. Twenty paints a second keeps fades even; each paint is drawn
+    // on the processor, so a higher rate costs more without a visible difference on port lights.
+    readonly DispatcherTimer paint = new() { Interval = TimeSpan.FromMilliseconds(50) };
     readonly DispatcherTimer meterExpiry = new();
     ColorFrames frames = new();
     readonly Dictionary<int, double[]> liveColors = [];
@@ -117,7 +119,7 @@ public sealed partial class LightingPage : Page
         void Profile() { var notice = quickProfile is null ? "" : ProfilePreview.ProfileLayoutNotice(quickProfile["scene"], State); use.IsEnabled = quickProfile is not null && notice.Length == 0; use.Tip(notice); }
         profileSelect.SelectionChanged += (_, _) => { quickProfile = profiles.FirstOrDefault(p => p.Str("id") == profileSelect.Value()); Profile(); }; Profile();
         undo = Action("Undo last apply", editor.UndoLastApply); mode = U.Button("", "quiet", ToggleMode);
-        scope.Width = 180; profileSelect.Width = 174; toolbar.Child = U.Wrap(14, scope, Action("Groups", Groups), profileSelect, use, Action("Profiles", () => Shell.Navigate("Profiles")), undo, Action("History", History), Action("Saved selections", () => Library("selection")), Action("Find port", FindPort), mode);
+        scope.Width = 180; profileSelect.Width = 174; toolbar.Child = toolbarItems = U.Wrap(14, scope, Action("Groups", Groups), profileSelect, use, Action("Profiles", () => Shell.Navigate("Profiles")), undo, Action("History", History), Action("Saved selections", () => Library("selection")), Action("Find port", FindPort), mode);
         UpdateControls();
     }
     void ToggleMode()
@@ -132,7 +134,7 @@ public sealed partial class LightingPage : Page
         master.Width = 150; AutomationProperties.SetName(master, "Default brightness");
         compare = U.Button("Show applied", "quiet", () => { editor.Compare = !editor.Compare; UpdateControls(); WakePreview(); });
         apply = Action("Apply changes", editor.Apply, "primary");
-        summary = U.Text("", "muted", true); actions = U.Wrap(6, summary, compare, U.Button("Discard", "quiet", editor.Discard), apply);
+        summary = U.Text("", "muted", true); discard = U.Button("Discard", "quiet", editor.Discard); actions = U.Wrap(6, summary, compare, discard, apply);
         actions.HorizontalAlignment = HorizontalAlignment.Right;
         dockRow.Children.Add(U.Wrap(12, U.Text("Default brightness", "muted"), master, levelLabel, U.Button("Map key", "quiet", MapKey))); dockRow.Children.Add(actions);
         dock.Child = dockRow;
@@ -144,6 +146,8 @@ public sealed partial class LightingPage : Page
     readonly UplinkBandwidthMeter bandwidthPanel = new();
     readonly Button openInspector = U.Button("Port controls", "quiet");
     Button rackWorkspace = U.Button("Workspace", "quiet");
+    Button discard = U.Button("Discard", "quiet");
+    WrapPanel toolbarItems = U.Wrap(14);
     string legendSignature = "";
     void BuildCanvas()
     {
@@ -321,7 +325,12 @@ public sealed partial class LightingPage : Page
         summary.Text = editor.DraftSummary(); ToolTip.SetTip(summary, rackLayout ? summary.Text : null); apply.Content = editor.HasPendingPlan ? "Retry remaining changes" : "Apply changes";
         apply.IsEnabled = Workspace.Busy == 0 && Workspace.Connected && !Workspace.Disconnected && invalidFields.Count == 0;
         compare.Content = editor.Compare ? "Show preview" : "Show applied";
-        undo.IsEnabled = editor.CanUndoApply; mode.Content = editor.Draft.ContainsKey("mode") ? "Cancel control preview" : State.Str("mode") == "running" ? "Preview return to UniFi" : "Preview EE lighting";
+        // While a change is applying, the page takes no other lighting command (setBusy in the browser workspace).
+        // Discard or Undo part way through an apply would drop or revert changes the status line reports as applied.
+        var idle = Workspace.Busy == 0;
+        toolbarItems.IsEnabled = selectorRow.IsEnabled = compare.IsEnabled = discard.IsEnabled = idle;
+        banks.IsHitTestVisible = idle; // Port tiles keep their look while busy, as in the browser workspace.
+        undo.IsEnabled = idle && editor.CanUndoApply; mode.Content = editor.Draft.ContainsKey("mode") ? "Cancel control preview" : State.Str("mode") == "running" ? "Preview return to UniFi" : "Preview EE lighting";
         mode.IsEnabled = master.IsEnabled = inspector.IsEnabled = !editor.HasPendingPlan && Workspace.Busy == 0;
         if (!master.IsKeyboardFocusWithin && !master.IsPointerOver)
         {

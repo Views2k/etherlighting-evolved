@@ -151,9 +151,10 @@ internal sealed class PortTile : Button
                 foreach (var old in Faces.Values) old.Dispose();
                 Faces.Clear();
             }
-            var bitmap = new RenderTargetBitmap(pixels, new Vector(96 * scaling, 96 * scaling));
+            // The bitmap is plain pixels (96 DPI); the display scale is applied here and undone when it is drawn.
+            var bitmap = new RenderTargetBitmap(pixels);
             using (var context = bitmap.CreateDrawingContext())
-            using (context.PushTransform(Placement(optical, size)))
+            using (context.PushTransform(Placement(optical, size) * Matrix.CreateScale(scaling, scaling)))
                 (optical ? OpticalFace : CopperFace).Draw(context);
             Faces[key] = bitmap;
             return bitmap;
@@ -168,7 +169,7 @@ internal sealed class PortTile : Button
                 if (metal)
                 {
                     if (Face(optical, Bounds.Size, TopLevel.GetTopLevel(this)?.RenderScaling ?? 1) is { } face)
-                        context.DrawImage(face, new Rect(Bounds.Size));
+                        context.DrawImage(face, new Rect(0, 0, face.PixelSize.Width, face.PixelSize.Height), new Rect(Bounds.Size));
                     return;
                 }
                 using (context.PushTransform(Placement(optical, Bounds.Size)))

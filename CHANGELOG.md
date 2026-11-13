@@ -2,6 +2,9 @@
 
 ## 0.5.0
 
+- The desktop window uses less processor time while lighting moves: the page background and the port sockets are drawn once and reused, port colors are painted 20 times a second, and the uplink chart redraws only when it has moved a pixel.
+- While a lighting change is applying, the Lighting page turns off Discard, Undo, the toolbar and the selection buttons, so a change cannot be dropped or reverted part way through.
+- The desktop Automation and Profiles pages match the browser workspace: the editor column is left aligned, condition rows fill the row, the port picker shows how many ports are selected, and Move up, Move down and Delete rule sit on the right.
 - Port controls follows lighting changes made by a schedule, a rule or another device, and a setting that no longer matches the current lighting shows an error instead of closing EE. Previewing saved effect settings keeps fixed colors on the selected ports.
 - When Quit cannot confirm that the switch lighting was returned, EE stays open and says so; choose Quit again to close anyway. If the EE service does not start, the window offers Try again.
 - EE closes its SSH session when a switch status shell cannot open, and reconnects when status reads stay blocked, so no shells are left on the switch and effects do not run on stale status.

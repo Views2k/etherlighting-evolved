@@ -429,7 +429,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
             foreach (var (id, percent) in process.Threads.Cast<ProcessThread>()
                          .Select(thread => { try { return (thread.Id, (thread.TotalProcessorTime - threadsBefore.GetValueOrDefault(thread.Id)).TotalSeconds / threadSeconds * 100); } catch (Exception) { return (thread.Id, 0d); } })
                          .OrderByDescending(item => item.Item2).Take(5))
-                busiest.Add($"{(id == interfaceThread ? "interface" : "thread " + id)}: {percent:0.0}%");
+                busiest.Add(JsonValue.Create($"{(id == interfaceThread ? "interface" : "thread " + id)}: {percent:0.0}%"));
             result["cpu_visible_threads"] = busiest;
             var size = new PixelSize((int)Math.Max(1, window.Bounds.Width), (int)Math.Max(1, window.Bounds.Height));
             using (var bitmap = new RenderTargetBitmap(size))
@@ -470,10 +470,20 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         {
             result["error"] = exception.Message;
         }
-        var confirmed = service is null || await service.StopAsync();
-        result["service_stopped_cleanly"] = confirmed;
-        result["passed"] = passed && confirmed;
-        await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
+        var confirmed = false;
+        try
+        {
+            confirmed = service is null || await service.StopAsync();
+            result["service_stopped_cleanly"] = confirmed;
+            result["passed"] = passed && confirmed;
+            await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
+        }
+        catch (Exception exception)
+        {
+            // Without this the run would never end: nothing awaits this method.
+            passed = false;
+            try { await File.WriteAllTextAsync(Path.Combine(folder, "smoke-error.txt"), exception.ToString()); } catch (Exception) { }
+        }
         await Finish(passed && confirmed ? 0 : 1);
     }
 }
@@ -512,9 +522,6 @@ internal static class Program
             .With(new Avalonia.Rendering.Composition.CompositionOptions { UseRegionDirtyRectClipping = true });
         return Environment.GetEnvironmentVariable("EE_GPU_RENDERING") == "1"
             ? builder
-            : builder.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Software] })
-                // Redraw only the areas that changed. Without this, eight ports changing color redraw one rectangle
-                // spanning all of them and everything behind it.
-                .With(new Avalonia.Rendering.Composition.CompositionOptions { UseRegionDirtyRectClipping = Environment.GetEnvironmentVariable("EE_PERF_REGIONS") != "0" });
+            : builder.With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Software] });
     }
 }

@@ -172,6 +172,7 @@ public sealed class LightingStudio(AppShell shell) : IStudio
     void ClearDraft() { Draft = new(); baseline = pendingBefore = pendingScene = null; pendingMode = pendingWorkspace = null; confirmed = 0; Compare = false; }
     internal void Discard()
     {
+        if (W.Busy > 0) return; // A change is applying; its result decides what is left to discard.
         var partial = HasPendingPlan; ClearDraft(); Signal(); if (partial) shell.Notify("Preview discarded. Saved changes remain applied.");
     }
     public Task<bool> ConfirmDraft() => !HasEdits && W.Busy == 0 ? Task.FromResult(true) : confirming ??= ConfirmAndClear();
@@ -303,7 +304,7 @@ public sealed class LightingStudio(AppShell shell) : IStudio
     }
     public async Task UndoLastApply()
     {
-        if (!CanUndoApply || !await ConfirmDraft()) return;
+        if (W.Busy > 0 || !CanUndoApply || !await ConfirmDraft()) return;
         await W.Serialize(async () =>
         {
             if (undoAfter is null || undoBefore is null) return;
