@@ -29,8 +29,27 @@ public sealed partial class LightingPage
     {
         invalidFields.Clear();
         inspector.Children.Clear(); ResetRackInspector();
+        inspectorSignature = InspectorSignature();
         FillInspector();
         FinishRackInspector($"{string.Join(",", editor.Selected)}|{editor.Editor}|{CurrentEffect().Str("id")}");
+    }
+    string inspectorSignature = "";
+    /// <summary>What Port controls shows for the selection: its effects, fixed colors, SFP settings and control sources.</summary>
+    string InspectorSignature()
+    {
+        var lights = State.Objects("sfp").Where(light => light.Int("port") is { } id && editor.Selected.Contains(id)).Select(light => LS.SfpSettings(light).ToJsonString());
+        return string.Join("|", editor.Selected.Select(id =>
+                   $"{id}:{EffectDraft.PortEffect(State, editor.Draft, id)?.ToJsonString()}:{State.At($"overrides.{id}")?.ToJsonString()}:{LS.ControlSource(State, id, Workspace.Effects).Str("label")}"))
+               + "|" + string.Join(",", lights) + "|" + State["sfp_sync"]?.ToJsonString() + "|" + State.Str("mode") + "|" + State.Num("brightness");
+    }
+    /// <summary>
+    /// Rebuilds Port controls when the lighting it shows changed elsewhere (a schedule, a rule or another device),
+    /// unless a preview is being edited or a control in it has the keyboard focus. Port of reconcileEditor.
+    /// </summary>
+    void ReconcileInspector()
+    {
+        if (Workspace.Busy > 0 || editor.HasEdits || Shell.Overlay.HasDialog || inspector.IsKeyboardFocusWithin) return;
+        if (InspectorSignature() != inspectorSignature) BuildInspector();
     }
     void FillInspector()
     {
@@ -117,7 +136,7 @@ public sealed partial class LightingPage
         StackPanel color = U.Column(12), motion = U.Column(10), uplink = U.Column(10), more = U.Column(10);
         void Edit(string k, JsonNode v, bool rebuild = false)
         {
-            var active = CurrentEffect() ?? current;
+            var active = CurrentEffect() is { } now && now.Str("id") == id ? now : current;
             var latest = Js.Spread(EffectRenderer.DefaultConfig(id)["params"], active["params"]);
             var cfg = new JsonObject { ["id"] = id, ["params"] = latest };
             cfg["params"] = EffectRenderer.ParamsAfterChange(cfg, k, v, State["zones"]); cfg["ports"] = Js.NumberArray(editor.Selected);
@@ -239,7 +258,7 @@ public sealed partial class LightingPage
         if (State["sfp_sync"] is not null)
         {
             Heading("Synchronization");
-            Row(Labeled("SFP synchronization", U.Select(Options(("independent", "Independent"), ("together", "Together"), ("ethernet", "Follow Ethernet port")), sync.Str("mode"), mode =>
+            Row(Labeled("SFP synchronization", U.Select(editor.Copper.Count > 0 ? Options(("independent", "Independent"), ("together", "Together"), ("ethernet", "Follow Ethernet port")) : Options(("independent", "Independent"), ("together", "Together")), sync.Str("mode"), mode =>
             {
                 var next = Js.Spread(sync, new JsonObject { ["mode"] = mode });
                 editor.Set("sfp_sync", next, true);

@@ -125,7 +125,8 @@ public sealed partial class LightingPage
                 var value = record.Obj("value"); var fits = !selectionLibrary || PortTopology.SceneTopology(value)?.Same(PortTopology.LightingPorts(State)) == true;
                 var use = form.Btn(selectionLibrary ? "Select ports" : "Preview settings", async () =>
                 {
-                    if (selectionLibrary) { if (!await editor.SelectFromMap(PortTopology.PortIds(value["ports"]))) return; } else await editor.ChooseEffect(value);
+                    if (selectionLibrary) { if (!await editor.SelectFromMap(PortTopology.PortIds(value["ports"]))) return; }
+                    else if (!editor.PreviewSavedEffect(value)) return;
                     form.Dialog.Close();
                 }); use.IsEnabled = fits;
                 list.Children.Add(U.Column(6, U.H3(record.Str("name") ?? ""), U.P((selectionLibrary ? "Ports " + PortTopology.PortRanges(value["ports"]) : Label(value.Str("id") ?? "")) + (fits ? "" : " · Different switch layout"), "muted"), U.Wrap(6, use,
