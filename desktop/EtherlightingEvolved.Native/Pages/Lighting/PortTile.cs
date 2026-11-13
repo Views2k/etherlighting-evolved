@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Ui;
@@ -129,18 +130,49 @@ internal sealed class PortTile : Button
             foreach (var child in Children) child.Arrange(new Rect(final));
             return final;
         }
+        static Matrix Placement(bool optical, Size size)
+        {
+            var height = optical ? 65 : 80; var scale = Math.Min(size.Width / 120, size.Height / height);
+            return Matrix.CreateScale(scale, scale) * Matrix.CreateTranslation((size.Width - 120 * scale) / 2, (size.Height - height * scale) / 2);
+        }
+        // The metal face never changes, but drawing on the processor redraws everything over a changed LED. Its
+        // gradient shapes are drawn once per socket size and display scale into a bitmap that every tile and every
+        // color change reuses.
+        static readonly Dictionary<(bool Optical, double Width, double Height, double Scaling), RenderTargetBitmap> Faces = [];
+        static RenderTargetBitmap? Face(bool optical, Size size, double scaling)
+        {
+            var key = (optical, size.Width, size.Height, scaling);
+            if (Faces.TryGetValue(key, out var cached)) return cached;
+            var pixels = new PixelSize((int)Math.Ceiling(size.Width * scaling), (int)Math.Ceiling(size.Height * scaling));
+            if (pixels.Width <= 0 || pixels.Height <= 0) return null;
+            if (Faces.Count >= 16)
+            {
+                // Sizes from earlier window widths. Tiles redraw with the sizes still in use.
+                foreach (var old in Faces.Values) old.Dispose();
+                Faces.Clear();
+            }
+            var bitmap = new RenderTargetBitmap(pixels, new Vector(96 * scaling, 96 * scaling));
+            using (var context = bitmap.CreateDrawingContext())
+            using (context.PushTransform(Placement(optical, size)))
+                (optical ? OpticalFace : CopperFace).Draw(context);
+            Faces[key] = bitmap;
+            return bitmap;
+        }
         sealed class Layer(bool optical, bool metal) : Control
         {
             public IBrush Led = U.Brush("#555968");
             public override void Render(DrawingContext context)
             {
-                base.Render(context); var height = optical ? 65 : 80; var scale = Math.Min(Bounds.Width / 120, Bounds.Height / height);
-                if (scale <= 0) return;
-                using (context.PushTransform(Matrix.CreateScale(scale, scale) * Matrix.CreateTranslation((Bounds.Width - 120 * scale) / 2, (Bounds.Height - height * scale) / 2)))
+                base.Render(context);
+                if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
+                if (metal)
                 {
-                    if (metal) (optical ? OpticalFace : CopperFace).Draw(context);
-                    else context.DrawGeometry(Led, null, optical ? OpticalRim : CopperRim);
+                    if (Face(optical, Bounds.Size, TopLevel.GetTopLevel(this)?.RenderScaling ?? 1) is { } face)
+                        context.DrawImage(face, new Rect(Bounds.Size));
+                    return;
                 }
+                using (context.PushTransform(Placement(optical, Bounds.Size)))
+                    context.DrawGeometry(Led, null, optical ? OpticalRim : CopperRim);
             }
         }
         public void Set(double[] rgb)

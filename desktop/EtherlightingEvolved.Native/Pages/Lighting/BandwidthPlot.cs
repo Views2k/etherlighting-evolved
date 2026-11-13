@@ -60,7 +60,16 @@ internal sealed class BandwidthPlot : Control
 
     void Tick(double now)
     {
-        if (ShouldAnimate(now)) timer.Start();
+        if (ShouldAnimate(now))
+        {
+            // The trace moves one minute across the plot, so it only needs a new frame when it has moved a
+            // display pixel: about 8 frames a second at 480 pixels wide, never more than 30.
+            var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+            var perPixel = Bounds.Width > 0 ? BandwidthTimeline.Window / (Bounds.Width * scaling) : 1000d / 30;
+            var interval = TimeSpan.FromMilliseconds(Math.Clamp(perPixel, 1000d / 30, 250));
+            if (timer.Interval != interval) timer.Interval = interval;
+            timer.Start();
+        }
         else timer.Stop();
         if (active && attached && IsEffectivelyVisible) InvalidateVisual();
     }
