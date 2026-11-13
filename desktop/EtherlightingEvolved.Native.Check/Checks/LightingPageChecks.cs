@@ -3,10 +3,13 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Core.Model;
 using EtherlightingEvolved.Native.Pages.Lighting;
@@ -84,6 +87,7 @@ internal static class LightingPageChecks
             check(SecondaryModel.SceneFingerprint(after["scene"]) != original && studio.CanUndoApply, "Apply commits the preview and enables Undo");
             await studio.UndoLastApply();
             check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the exact earlier simulator scene");
+            await EditorSafety(shell, page, copper, check);
             await ColorPickerChecks.RunAsync(shell, copper[0], check);
             check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the original scene after applying the chosen color");
             foreach (var title in new[] { "Groups", "History", "Saved selections", "Find port", "Port details", "Map key" })
@@ -300,6 +304,70 @@ internal static class LightingPageChecks
             if (studio.HasEdits) studio.Discard();
             Dispatcher.UIThread.RunJobs();
             Press("Ethernet");
+        }
+    }
+
+    /// <summary>
+    /// Port controls stays usable when the lighting changes underneath it, and previewing saved effect settings
+    /// keeps fixed colors.
+    /// </summary>
+    static async Task EditorSafety(AppShell shell, LightingPage page, IReadOnlyList<int> copper, Action<bool, string> check)
+    {
+        var w = shell.Workspace; var studio = (LightingStudio)shell.Studio;
+        var window = (Window)TopLevel.GetTopLevel(page)!;
+        Button? Chooser() => page.GetLogicalDescendants().OfType<Button>().FirstOrDefault(b => b.IsEffectivelyVisible && AutomationProperties.GetName(b)?.StartsWith("Choose effect: ", StringComparison.Ordinal) == true);
+        await studio.SelectFromMap(copper); Dispatcher.UIThread.RunJobs();
+        var original = (JsonObject)w.State.DeepClone();
+        await w.SetPaused(true);
+        try
+        {
+            // Another device changes the group's effect while Port controls is open.
+            var changed = (JsonObject)original.DeepClone(); changed.Remove("ports");
+            foreach (var zone in changed.Objects("zones")) zone["effect"] = EffectRenderer.DefaultConfig("rainbow");
+            w.Handle(new JsonObject { ["type"] = "state", ["state"] = changed }, Environment.TickCount64);
+            Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+            check(AutomationProperties.GetName(Chooser()!) == "Choose effect: Rainbow Wave", "Port controls follows an effect change made elsewhere");
+
+            // A change the current setup does not accept is reported and leaves the preview alone.
+            var thrown = false; var accepted = true;
+            try { accepted = studio.StageEffect(new JsonObject { ["id"] = "static", ["params"] = EffectRenderer.DefaultConfig("rainbow")["params"]!.DeepClone(), ["ports"] = Js.NumberArray(copper) }); }
+            catch (Exception) { thrown = true; }
+            check(!thrown && !accepted && !studio.HasEdits, "an effect change that no longer matches the lighting is refused without an exception or a preview");
+
+            var first = copper[0];
+            var saved = EffectRenderer.DefaultConfig("breathing");
+            await studio.SelectFromMap([first]); Dispatcher.UIThread.RunJobs();
+            check(studio.PreviewSavedEffect(saved) && EffectDraft.EffectDrafts(studio.Draft).Any() && EffectDraft.EffectDrafts(studio.Draft).All(effect => effect.Bool("clearOverrides") != true),
+                "previewing saved effect settings keeps fixed colors on the selected ports");
+            studio.Discard(); Dispatcher.UIThread.RunJobs();
+            await studio.SelectFromMap([]); var refused = false;
+            try { studio.PreviewSavedEffect(saved); } catch (InvalidOperationException error) { refused = error.Message == "Select ports for these settings."; }
+            check(refused && !studio.HasEdits, "saved effect settings ask for a selection first");
+
+            // The refusal above left its error notice on screen. A dialog opened now must cover it: a click where
+            // the notice's Dismiss button is goes to the dialog, and reaches the button once the dialog is closed.
+            var notice = shell.Overlay.GetLogicalDescendants().OfType<Button>().Single(b => Equals(b.Content, "Dismiss"));
+            void ClickNotice()
+            {
+                var point = notice.TranslatePoint(new Point(notice.Bounds.Width / 2, notice.Bounds.Height / 2), window)!.Value;
+                window.MouseMove(point); window.MouseDown(point, MouseButton.Left); window.MouseUp(point, MouseButton.Left);
+                Dispatcher.UIThread.RunJobs();
+            }
+            var shown = notice.IsEffectivelyVisible;
+            var dialog = shell.Overlay.Show(new StackPanel { Width = 300, Height = 900 }, 320); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+            ClickNotice();
+            var covered = notice.IsEffectivelyVisible;
+            dialog.Close(); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+            ClickNotice();
+            check(shown && covered && !notice.IsEffectivelyVisible, $"an error notice that stays on screen sits beneath an open dialog (shown {shown}, kept under the dialog {covered}, dismissed afterward {!notice.IsEffectivelyVisible})");
+        }
+        finally
+        {
+            if (studio.HasEdits) studio.Discard();
+            var restore = (JsonObject)original.DeepClone(); restore.Remove("ports");
+            w.Handle(new JsonObject { ["type"] = "state", ["state"] = restore }, Environment.TickCount64);
+            await w.SetPaused(false);
+            await studio.SelectFromMap(copper); Dispatcher.UIThread.RunJobs();
         }
     }
 

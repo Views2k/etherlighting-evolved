@@ -14,7 +14,7 @@ public sealed class ServiceHost
     readonly string node, script, root, dataDirectory;
     readonly bool packaged, demo;
     readonly object stopLock = new();
-    Task<bool>? stopping;
+    Task<bool>? stopping, forcing;
     Process? process;
     TaskCompletionSource<Uri>? ready;
 
@@ -88,61 +88,92 @@ public sealed class ServiceHost
         }
         catch
         {
-            Kill();
+            // Give the gateway its own cleanup first, in case its engine already connected to the switch.
+            try { EndUnstartedService(); } catch (Exception) { }
             throw;
+        }
+
+        void EndUnstartedService()
+        {
+            try { process?.StandardInput.Close(); } catch (Exception) { }
+            if (process is { } started && !started.WaitForExit(25000)) Kill();
         }
     }
 
-    /// <summary>All desktop exit paths share one close request and its final result.</summary>
-    public Task<bool> StopAsync()
+    /// <summary>
+    /// Asks the gateway to close the workspace, which returns the switch lighting, and waits for the service to
+    /// exit. True only when that is confirmed. Concurrent callers share one close request.
+    /// <para>Without <paramref name="force"/> an unconfirmed close leaves the service running, so the user can try
+    /// again. With it (a second Quit, the installer, Windows sign-out) the gateway first gets its own cleanup
+    /// attempts after its input closes, and is ended only if it still has not exited; the unconfirmed exit is then
+    /// recorded so the next start recovers the lighting.</para>
+    /// </summary>
+    public async Task<bool> StopAsync(bool force = true)
     {
-        lock (stopLock) return stopping ??= Task.Run(StopOwnedServiceAsync);
+        Task<bool> close;
+        lock (stopLock) close = stopping ??= Task.Run(CloseAsync);
+        if (await close.ConfigureAwait(false)) return true;
+        if (!force)
+        {
+            // Let a later request ask the gateway again.
+            lock (stopLock) if (stopping == close) stopping = null;
+            return false;
+        }
+        Task<bool> ending;
+        lock (stopLock) ending = forcing ??= Task.Run(EndAsync);
+        return await ending.ConfigureAwait(false);
     }
 
-    async Task<bool> StopOwnedServiceAsync()
+    async Task<bool> CloseAsync()
     {
         var running = process;
         if (running is null) return true;
-        var confirmed = false;
+        // A service that never became ready opened no workspace, so there is nothing to return.
+        if (running.HasExited) return running.ExitCode == 0 || Address is null;
         try
         {
-            if (!running.HasExited)
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            if (Address is { } address)
             {
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-                if (Address is { } address)
-                {
-                    using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
-                    using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
-                    using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
-                    if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
-                }
-                running.StandardInput.Close();
-                await running.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+                using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
+                using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) return false;
+                using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+                if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
             }
-            confirmed = running.ExitCode == 0;
-            return confirmed;
+            running.StandardInput.Close();
+            await running.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+            return running.ExitCode == 0;
         }
         catch (Exception) { return false; }
-        finally
-        {
-            if (!confirmed)
-            {
-                try { Kill(); }
-                finally { Locations.RecordUnconfirmedExit(dataDirectory); }
-            }
-        }
     }
 
-    /// <summary>Stops only the gateway started by this instance and its local descendants.</summary>
-    public void Kill()
+    async Task<bool> EndAsync()
     {
         var running = process;
-        if (running is null || running.HasExited) return;
+        if (running is null) return true;
+        // Closing the gateway's input starts its own cleanup: up to four attempts five seconds apart.
+        try { running.StandardInput.Close(); } catch (Exception) { }
+        try
+        {
+            await running.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+            if (running.ExitCode == 0) return true;
+        }
+        catch (Exception) { }
+        Kill();
+        if (Address is not null) Locations.RecordUnconfirmedExit(dataDirectory);
+        return false;
+    }
+
+    /// <summary>Ends only the gateway started by this instance and its local descendants. True once it has exited.</summary>
+    public bool Kill()
+    {
+        var running = process;
+        if (running is null || running.HasExited) return true;
         try { running.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) when (running.HasExited) { return; }
-        if (!running.WaitForExit(5000))
-            throw new TimeoutException("The local EE service did not exit.");
+        catch (Exception) when (running.HasExited) { return true; }
+        catch (Exception) { return false; }
+        return running.WaitForExit(5000);
     }
 
     static int FreePort(int preferred)

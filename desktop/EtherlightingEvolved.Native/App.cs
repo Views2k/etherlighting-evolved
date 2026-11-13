@@ -94,11 +94,21 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
     Workspace? workspace;
     ServiceHost? service;
     TrayIcon? tray;
-    bool quitting;
+    bool quitting, forceArmed;
     Task? quitTask;
 
     public void Start()
     {
+        // An error that escapes an input handler is shown instead of closing EE, which would lose an unapplied
+        // preview and leave the window in the tray without its service.
+        Dispatcher.UIThread.UnhandledException += (_, e) =>
+        {
+            e.Handled = true;
+            Trace.TraceError(e.Exception.ToString());
+            try { window?.Shell.Notify(e.Exception.Message is { Length: > 0 } message ? message : "Could not confirm the change. Try again.", true); }
+            catch (Exception) { }
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) => e.SetObserved();
         desktop.ShutdownRequested += OnShutdownRequested;
         instance.Listen(command => Dispatcher.UIThread.InvokeAsync(() => HandleAsync(command)));
         if (options.Smoke is null) CreateTray();
@@ -121,9 +131,9 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         catch (Exception)
         {
             if (quitting) return;
-            Open(new Uri("http://127.0.0.1:9/"));
-            window!.Shell.Notify("The EE service did not start. Close any other EE window, then open EE again.", true);
-            if (options.Smoke is not null) desktop.Shutdown(1);
+            if (options.Smoke is not null) { desktop.Shutdown(1); return; }
+            if (window is null) Open(new Uri("http://127.0.0.1:9/"));
+            window!.Shell.ShowServiceFailure("The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
             return;
         }
         if (quitting) return;
@@ -131,6 +141,35 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         await window!.Shell.Start();
         if (options.Shot is { } shot) _ = ShotAsync(shot);
         else if (options.Smoke is { } folder) _ = SmokeAsync(folder);
+    }
+
+    /// <summary>Starts the bundled service again after a failed start and opens the workspace in a new window.</summary>
+    async Task RetryServiceAsync()
+    {
+        if (quitting) return;
+        var previous = window;
+        previous?.Shell.Status("Starting the EE service…");
+        try
+        {
+            if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is not { } host)
+                throw new InvalidOperationException("The EE service files are missing. Reinstall EE.");
+            service = host;
+            var address = await host.StartAsync(CancellationToken.None);
+            if (quitting) return;
+            if (previous is not null)
+            {
+                previous.AllowClose = true;
+                previous.Close();
+            }
+            Open(address);
+            ShowWindow();
+            await window!.Shell.Start();
+        }
+        catch (Exception exception) when (!quitting)
+        {
+            window?.Shell.ShowServiceFailure(exception is InvalidOperationException { Message: { Length: > 0 } message } && message.Contains("Reinstall")
+                ? message : "The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
+        }
     }
 
     void Open(Uri address)
@@ -194,7 +233,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         }
         menu.Add(new NativeMenuItemSeparator());
         var quitItem = new NativeMenuItem("Quit");
-        quitItem.Click += (_, _) => _ = QuitAsync();
+        quitItem.Click += (_, _) => _ = QuitAsync(force: false);
         menu.Add(quitItem);
         WindowIcon? icon = null;
         try { icon = new WindowIcon(AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/ee.ico"))); }
@@ -219,11 +258,16 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
             ShowWindow();
             return "ok";
         }
-        await QuitAsync();
+        // The installer must be able to replace the files, so its request ends EE even if cleanup is unconfirmed.
+        await QuitAsync(force: true);
         return service?.Running == true ? "service_still_running" : "closed";
     }
 
-    Task QuitAsync() => quitTask ??= CloseDesktopAsync();
+    /// <summary>
+    /// Quits after returning the switch lighting. A Quit from the tray whose return is not confirmed keeps EE
+    /// running and says so; choosing Quit again, the installer and Windows sign-out end EE anyway.
+    /// </summary>
+    Task QuitAsync(bool force) => quitTask ??= CloseDesktopAsync(force || forceArmed);
 
     void PrepareToQuit()
     {
@@ -236,14 +280,35 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         }
     }
 
-    async Task CloseDesktopAsync()
+    async Task CloseDesktopAsync(bool force)
     {
         var code = 0;
-        try { PrepareToQuit(); window?.Shell.Status("Closing the workspace…"); }
+        try { PrepareToQuit(); window?.Shell.Status("Returning the switch lighting…"); }
         catch (Exception) { code = 1; }
-        try { if (service is not null && !await service.StopAsync()) code = 1; }
-        catch (Exception) { code = 1; }
-        await Finish(code);
+        var confirmed = true;
+        try { confirmed = service is null || await service.StopAsync(force); }
+        catch (Exception) { confirmed = false; }
+        if (!confirmed && !force)
+        {
+            KeepRunning();
+            return;
+        }
+        await Finish(confirmed && code == 0 ? 0 : 1);
+    }
+
+    void KeepRunning()
+    {
+        forceArmed = true;
+        quitting = false;
+        quitTask = null;
+        if (workspace is not null)
+        {
+            workspace.Closing = false;
+            workspace.ConnectFrames();
+        }
+        ShowWindow();
+        window?.Shell.Notify("EE could not confirm that the switch lighting was returned. Choose Quit again to close anyway; " +
+                             "EE recovers the lighting the next time it connects.", true);
     }
 
     async Task Finish(int code)

@@ -45,7 +45,11 @@ def verify(root, app, node, installer=None):
     native = (root / 'desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj').read_text('utf-8')
     if re.search(r'<Version>([^<]+)</Version>', native).group(1) != version:
         raise ValueError('Desktop program and Python versions differ.')
-    if b'PYZ-00.pyz' in (app / 'EtherlightingEvolved.exe').read_bytes()[-4_000_000:]:
+    try:
+        CArchiveReader(str(app / 'EtherlightingEvolved.exe'))
+    except Exception:
+        pass  # Not a PyInstaller program: the native desktop program.
+    else:
         raise ValueError('The desktop program is the earlier Python build.')
     modules, sources = {}, {}
     for relative, entry in [('engine/EEEngine.exe', 'native_service')]:

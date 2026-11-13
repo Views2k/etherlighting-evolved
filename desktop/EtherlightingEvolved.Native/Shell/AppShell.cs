@@ -410,6 +410,20 @@ public sealed class AppShell : UserControl
         view.Child = content;
     }
 
+    /// <summary>The bundled service did not start: say so and offer to start it again.</summary>
+    public void ShowServiceFailure(string message, Func<Task> retry)
+    {
+        var button = UiKit.Button("Try again", "primary");
+        button.Click += async (_, _) =>
+        {
+            button.IsEnabled = false;
+            try { await retry(); }
+            finally { button.IsEnabled = true; }
+        };
+        ShowView(UiKit.EmptyState("Couldn’t open the workspace", message, button));
+        Status("The EE service is not running", true);
+    }
+
     /// <summary>Opens a page (port of navigate). keepDraft skips the unapplied-preview question.</summary>
     public Task Navigate(string target, bool keepDraft = false) => NavigateCore(target, keepDraft, null);
 

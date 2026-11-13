@@ -345,7 +345,7 @@ public sealed partial class LightingPage : Page
         var next = string.Join(",", editor.Copper) + "|" + string.Join(",", editor.Optical);
         if (shape != next) { BuildBanks(); BuildInspector(); BuildToolbar(); }
         var mode = State.Str("mode") ?? ""; if (mode != lastMode) { lastMode = mode; UpdateControls(); }
-        PaintTelemetry(); UpdateControls();
+        PaintTelemetry(); UpdateControls(); ReconcileInspector();
     }
     public override void Frame()
     {
@@ -395,7 +395,12 @@ public sealed partial class LightingPage : Page
         var time = watch.Elapsed.TotalMilliseconds;
         var confirmedColors = frames.Sample(time);
         Dictionary<int, double[]>? preview = null;
-        if (editor.HasEdits && !editor.Compare) preview = DraftPreview.PreviewDraftColors(State, editor.Draft, time / 1000, clocks, animations);
+        if (editor.HasEdits && !editor.Compare)
+        {
+            // A preview that no longer matches the current lighting falls back to the confirmed colors.
+            try { preview = DraftPreview.PreviewDraftColors(State, editor.Draft, time / 1000, clocks, animations); }
+            catch (Exception error) when (error is InvalidOperationException or ArgumentException or KeyNotFoundException or NullReferenceException) { preview = null; }
+        }
         foreach (var (id, tile) in tiles)
         {
             var rgb = preview?.GetValueOrDefault(id) ?? confirmedColors.GetValueOrDefault(id.ToString());

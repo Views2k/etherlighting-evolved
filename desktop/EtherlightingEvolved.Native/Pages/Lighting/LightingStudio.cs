@@ -71,20 +71,49 @@ public sealed class LightingStudio(AppShell shell) : IStudio
         shell.UpdateDraftBar();
         Changed?.Invoke(editor);
     }
-    internal void Edit(Func<JsonObject, JsonObject> transform, bool rebuild = false)
+    /// <summary>
+    /// Changes the preview. A change the current setup does not accept (for example, the lighting changed on
+    /// another device while Port controls was open) is shown as an error and leaves the preview as it was.
+    /// Returns false when nothing changed.
+    /// </summary>
+    internal bool Edit(Func<JsonObject, JsonObject> transform, bool rebuild = false)
     {
-        if (HasPendingPlan || W.Busy > 0) return;
+        if (HasPendingPlan || W.Busy > 0) return false;
         var before = baseline ?? SceneReview.SceneFromState(State);
-        var next = transform((JsonObject)Draft.DeepClone());
-        LS.LightingOperations(State, next);
+        JsonObject next;
+        try
+        {
+            next = transform((JsonObject)Draft.DeepClone());
+            LS.LightingOperations(State, next);
+        }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException or KeyNotFoundException or NullReferenceException)
+        {
+            shell.Notify(error is InvalidOperationException or ArgumentException && error.Message.Length > 0
+                ? error.Message : "This setting no longer matches the current lighting. Review the current setup.", true);
+            Changed?.Invoke(true);
+            return false;
+        }
         baseline = next.Count == 0 ? null : before;
         Draft = next; Compare = false;
         Signal(rebuild);
+        return true;
     }
-    internal void Set(string field, JsonNode? value, bool rebuild = false) =>
+    internal bool Set(string field, JsonNode? value, bool rebuild = false) =>
         Edit(d => { d[field] = value.Copy(); return d; }, rebuild);
-    internal void StageEffect(JsonObject config, bool rebuild = true) =>
+    internal bool StageEffect(JsonObject config, bool rebuild = true) =>
         Edit(d => EffectDraft.StageEffectDraft(d, config, "group-" + Guid.NewGuid(), Copper), rebuild);
+    /// <summary>
+    /// Previews saved effect settings on the selected ports. Fixed colors on those ports are kept, as in the
+    /// browser workspace; choosing an effect in the gallery is what replaces them.
+    /// </summary>
+    internal bool PreviewSavedEffect(JsonObject settings)
+    {
+        if (Selected.Count == 0) throw new InvalidOperationException("Select ports for these settings.");
+        var chosen = (JsonObject)settings.DeepClone();
+        chosen["ports"] = Js.NumberArray(Selected); chosen["clearOverrides"] = false;
+        Editor = "effect";
+        return StageEffect(chosen);
+    }
     public async Task ChooseEffect(JsonObject config)
     {
         var ports = config["ports"] is JsonArray a ? PortTopology.PortIds(a) : Selected.ToList();

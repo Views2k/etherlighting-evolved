@@ -110,7 +110,9 @@ public sealed class Overlay : Panel
             dialogs.RemoveAt(index);
         };
         dialogs.Add((dialog, layer));
-        Children.Insert(Children.Count - 1, layer);
+        // Dialogs sit above the toast, as modal dialogs do in the browser workspace, so a notice that stays on
+        // screen can never cover a dialog's buttons. A dialog reports its own errors.
+        Children.Add(layer);
         Enter(frame, 4, 200);
         Dispatcher.UIThread.Post(() => FirstFocusable(content)?.Focus(), DispatcherPriority.Loaded);
         return dialog;

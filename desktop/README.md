@@ -69,7 +69,9 @@ Use `packaging/build.ps1` for the Windows installer with the gateway and engine.
 [WINDOWS POWERSHELL]
 
 ```powershell
-& .\desktop\publish.ps1 -Runtime osx-arm64,osx-x64,linux-x64 -OutputRoot .\outputs\desktop-clients
+& .\desktop\publish.ps1 -Runtime linux-x64 -OutputRoot .\outputs\desktop-clients
 ```
+
+Build the macOS bundles on a Mac, where the script signs them; Apple Silicon does not open unsigned programs. On Windows or Linux the script refuses macOS runtimes unless `-AllowUnsignedMac` is given, and each bundle built that way needs `codesign --force --deep --sign - EtherlightingEvolved.app` on a Mac before it opens.
 
 Follow the [repository workflow](../docs/WORKFLOW.md) for review, checks and release approval.
