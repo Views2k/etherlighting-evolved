@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using EtherlightingEvolved.Native.Shell;
 
 namespace EtherlightingEvolved.Native.Ui;
@@ -9,14 +10,26 @@ internal class DialogForm
     public WrapPanel Buttons { get; } = Ui.Wrap(8);
     public TextBlock Error { get; } = Ui.P("", "error");
     public Dialog Dialog { get; }
-    readonly StackPanel root;
+    readonly Control root;
     public bool Busy { get; private set; }
 
-    public DialogForm(AppShell shell, string title, double width = 560)
+    public DialogForm(AppShell shell, string title, double width = 560, bool pinActions = false)
     {
         Error.IsVisible = false;
-        root = Ui.Column(12, Ui.H2(title), Body, Error, Buttons);
-        Dialog = shell.Overlay.Show(root, width);
+        if (pinActions)
+        {
+            var fields = new ScrollViewer { Content = Body, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            var footer = Ui.Column(8, Error, Buttons);
+            var layout = new Grid { RowDefinitions = new("Auto,*,Auto"), RowSpacing = 12 };
+            layout.Children.Add(Ui.H2(title));
+            layout.Children.Add(fields);
+            layout.Children.Add(footer);
+            Grid.SetRow(fields, 1);
+            Grid.SetRow(footer, 2);
+            root = layout;
+        }
+        else root = Ui.Column(12, Ui.H2(title), Body, Error, Buttons);
+        Dialog = shell.Overlay.Show(root, width, scrollContent: !pinActions);
         Dialog.Canceling = () => !Busy;
     }
 
