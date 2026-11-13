@@ -57,6 +57,7 @@ internal static class LightingPageChecks
                 check(wideRow == 0 && Grid.GetRow(bandwidth) == 1 && heading.IsEffectivelyVisible && detached == 0,
                     "wide and rack layouts keep the same attached bandwidth meter and visible heading");
                 await RackBandwidth(window, page, bandwidth, output, check);
+                await RackFit(window, page, shell, output, check);
             }
             finally
             {
@@ -147,7 +148,7 @@ internal static class LightingPageChecks
         var face = page.GetLogicalDescendants().OfType<PortTile>().First().GetLogicalAncestors().OfType<ScrollViewer>().First();
         var brightness = page.GetLogicalDescendants().OfType<TextBlock>().First(t => t.Text == "Default brightness");
         var dock = brightness.GetLogicalAncestors().OfType<Border>().First();
-        var metrics = meter.GetLogicalDescendants().OfType<Grid>().Single(g => g.Width == 270);
+        var caption = ((Panel)plot.Parent!).Children.OfType<TextBlock>().Single();
         Rect Bounds(Control c) => new(c.TranslatePoint(default, window)!.Value, c.Bounds.Size);
         Button? HideButton() => page.GetLogicalDescendants().OfType<Button>().FirstOrDefault(b =>
             b.IsEffectivelyVisible && AutomationProperties.GetName(b) == "Hide port controls");
@@ -180,9 +181,9 @@ internal static class LightingPageChecks
                     var viewport = Bounds(map);
                     var labels = meter.GetLogicalDescendants().OfType<TextBlock>().Where(t => !string.IsNullOrEmpty(t.Text)).ToArray();
                     var caseName = $"{width}x{height}{(inspector ? "-inspector" : "")}";
-                    check((HideButton() is not null) == inspector && metrics.Bounds.Width == 270 &&
-                        Math.Abs(full.X - Bounds(metrics).Right - 16) <= 1 && viewport.Right - full.Right is >= 4 and <= 24,
-                        $"the {caseName} graph fills the available rack width beside the original rate columns");
+                    check((HideButton() is not null) == inspector && Math.Abs(Bounds(caption).Y + Bounds(caption).Height / 2 - full.Center.Y) <= 2 &&
+                        Math.Abs(full.X - Bounds(caption).Right - 8) <= 1 && viewport.Right - full.Right is >= 4 and <= 24,
+                        $"the {caseName} graph fills the rack width on the same line as its caption and the rates");
                     check(meter.IsEffectivelyVisible && full.Height == 32 && viewport.Contains(full) && Bounds(dock).Top - full.Bottom >= 2 &&
                         Bounds(face).Bottom <= Bounds(meter).Top && labels.All(t => viewport.Contains(Bounds(t))) &&
                         labels.Count(t => t.Text!.StartsWith("Peak ", StringComparison.Ordinal) && t.Text.EndsWith("Mbps", StringComparison.Ordinal)) == 2,
@@ -211,6 +212,94 @@ internal static class LightingPageChecks
             workspace.Bandwidth.Reset();
             workspace.Handle(new JsonObject { ["type"] = "frame", ["uplink_bandwidth"] = original }, Environment.TickCount64);
             await workspace.SetPaused(false);
+        }
+    }
+
+    /// <summary>
+    /// A 1280 × 400 rack window shows the whole Lighting page without scrolling: the port map with the bandwidth
+    /// line and bottom bar, and Port controls for every effect, a fixed color and the SFP lights.
+    /// </summary>
+    static async Task RackFit(Window window, LightingPage page, AppShell shell, string output, Action<bool, string> check)
+    {
+        var w = shell.Workspace;
+        var studio = (LightingStudio)shell.Studio;
+        var ports = PortTopology.LightingPorts(w.State);
+        window.Width = 1280; window.Height = 400; Dispatcher.UIThread.RunJobs();
+        page.RevealEditor(); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+        List<string> Scrolling() => page.GetLogicalDescendants().OfType<ScrollViewer>()
+            .Where(s => s.IsEffectivelyVisible && s.Extent.Height > s.Viewport.Height + .5)
+            .Select(s => $"{s.Extent.Height:0} in {s.Viewport.Height:0}").ToList();
+        void Press(string label)
+        {
+            var button = page.GetLogicalDescendants().OfType<Button>().First(b => b.IsEffectivelyVisible && b.IsEnabled && Equals(b.Content, label));
+            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+        }
+        void Save(string name)
+        {
+            using var image = new RenderTargetBitmap(new PixelSize(1280, 400));
+            image.Render(window);
+            image.Save(Path.Combine(output, $"rack-fit-{name}.png"));
+        }
+        List<string> Pages(string name)
+        {
+            var failures = new List<string>();
+            for (var index = 0; index < page.RackPageCount; index++)
+            {
+                page.ShowRackPage(index); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+                if (!page.RackFits || Scrolling() is { Count: > 0 } scrolling) failures.Add($"{name} page {index + 1} of {page.RackPageCount} ({string.Join(", ", Scrolling())})");
+            }
+            page.ShowRackPage(0); Dispatcher.UIThread.RunJobs();
+            return failures;
+        }
+        try
+        {
+            Press("Ethernet");
+            var before = Scrolling();
+            check(before.Count == 0 && page.RackFits, $"the 1280 × 400 rack window shows the port map, bandwidth and Port controls without scrolling{(before.Count > 0 ? ": " + string.Join(", ", before) : "")}");
+            Save("applied");
+            var failed = new List<string>(); var paged = 0; var cases = 0;
+            foreach (var spec in w.Effects.Objects())
+            {
+                var id = spec.Str("id")!;
+                var random = spec.Objects("params").Select(p => p.Str("random_param")).OfType<string>().Distinct().ToList();
+                foreach (var randomized in random.Count > 0 ? new[] { false, true } : [false])
+                {
+                    var cfg = EffectRenderer.DefaultConfig(id); cfg["ports"] = Js.NumberArray(ports.Copper.Concat(ports.Sfp));
+                    if (randomized) foreach (var key in random) cfg.Obj("params")[key] = true;
+                    if (id == "traffic") cfg.Obj("params")["custom_uplink"] = randomized;
+                    await studio.ChooseEffect(cfg); Dispatcher.UIThread.RunJobs(); window.UpdateLayout();
+                    cases++; if (page.RackPageCount > 1) paged++;
+                    failed.AddRange(Pages(id + (randomized ? " randomized" : "")));
+                    if (id == "traffic" && !randomized)
+                    {
+                        Save("live-traffic");
+                        page.ShowRackPage(1); Dispatcher.UIThread.RunJobs(); window.UpdateLayout(); Save("live-traffic-page-2");
+                        page.ShowRackPage(0); Dispatcher.UIThread.RunJobs();
+                    }
+                }
+            }
+            check(failed.Count == 0, $"Port controls fits the rack window for all {cases} effect variants, {paged} of them on pages{(failed.Count > 0 ? ": " + string.Join("; ", failed) : "")}");
+            studio.Discard(); Dispatcher.UIThread.RunJobs();
+            Press("Fixed color");
+            var color = Pages("fixed color");
+            check(color.Count == 0, $"the fixed color controls fit the rack window{(color.Count > 0 ? ": " + string.Join("; ", color) : "")}");
+            Save("fixed-color");
+            Press("Effect");
+            if (ports.Sfp.Count > 0)
+            {
+                Press("SFP");
+                var optical = Pages("SFP");
+                check(optical.Count == 0, $"the SFP controls fit the rack window{(optical.Count > 0 ? ": " + string.Join("; ", optical) : "")}");
+                Save("sfp");
+            }
+            Press("None");
+            check(Scrolling().Count == 0, "the empty selection fits the rack window");
+        }
+        finally
+        {
+            if (studio.HasEdits) studio.Discard();
+            Dispatcher.UIThread.RunJobs();
+            Press("Ethernet");
         }
     }
 

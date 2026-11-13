@@ -36,6 +36,9 @@ public sealed partial class LightingPage : Page
     readonly Grid rackFaceplate = new() { ColumnDefinitions = new("*,Auto"), RowDefinitions = new("Auto,Auto,Auto,0,Auto"), VerticalAlignment = VerticalAlignment.Top };
     readonly ScrollViewer rackPortScroll = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     readonly List<Control> portRows = [];
+    readonly Grid head = new() { ColumnDefinitions = new("Auto,Auto,*"), RowDefinitions = new("Auto,Auto"), ColumnSpacing = 12, RowSpacing = 2 };
+    readonly Grid footer = new() { ColumnDefinitions = new("*,Auto") };
+    WrapPanel selectorRow = U.Wrap(7);
     bool rackLayout;
     readonly StackPanel inspector = U.Column(14);
     readonly TextBlock title = U.H1(""), mapStatus = U.P("", "muted"), legend = U.Text("", "muted", true);
@@ -77,6 +80,7 @@ public sealed partial class LightingPage : Page
         BuildDock(); BuildCanvas(); BuildInspector(); BuildToolbar(); Reflow(); Update(); WakePreview();
         connection = (Workspace.Connected, Workspace.Disconnected, Workspace.Busy);
         Workspace.ConnectionChanged += ConnectionChanged;
+        inspectorFrame.SizeChanged += (_, _) => PaginateRack();
         _ = LoadProfiles();
     }
     public override bool FullBleed => true;
@@ -144,7 +148,9 @@ public sealed partial class LightingPage : Page
     void BuildCanvas()
     {
         var badge = U.Text("Demo", "small muted"); badge.IsVisible = Workspace.Session.Bool("simulated") == true;
-        title.FontSize = 19; var name = U.Row(12, title, badge); var head = U.Column(2, name, mapStatus);
+        title.FontSize = 19; title.VerticalAlignment = badge.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(title); head.Children.Add(badge); Grid.SetColumn(badge, 1);
+        head.Children.Add(mapStatus); Grid.SetRow(mapStatus, 1); Grid.SetColumnSpan(mapStatus, 3);
         canvas.Children.Add(head);
         portRows.Add(head);
         rackPortScroll.Content = rackFaceplate;
@@ -158,9 +164,10 @@ public sealed partial class LightingPage : Page
         var multi = U.Button("Select multiple", "quiet"); multi.Classes.Set("selected", editor.Multiple); multi.Click += (_, _) => { editor.Multiple = !editor.Multiple; multi.Classes.Set("selected", editor.Multiple); };
         details = Action("Port details", PortDetails); rackWorkspace = U.Button("Workspace", "quiet", RackTools);
         openInspector.Click += ShowInspector;
-        AddRow(U.Wrap(7, selectors, multi, details, openInspector, rackWorkspace), 1);
+        selectorRow = U.Wrap(7, selectors, multi, details, openInspector, rackWorkspace);
+        AddRow(selectorRow, 1);
         AddRow(banks, 2);
-        selection = U.Text("", "small muted"); var footer = new Grid { ColumnDefinitions = new("*,Auto") };
+        selection = U.Text("", "small muted");
         footer.Children.Add(legendItems); footer.Children.Add(selection); Grid.SetColumn(selection, 1); AddRow(footer, 4);
         BuildBanks();
 
@@ -183,6 +190,38 @@ public sealed partial class LightingPage : Page
         else canvas.Children.Remove(rackPortScroll);
         mapScroll.VerticalScrollBarVisibility = rack ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
         canvas.RowDefinitions = new(rack ? "*,Auto" : "Auto,Auto,Auto,Auto,Auto");
+
+        // A rack window is short and wide, so rows that stack in a normal window share a line: the switch name
+        // and its status sit beside the selection buttons, and the map legend moves into the bottom bar.
+        Grid.SetRow(selectorRow, rack ? 0 : 1); Grid.SetColumn(selectorRow, rack ? 1 : 0); Grid.SetColumnSpan(selectorRow, rack ? 1 : 2);
+        selectorRow.HorizontalAlignment = rack ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+        head.VerticalAlignment = rack ? VerticalAlignment.Center : VerticalAlignment.Top;
+        Grid.SetRow(mapStatus, rack ? 0 : 1); Grid.SetColumn(mapStatus, rack ? 2 : 0); Grid.SetColumnSpan(mapStatus, rack ? 1 : 3);
+        mapStatus.TextWrapping = rack ? TextWrapping.NoWrap : TextWrapping.Wrap;
+        mapStatus.TextTrimming = rack ? TextTrimming.CharacterEllipsis : TextTrimming.None;
+        mapStatus.VerticalAlignment = VerticalAlignment.Center;
+        footer.IsVisible = !rack;
+        (legendItems.Parent as Panel)?.Children.Remove(legendItems);
+        if (rack) dockRow.Children.Add(legendItems); else footer.Children.Insert(0, legendItems);
+        Grid.SetColumn(legendItems, rack ? 1 : 0);
+        legendItems.HorizontalAlignment = rack ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+        legendItems.VerticalAlignment = VerticalAlignment.Center;
+        // The preview summary stays on the same line as its buttons; its full text is in the tooltip.
+        summary.TextWrapping = rack ? TextWrapping.NoWrap : TextWrapping.Wrap;
+        summary.TextTrimming = rack ? TextTrimming.CharacterEllipsis : TextTrimming.None;
+        summary.VerticalAlignment = VerticalAlignment.Center;
+
+        // The bottom bar sits under the port map only, so Port controls uses the full height of the window.
+        (dock.Parent as Panel)?.Children.Remove(dock);
+        (rack ? body : layout).Children.Add(dock);
+        Grid.SetRow(dock, rack ? 1 : 2);
+        body.RowDefinitions = new(rack ? "*,Auto" : "*");
+        Grid.SetRowSpan(inspectorFrame, rack ? 2 : 1);
+        inspector.Margin = rack ? new Thickness(12, 10) : new Thickness(16);
+        inspector.Spacing = rack ? 6 : 14;
+        bandwidthPanel.SetCompact(rack);
+        BuildInspector();
+        UpdateControls();
     }
     void BuildBanks()
     {
@@ -238,7 +277,9 @@ public sealed partial class LightingPage : Page
         body.ColumnDefinitions = new(right ? (rack ? "*,320" : "*,360") : "*"); Grid.SetColumn(inspectorFrame, right ? 1 : 0);
         inspectorFrame.IsVisible = right || narrow && mobileInspector; mapScroll.IsVisible = !narrow || !mobileInspector;
         toolbar.IsVisible = !rack; openInspector.IsVisible = !right; rackWorkspace.IsVisible = rack;
-        canvas.Margin = new Thickness(rack ? 12 : 20, rack ? 3 : 14);
+        canvas.Margin = new Thickness(rack ? 12 : 20, rack ? 5 : 14);
+        // Room left in the rack's bottom bar after the brightness controls and the three preview buttons.
+        summary.MaxWidth = rack ? Math.Max(0, width - 790) : double.PositiveInfinity;
         SetRackLayout(rack);
         Grid.SetRow(bandwidthPanel, rack ? 1 : meterBelow ? 3 : 0);
         Grid.SetColumn(bandwidthPanel, meterBelow ? 0 : 1);
@@ -247,7 +288,7 @@ public sealed partial class LightingPage : Page
             : meterBelow ? HorizontalAlignment.Left : HorizontalAlignment.Right;
         bandwidthPanel.ShowChart(showChart);
         foreach (var child in portRows.Append<Control>(bandwidthPanel))
-            child.Margin = new Thickness(0, Grid.GetRow(child) == 0 ? 0 : rack ? 3 : 14, 0, 0);
+            child.Margin = new Thickness(0, Grid.GetRow(child) == 0 ? 0 : rack ? 6 : 14, 0, 0);
         banks.ColumnDefinitions = inline ? new ColumnDefinitions($"{editor.Copper.Count}*,{editor.Optical.Count}*") : new ColumnDefinitions("*");
         banks.RowDefinitions = inline ? new RowDefinitions("Auto") : new RowDefinitions(string.Join(",", Enumerable.Repeat("Auto", Math.Max(1, sections.Count))));
         for (var i = 0; i < sections.Count; i++)
@@ -276,7 +317,8 @@ public sealed partial class LightingPage : Page
         mapStatus.Text = Workspace.Disconnected || !Workspace.Connected ? "Last confirmed colors · Connection interrupted" : State.Str("mode") == "released" ? "UniFi controls the lighting" : editor.HasEdits && !editor.Compare ? "Previewing unapplied lighting" : "";
         mapStatus.IsVisible = !string.IsNullOrEmpty(mapStatus.Text);
         actions.IsVisible = editor.HasEdits;
-        summary.Text = editor.DraftSummary(); apply.Content = editor.HasPendingPlan ? "Retry remaining changes" : "Apply changes";
+        legendItems.IsVisible = !rackLayout || !editor.HasEdits;
+        summary.Text = editor.DraftSummary(); ToolTip.SetTip(summary, rackLayout ? summary.Text : null); apply.Content = editor.HasPendingPlan ? "Retry remaining changes" : "Apply changes";
         apply.IsEnabled = Workspace.Busy == 0 && Workspace.Connected && !Workspace.Disconnected && invalidFields.Count == 0;
         compare.Content = editor.Compare ? "Show preview" : "Show applied";
         undo.IsEnabled = editor.CanUndoApply; mode.Content = editor.Draft.ContainsKey("mode") ? "Cancel control preview" : State.Str("mode") == "running" ? "Preview return to UniFi" : "Preview EE lighting";
