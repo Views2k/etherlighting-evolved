@@ -83,6 +83,8 @@ internal static class LightingPageChecks
             check(SecondaryModel.SceneFingerprint(after["scene"]) != original && studio.CanUndoApply, "Apply commits the preview and enables Undo");
             await studio.UndoLastApply();
             check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the exact earlier simulator scene");
+            await ColorPickerChecks.RunAsync(shell, copper[0], check);
+            check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the original scene after applying the chosen color");
             foreach (var title in new[] { "Groups", "History", "Saved selections", "Find port", "Port details", "Map key" })
             {
                 Click(title); await WaitFor(() => shell.Overlay.HasDialog); check(shell.Overlay.HasDialog, title + " opens in the native Lighting page");

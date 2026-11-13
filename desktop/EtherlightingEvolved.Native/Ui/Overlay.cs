@@ -24,7 +24,7 @@ public sealed class Dialog
 
     public Task<string> Result => done.Task;
 
-    public bool IsOpen => !done.Task.IsCompleted;
+    public bool IsOpen { get; private set; } = true;
 
     /// <summary>Return false to keep the dialog open when Escape is pressed (the browser "cancel" event).</summary>
     public Func<bool>? Canceling { get; set; }
@@ -32,6 +32,8 @@ public sealed class Dialog
     public void Close(string result = "")
     {
         if (!IsOpen) return;
+        // Removing focused controls raises LostFocus synchronously.
+        IsOpen = false;
         Remove?.Invoke(this);
         done.TrySetResult(result);
     }
@@ -84,14 +86,14 @@ public sealed class Overlay : Panel
     }
 
     /// <summary>Opens a modal dialog with the browser workspace's dialog frame (580px wide at most unless given).</summary>
-    public Dialog Show(Control content, double? width = null, double padding = 20, bool sheet = false)
+    public Dialog Show(Control content, double? width = null, double padding = 20, bool sheet = false, bool scrollContent = true)
     {
         var frame = new Border
         {
             CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Padding = new Thickness(sheet ? 24 : padding),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             MaxWidth = sheet ? 440 : width ?? 580, Margin = new Thickness(16, 24),
-            Child = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled },
+            Child = scrollContent ? new ScrollViewer { Content = content, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled } : content,
         };
         if (width is not null || sheet) frame.Width = sheet ? 440 : width!.Value;
         frame.Bind(Border.BackgroundProperty, "dialog").Bind(Border.BorderBrushProperty, "line-strong").Bind(Border.BoxShadowProperty, "shadow");
