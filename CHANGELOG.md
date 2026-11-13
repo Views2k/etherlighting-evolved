@@ -2,6 +2,10 @@
 
 ## 0.5.0
 
+- Port controls follows lighting changes made by a schedule, a rule or another device, and a setting that no longer matches the current lighting shows an error instead of closing EE. Previewing saved effect settings keeps fixed colors on the selected ports.
+- When Quit cannot confirm that the switch lighting was returned, EE stays open and says so; choose Quit again to close anyway. If the EE service does not start, the window offers Try again.
+- EE closes its SSH session when a switch status shell cannot open, and reconnects when status reads stay blocked, so no shells are left on the switch and effects do not run on stale status.
+- Updating EE keeps the Start with Windows setting and removes files of the earlier desktop program. The installer includes the full license text for every desktop component.
 - In a rack window such as 1280 × 400, the desktop Lighting page fits without scrolling. The switch name shares a line with the selection buttons, uplink bandwidth is one line, the map legend moves to the bottom bar, and Port controls uses compact rows with tabs for effects that have many settings.
 - Fixed a desktop color picker crash when closing with a color field focused. Done stays visible while the color controls scroll.
 - Settings can save a UniFi OS API key when connecting. EE remembers the controller and sign-in method across restarts and updates.
