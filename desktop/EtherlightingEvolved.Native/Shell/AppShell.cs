@@ -206,17 +206,9 @@ public sealed class AppShell : UserControl
         pendingRow.Children.Add(pendingText);
         pending.Child = pendingRow;
 
-        // View with the canvas tint over the surface color
-        canvas.Bind(Panel.BackgroundProperty, "surface");
-        void PaintTint()
-        {
-            canvas.Children.Clear();
-            if (Application.Current?.Resources.TryGetResource("canvas-tint", null, out var tint) == true && tint is IBrush[] layers)
-                foreach (var layer in layers) canvas.Children.Add(new Border { Background = layer, IsHitTestVisible = false });
-            canvas.Children.Add(view);
-        }
-        PaintTint();
-        Look.ThemeChanged += _ => PaintTint();
+        // View over the surface color and the theme's canvas tint, drawn once into a cached image.
+        canvas.Children.Add(new CanvasBackdrop());
+        canvas.Children.Add(view);
         view.Child = Loading("Opening lighting workspace…");
 
         // Status bar

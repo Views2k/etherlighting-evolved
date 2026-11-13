@@ -63,8 +63,10 @@ public static class AutomationProfileChecks
         await shell.Workspace.Refresh(false);
         await Click(Page(), "Apply profile");
         await WaitAsync(async () => (await Read("/api/state")).Int("brightness") == initialBrightness, "profile scene applied");
+        await Wait(() => Contains(Page(), "Profile applied."), "the page notice for an applied profile");
         await Click(Page(), "Undo last apply");
         await WaitAsync(async () => (await Read("/api/state")).Int("brightness") == changedBrightness, "profile undo restored the prior scene");
+        await Wait(() => Contains(Page(), "Previous lighting restored."), "the page notice for an undone apply");
         await Click(Page(), "Apply profile");
         await WaitAsync(async () => (await Read("/api/state")).Int("brightness") == initialBrightness, "restored original brightness");
         check(true, "Applying and undoing the profile restores the two exact brightness settings");
@@ -80,8 +82,13 @@ public static class AutomationProfileChecks
         await Wait(() => Find(Page(), "Refresh profiles")?.IsEffectivelyEnabled == true, "Profiles saved");
         await shell.Navigate("Automation");
         await Click(Page(), "New rule");
+        await Wait(() => All<TextBox>(Page()).Any(t => AutomationProperties.GetName(t) == "Rule name" && t.Text == "" && t.IsFocused), "focus on the new rule's name");
+        check(true, "New rule moves focus to the rule name");
         All<TextBox>(Page()).Single(t => AutomationProperties.GetName(t) == "Rule name").Text = rule;
         await Click(Page(), "Add condition");
+        await Wait(() => All<ComboBox>(Page()).Any(c => AutomationProperties.GetName(c) == "Condition property" && c.IsFocused), "focus on the added condition");
+        check(All<ComboBox>(Page()).Count(c => AutomationProperties.GetName(c) is "Condition property" or "Condition operator" or "Condition value") == 3
+            && !Contains(Page(), "Operator"), "A condition row names its three selects without visible column headers");
         await Click(Page(), "Schedules");
         await Wait(() => shell.Overlay.HasDialog, "unsaved rule confirmation");
         await Click(shell.Overlay, "Cancel");
@@ -89,15 +96,33 @@ public static class AutomationProfileChecks
         if (Find(Page(), "Ports") != null) await Click(Page(), "Ports");
         await Click(Page(), "None");
         check(Find(Page(), "Apply rule")?.IsEnabled == false, "Empty rule scope cannot be applied");
-        await Click(Page(), "All ports");
+        var allPorts = All<CheckBox>(Page()).Single(b => AutomationProperties.GetName(b) == "All ports");
+        check(allPorts.IsChecked == false && All<TextBlock>(Page()).Any(t => t.Text?.EndsWith(" selected", StringComparison.Ordinal) == true && t.Text.StartsWith("0 of ", StringComparison.Ordinal)),
+            "The ports picker counts the selected ports");
+        allPorts.IsChecked = true;
+        check(All<CheckBox>(Page()).Where(b => b.Content is string label && (label.StartsWith("Port ", StringComparison.Ordinal) || label.StartsWith("SFP ", StringComparison.Ordinal)))
+            .All(b => b.IsChecked == true), "All ports selects every Ethernet and SFP port");
         if (Find(Page(), "Appearance") != null) await Click(Page(), "Appearance");
         var swatch = All<Button>(Page()).Single(b => AutomationProperties.GetName(b) == "Rule color");
         swatch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Wait(() => Contains(shell.Overlay, "Favorites") && Contains(shell.Overlay, "Palette"), "shared rule color library");
         await Click(shell.Overlay, "Done");
         check(true, "Rule appearance opens the same favorites and named palettes as Lighting");
+        All<CheckBox>(Page()).Single(b => b.Content as string == "Set brightness").IsChecked = true;
+        check(All<TextBlock>(Page()).Any(t => t.Text?.StartsWith("All ports · Solid color at ", StringComparison.Ordinal) == true && t.Text.EndsWith("% · 1 condition", StringComparison.Ordinal)),
+            "The rule summary names the ports, the style with its brightness, and the conditions");
+        All<CheckBox>(Page()).Single(b => b.Content as string == "Set brightness").IsChecked = false;
+        var appearance = All<ComboBox>(Page()).Single(c => AutomationProperties.GetName(c) == "Appearance");
+        appearance.SelectedIndex = 1;
+        check(Contains(Page(), "Cycle time · seconds") && All<TextBox>(Page()).Single(t => AutomationProperties.GetName(t) == "Cycle time · seconds").Text == "4",
+            "An animated rule style shows the cycle time of the saved rate");
+        appearance.SelectedIndex = 0;
         await Click(Page(), "Apply rule");
         await HasRow("/api/scene", "scene.rules", rule, true);
+        await Wait(() => Contains(Page(), "Rule applied."), "the rule notice");
+        var saved = (await Read("/api/scene")).Objects("scene.rules").First(r => r.Str("name") == rule);
+        check(saved.Num("look.rate") == .25 && saved.Arr("ports").Count == All<CheckBox>(Page()).Count(b => b.Content is string label && (label.StartsWith("Port ", StringComparison.Ordinal) || label.StartsWith("SFP ", StringComparison.Ordinal))),
+            "An unchanged cycle keeps the rule's rate and the rule covers the chosen ports");
         await Click(Page(), "Test rules");
         await Wait(() => All<TextBlock>(shell.Overlay).Any(t => t.Text?.StartsWith("Displayed lighting:", StringComparison.Ordinal) == true), "simulator rule results");
         await Click(shell.Overlay, "Done");

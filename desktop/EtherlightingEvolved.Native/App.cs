@@ -25,6 +25,9 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, string? Smoke
 
     public PixelSize ShotSize { get; init; } = new(1440, 900);
 
+    /// <summary>--size was given, so --smoke measures at that window size instead of the default one.</summary>
+    public bool SizeGiven { get; init; }
+
     public static Options? Parse(string[] args)
     {
         Uri? url = null;
@@ -44,7 +47,7 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, string? Smoke
         var size = Arg("--size")?.Split('x') is [var w, var h] && int.TryParse(w, out var width) && int.TryParse(h, out var height) ? new PixelSize(width, height) : new PixelSize(1440, 900);
         return new Options(args.Contains("--background"), args.Contains("--demo") || smoke is not null || (shot is not null && url is null), url, smoke ?? shot, args.Contains("--quit"))
         {
-            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size,
+            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size, SizeGiven = Arg("--size") is not null,
         };
     }
 }
@@ -87,7 +90,7 @@ public sealed class App : Application
 /// The desktop program starts its bundled workspace, keeps the window available from the tray,
 /// and asks the service to finish its current lighting session on exit.
 /// </summary>
-sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime desktop, Options options, SingleInstance instance, string dataDirectory)
+sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLifetime desktop, Options options, SingleInstance instance, string dataDirectory)
 {
     readonly string version = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
     ShellWindow? window;
@@ -186,6 +189,7 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
             window.Position = new PixelPoint(-20000, -20000);
             window.ShowInTaskbar = false;
             window.ShowActivated = false;
+            if (options.Shot is null && options.SizeGiven) { window.Width = options.ShotSize.Width; window.Height = options.ShotSize.Height; }
         }
         if (!options.Background) window.Show();
         else _ = window.Shell.SetHidden(true);
@@ -371,6 +375,9 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         await Finish(code);
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    static extern uint GetCurrentThreadId();
+
     /// <summary>Exercises the real window off screen against the simulator, then quits through the normal path.</summary>
     async Task SmokeAsync(string folder)
     {
@@ -408,10 +415,22 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
                 var stateNode = await shell.Workspace.Request("/api/state");
                 using var document = System.Text.Json.JsonDocument.Parse(stateNode!.ToJsonString());
                 var lighting = LightingModel.State(document.RootElement, LightingState.Empty);
-                result["apply_effect"] = await api.ApplyEffectAsync(lighting, [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
+                result["apply_effect"] = await api.ApplyEffectAsync(lighting, options.SizeGiven ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
             }
             await Task.Delay(3000);
+            // Which threads the visible cost is on: the interface thread (this one) or drawing and network threads.
+            var interfaceThread = OperatingSystem.IsWindows() ? (int)GetCurrentThreadId() : -1;
+            var threadsBefore = process.Threads.Cast<ProcessThread>().ToDictionary(thread => thread.Id, thread => { try { return thread.TotalProcessorTime; } catch (Exception) { return TimeSpan.Zero; } });
+            var threadClock = Stopwatch.StartNew();
             result["cpu_visible_percent"] = await CpuAsync(20);
+            process.Refresh();
+            var threadSeconds = threadClock.Elapsed.TotalSeconds;
+            var busiest = new JsonArray();
+            foreach (var (id, percent) in process.Threads.Cast<ProcessThread>()
+                         .Select(thread => { try { return (thread.Id, (thread.TotalProcessorTime - threadsBefore.GetValueOrDefault(thread.Id)).TotalSeconds / threadSeconds * 100); } catch (Exception) { return (thread.Id, 0d); } })
+                         .OrderByDescending(item => item.Item2).Take(5))
+                busiest.Add(JsonValue.Create($"{(id == interfaceThread ? "interface" : "thread " + id)}: {percent:0.0}%"));
+            result["cpu_visible_threads"] = busiest;
             var size = new PixelSize((int)Math.Max(1, window.Bounds.Width), (int)Math.Max(1, window.Bounds.Height));
             using (var bitmap = new RenderTargetBitmap(size))
             {
@@ -451,10 +470,20 @@ sealed class AppHost(Application app, IClassicDesktopStyleApplicationLifetime de
         {
             result["error"] = exception.Message;
         }
-        var confirmed = service is null || await service.StopAsync();
-        result["service_stopped_cleanly"] = confirmed;
-        result["passed"] = passed && confirmed;
-        await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
+        var confirmed = false;
+        try
+        {
+            confirmed = service is null || await service.StopAsync();
+            result["service_stopped_cleanly"] = confirmed;
+            result["passed"] = passed && confirmed;
+            await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
+        }
+        catch (Exception exception)
+        {
+            // Without this the run would never end: nothing awaits this method.
+            passed = false;
+            try { await File.WriteAllTextAsync(Path.Combine(folder, "smoke-error.txt"), exception.ToString()); } catch (Exception) { }
+        }
         await Finish(passed && confirmed ? 0 : 1);
     }
 }

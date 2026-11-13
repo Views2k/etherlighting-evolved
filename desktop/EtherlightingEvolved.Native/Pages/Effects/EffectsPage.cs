@@ -30,6 +30,9 @@ public sealed class EffectsPage : Page
     List<string> favorites = GalleryState.Favorites(), recent = GalleryState.Recent();
     readonly TextBlock target = Kit.Text("", wrap: true), note = Kit.Text("", "muted small", true);
     readonly TextBlock message = Kit.Text("", "muted", true);
+    /// <summary>p.inline-error: why the gallery could not be drawn.</summary>
+    readonly TextBlock failure = Kit.Text("", "danger", true);
+    string? configurationKey;
     readonly Button choosePorts, ethernetTab, sfpTab;
     readonly CheckBox include;
     readonly TextBox search;
@@ -90,7 +93,10 @@ public sealed class EffectsPage : Page
             filters.Children.Add(button);
         }
         AutomationProperties.SetName(filters, "Effect category");
-        header = Kit.Column(16, headingRow, Kit.Wrap(14, search, Toolbar(filters, "filter-surface")));
+        failure.IsVisible = false;
+        failure.FontSize = 13;
+        failure.LineHeight = 19;
+        header = Kit.Column(16, headingRow, Kit.Wrap(14, search, Toolbar(filters, "filter-surface")), failure);
         header.Margin = new Thickness(0, 0, 0, 14);
         empty = Kit.Column(8, message, Kit.Button("Show all effects", "quiet", () =>
         {
@@ -176,6 +182,53 @@ public sealed class EffectsPage : Page
         Update();
     }
 
+    /// <summary>
+    /// The gallery's configurationKey (effect-gallery.mjs:288): the settings that change card configurations, statuses or
+    /// previews, plus the library and the SFP choice that the browser handles with their own redraws.
+    /// </summary>
+    string ConfigurationKey(JsonObject state, bool clockReady)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            static void Write(System.Text.Json.Utf8JsonWriter writer, JsonNode? node)
+            {
+                if (node is null) writer.WriteNullValue(); else node.WriteTo(writer);
+            }
+            writer.WriteStartArray();
+            writer.WriteBooleanValue(clockReady);
+            writer.WriteStartArray();
+            foreach (var id in Studio.Selected) writer.WriteNumberValue(id);
+            writer.WriteEndArray();
+            Write(writer, Studio.Draft);
+            writer.WriteStartObject();
+            foreach (var (id, config) in Studio.RememberedEffects) { writer.WritePropertyName(id); Write(writer, config); }
+            writer.WriteEndObject();
+            foreach (var key in new[] { "zones", "overrides", "brightness", "mode", "sfp_sync" }) Write(writer, state[key]);
+            writer.WriteStartArray();
+            foreach (var port in state.Objects("ports"))
+            {
+                writer.WriteStartArray();
+                Write(writer, port["port"]); Write(writer, port["source"]); Write(writer, port["override"]);
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
+            writer.WriteStartArray();
+            foreach (var light in state.Objects("sfp"))
+            {
+                writer.WriteStartArray();
+                foreach (var key in new[] { "port", "mode", "effect", "color", "secondary_color", "brightness", "color_brightness", "secondary_brightness", "period", "rule" })
+                    Write(writer, light[key]);
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
+            writer.WriteStringValue(library);
+            writer.WriteBooleanValue(include.IsChecked == true);
+            writer.WriteEndArray();
+        }
+        return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
     public override void Update()
     {
         if (left || synchronizing) return;
@@ -200,8 +253,12 @@ public sealed class EffectsPage : Page
             int[] scope = GalleryState.Scope(layout, selected, Optical, include.IsChecked == true);
             var list = Optical ? EffectGallery.SfpEffects : Workspace.Effects;
             bool rebuild = !ReferenceEquals(list, catalog) || !ports.SequenceEqual(scope);
-            ports = scope;
             bool clockReady = ScheduleClock.HostDate(state).HasValue;
+            // Nothing that the cards show changed: keep them as they are.
+            var key = ConfigurationKey(state, clockReady);
+            if (!rebuild && key == configurationKey) return;
+            configurationKey = key;
+            ports = scope;
             if (rebuild)
             {
                 catalog = list;
@@ -247,6 +304,15 @@ public sealed class EffectsPage : Page
             }
             if (rebuild) Filter(false);
             SyncAnimation();
+            failure.IsVisible = false;
+        }
+        catch (Exception error)
+        {
+            // A malformed catalog or state fails this update only; the next one tries again.
+            configurationKey = null;
+            catalog = null;
+            failure.Text = error.Message;
+            failure.IsVisible = true;
         }
         finally { synchronizing = false; }
     }

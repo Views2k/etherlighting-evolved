@@ -88,6 +88,7 @@ internal static class LightingPageChecks
             await studio.UndoLastApply();
             check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the exact earlier simulator scene");
             await EditorSafety(shell, page, copper, check);
+            await BusyState(shell, page, copper, check);
             await ColorPickerChecks.RunAsync(shell, copper[0], check);
             check(SecondaryModel.SceneFingerprint((await Scene())["scene"]) == original, "Undo restores the original scene after applying the chosen color");
             foreach (var title in new[] { "Groups", "History", "Saved selections", "Find port", "Port details", "Map key" })
@@ -369,6 +370,35 @@ internal static class LightingPageChecks
             await w.SetPaused(false);
             await studio.SelectFromMap(copper); Dispatcher.UIThread.RunJobs();
         }
+    }
+
+    /// <summary>While a change is applying, the Lighting page takes no other lighting command.</summary>
+    static async Task BusyState(AppShell shell, LightingPage page, IReadOnlyList<int> copper, Action<bool, string> check)
+    {
+        var w = shell.Workspace; var studio = (LightingStudio)shell.Studio;
+        Button Find(string label) => page.GetLogicalDescendants().OfType<Button>().First(b => Equals(b.Content, label));
+        var cfg = EffectRenderer.DefaultConfig("static"); cfg["ports"] = Js.NumberArray(copper.Take(1)); cfg.Obj("params")["color"] = "#2468AC";
+        await studio.ChooseEffect(cfg); Dispatcher.UIThread.RunJobs();
+        var release = new TaskCompletionSource();
+        var applying = w.Serialize(() => release.Task);
+        try
+        {
+            for (var i = 0; i < 50 && w.Busy == 0; i++) { await Task.Delay(10); Dispatcher.UIThread.RunJobs(); }
+            Dispatcher.UIThread.RunJobs();
+            var disabled = new[] { "Discard", "Show applied", "Undo last apply", "Groups", "History", "Ethernet", "None" }.Where(label => Find(label).IsEffectivelyEnabled).ToList();
+            studio.Discard();
+            var before = studio.CanUndoApply;
+            await studio.UndoLastApply();
+            check(w.Busy > 0 && disabled.Count == 0 && studio.HasEdits && !before,
+                $"while a change applies, Discard, Undo, the toolbar and the selection buttons are off and the preview stays{(disabled.Count > 0 ? " (still enabled: " + string.Join(", ", disabled) + ")" : "")}");
+        }
+        finally
+        {
+            release.SetResult(); await applying; Dispatcher.UIThread.RunJobs();
+        }
+        check(Find("Discard").IsEffectivelyEnabled && Find("Ethernet").IsEffectivelyEnabled, "the controls come back when the change finishes");
+        studio.Discard(); Dispatcher.UIThread.RunJobs();
+        check(!studio.HasEdits, "Discard works again after the change");
     }
 
     static void CheckTracePixels(RenderTargetBitmap frame, Rect graph, Window window, Action<bool, string> check)
