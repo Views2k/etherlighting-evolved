@@ -60,6 +60,9 @@ public sealed class Workspace : IAsyncDisposable
     /// <summary>A "state" message replaced State (ports kept).</summary>
     public event Action? StateMessage;
 
+    /// <summary>A "fans" message replaced State["fans"].</summary>
+    public event Action? FansChanged;
+
     /// <summary>A "session" message arrived; the shell accepts it.</summary>
     public event Func<JsonObject, Task>? SessionMessage;
 
@@ -350,6 +353,11 @@ public sealed class Workspace : IAsyncDisposable
                 bandwidthReceivedAt = receivedAt;
                 ReceiveBandwidth();
                 StateMessage?.Invoke();
+                break;
+            case "fans" when Ready:
+                // Fan readings arrive every 5 seconds on their own, so lighting frames stay small.
+                State["fans"] = message["fans"]?.DeepClone();
+                FansChanged?.Invoke();
                 break;
             case "session":
                 if (message["session"] is JsonObject session && SessionMessage is { } handler) _ = handler((JsonObject)session.DeepClone());

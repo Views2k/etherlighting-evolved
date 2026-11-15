@@ -197,6 +197,7 @@ class Engine:
         self.cpu_idle: float | None = None
         self.cpu_load: float | None = None
         self._switch_health: dict | None = None
+        self.fans = None
         self._health_updated_at: float | None = None
         self._health_error: str | None = None
 
@@ -305,6 +306,7 @@ class Engine:
             asyncio.create_task(self._render_loop(), name="ee-render"),
             asyncio.create_task(self._status_loop(), name="ee-status"),
             asyncio.create_task(self._health_loop(), name="ee-health"),
+            asyncio.create_task(self._fan_loop(), name="ee-fans"),
         ]
 
     async def stop(self) -> None:
@@ -1379,6 +1381,7 @@ class Engine:
             "revision": self.revision,
             "stats": self.output_stats(),
             "uplink_bandwidth": self._bandwidth.snapshot(now=timing.monotonic(), connected=self.connected),
+            "fans": self.fans.to_dict() if self.fans is not None else None,
         }
 
     @staticmethod
@@ -1884,6 +1887,30 @@ class Engine:
             if self.connected:
                 await self._collect_health()
             await asyncio.sleep(HEALTH_INTERVAL)
+
+    def attach_fans(self, fans) -> None:
+        self.fans = fans
+
+    async def update_fans(self, change: dict) -> None:
+        if self.fans is None or not self.connected:
+            raise TransportError("Connect to the switch before changing the fans.")
+        try:
+            await self.fans.update(change)
+        finally:
+            self._publish_fans()
+
+    def _publish_fans(self) -> None:
+        if self.fans is not None and self._subscribers:
+            self._publish({"type": "fans", "fans": self.fans.to_dict()})
+
+    async def _fan_loop(self) -> None:
+        from .fans import POLL_INTERVAL
+        while True:
+            if self.connected and self.fans is not None:
+                with contextlib.suppress(TransportError):
+                    await self.fans.poll()
+                self._publish_fans()
+            await asyncio.sleep(POLL_INTERVAL)
 
     async def _status_loop(self) -> None:
         while True:

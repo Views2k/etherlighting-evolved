@@ -22,6 +22,7 @@ from . import device_playback as playback
 from .config import Config
 from .credentials import CredentialStoreError, SavedLogin
 from .engine import Engine
+from .fans import FanControl, FanStore, SimulatedFans, SwitchFans
 from .handoff import HandoffIntent
 from .hardware import PRO_XG8
 from .mailbox import Mailbox
@@ -575,6 +576,7 @@ class SessionManager:
         self.simulated = candidate.simulated
         self._scene_store = candidate.store
         engine.attach_history(SceneHistory(self.config.data_dir / "scene-history.json"), self.schedule_identity())
+        engine.attach_fans(self._fan_control(engine.switch, candidate.simulated))
         if self._handoff.state in {"pending", "unconfirmed"}:
             await self._disconnect_locked()
             raise self._fail("handoff_unconfirmed", "The switch connection was stopped for handoff.", 409)
@@ -590,6 +592,12 @@ class SessionManager:
         self._autosave_task = asyncio.create_task(self._autosave(engine, candidate.simulated), name="ee-autosave")
         self._notify()
         return self.info()
+
+    def _fan_control(self, switch, simulated: bool) -> FanControl:
+        supported = getattr(switch, "hardware_profile", None) is PRO_XG8
+        backend = SimulatedFans() if simulated else SwitchFans(switch.transport)
+        store = FanStore(self.config.data_dir / ("fans-demo.json" if simulated else "fans.json"))
+        return FanControl(backend, store, supported=supported)
 
     def _fail(self, code: str, message: str, status: int) -> LoginError:
         self.last_error = {"code": code, "message": message}

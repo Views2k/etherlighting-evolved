@@ -86,6 +86,7 @@ internal static class ShellChecks
                     if (page is null or "Lighting") await SliderChecks.RunAsync(shell, check);
                     if (page is null or "Effects") await GalleryPageChecks.RunAsync(shell, check);
                     if (page is null or "Profiles" or "Automation") await AutomationProfileChecks.RunAsync(shell, check);
+                    if (page is null or "Fans") await FansPageChecks.RunAsync(shell, check);
                     await shell.Navigate("Lighting", true);
                     using var image = window.CaptureRenderedFrame();
                     check(image is not null, "the normal workspace renders after the editing workflows");
