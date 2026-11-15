@@ -4,7 +4,7 @@ Update this record when a tracked issue is fixed, disproved, or deferred. Record
 
 ## Current delivery
 
-Version 0.4.19 includes the Pro XG temperature and UniFi Network sign-in changes described in [the changelog](../CHANGELOG.md). Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery.
+Version 0.5.0 uses the native desktop workspace. Source, tests, assets, documentation, and build tools are maintained in this repository. [WORKFLOW.md](WORKFLOW.md) defines verification and delivery. The [current-lineup qualification record](HARDWARE-QUALIFICATION.md) tracks all 25 current Etherlighting models, the reviewed firmware releases and the remaining public-launch gates. Hardware admission and device-resident playback are separate capabilities.
 
 ## Product audit implementation
 

@@ -17,6 +17,10 @@ def identity(profile):
 
 
 QUALIFIED = tuple(p for p in PROFILES.values() if p.output_verified)
+QUALIFIED_FIRMWARE = tuple(
+    pytest.param(profile, daemon, mcu, id=f"{profile.key}-{daemon[:8]}")
+    for profile in QUALIFIED for daemon, mcu in profile.firmware_pairs
+)
 
 
 @pytest.mark.parametrize("profile", PROFILES.values(), ids=lambda p: p.key)
@@ -71,12 +75,12 @@ def test_catalog_presence_does_not_grant_output(profile):
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("clock")
-@pytest.mark.parametrize("profile", QUALIFIED, ids=lambda p: p.key)
-async def test_detected_layout_native_output_and_scoped_cleanup(profile):
+@pytest.mark.parametrize("profile,daemon,mcu", QUALIFIED_FIRMWARE)
+async def test_detected_layout_native_output_and_scoped_cleanup(profile, daemon, mcu):
     device = MemoryTransport()
     device.board = identity(profile)
-    device.daemon = profile.daemon_sha256 + "  /proc/123/exe"
-    device.firmware = profile.mcu_sha256 + "  /usr/share/firmware/port_led_fw.bin"
+    device.daemon = daemon + "  /proc/123/exe"
+    device.firmware = mcu + "  /usr/share/firmware/port_led_fw.bin"
     switch = EtherlightSwitch(device, auto_detect=True)
     await switch.connect()
     info = await switch.probe()
@@ -106,21 +110,55 @@ async def test_detected_layout_native_output_and_scoped_cleanup(profile):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["daemon", "firmware", "identity", "topology"])
-async def test_profile_output_gate_refuses_mismatch(fault):
-    profile = PROFILES["USPH24"]
+@pytest.mark.parametrize("profile,daemon,mcu", QUALIFIED_FIRMWARE)
+@pytest.mark.parametrize("fault", ["daemon", "firmware", "identity", "topology", "schema", "connection"])
+async def test_profile_output_gate_revokes_previous_qualification_on_mismatch(profile, daemon, mcu, fault):
     device = MemoryTransport()
     device.board = identity(profile)
+    device.daemon = daemon + "  /proc/123/exe"
+    device.firmware = mcu + "  /usr/share/firmware/port_led_fw.bin"
+    switch = EtherlightSwitch(device, auto_detect=True)
+    await switch.connect()
+    await switch.probe()
+    switch.require_output_profile()
+    assert device.profile is profile
+
     if fault in {"daemon", "firmware"}:
         setattr(device, fault, "0" * 64 + "  " + getattr(device, fault).split()[1])
-    if fault == "identity":
-        device.board += "board.name=USW-Pro-XG-8-PoE\n"
-    switch = EtherlightSwitch(device, auto_detect=fault != "topology")
-    await switch.connect()
+    elif fault == "identity":
+        device.board += "board.sysid=0xffff\n"
+    elif fault == "topology":
+        switch.auto_detect = False
+        switch.num_ports = len(profile.copper_ports) + 1
+    elif fault == "schema":
+        device.precise_rgb_supported = device.sfp_mode_supported = False
+    elif fault == "connection":
+        from etherlighting_evolved.switch import PORT_FIRMWARE_HASH_COMMAND
+
+        async def replace_connection(command):
+            if command == PORT_FIRMWARE_HASH_COMMAND:
+                device.lighting_generation = object()
+
+        device.read_hook = replace_connection
+
     await switch.probe()
     with pytest.raises(ValueError):
         switch.require_output_profile()
+    assert device.profile is None
     assert not device.events and not switch.sfp_ports
+    assert not switch.native_breathing and not switch.scoped_sfp
+
+    device.board = identity(profile)
+    device.daemon = daemon + "  /proc/123/exe"
+    device.firmware = mcu + "  /usr/share/firmware/port_led_fw.bin"
+    device.precise_rgb_supported = device.sfp_mode_supported = True
+    device.read_hook = None
+    switch.auto_detect = True
+    await switch.probe()
+    switch.require_output_profile()
+    assert device.profile is profile
+    await switch.close()
+    assert device.profile is None and not device.events
 
 
 @pytest.mark.anyio
@@ -136,3 +174,91 @@ async def test_unqualified_family_discovery_is_read_only(profile):
     assert not switch.sfp_ports and not device.events
     with pytest.raises(ValueError):
         switch.require_output_profile()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("profile,daemon,mcu", QUALIFIED_FIRMWARE)
+@pytest.mark.parametrize("fault", ["foreign_daemon", "foreign_mcu", "daemon_path", "mcu_path"])
+async def test_firmware_admission_rejects_cross_family_hashes_and_wrong_paths(profile, daemon, mcu, fault):
+    other = next(p for p in QUALIFIED if p.family != profile.family and p.mcu_sha256 != mcu)
+    device = MemoryTransport()
+    device.board = identity(profile)
+    device.daemon = daemon + "  /proc/123/exe"
+    device.firmware = mcu + "  /usr/share/firmware/port_led_fw.bin"
+    if fault == "foreign_daemon":
+        device.daemon = other.daemon_sha256 + "  /proc/123/exe"
+    elif fault == "foreign_mcu":
+        device.firmware = other.mcu_sha256 + "  /usr/share/firmware/port_led_fw.bin"
+    elif fault == "daemon_path":
+        device.daemon = daemon + "  /bin/ubntbox"
+    else:
+        device.firmware = mcu + "  /tmp/port_led_fw.bin"
+    switch = EtherlightSwitch(device, auto_detect=True)
+    await switch.connect()
+    await switch.probe()
+    with pytest.raises(ValueError):
+        switch.require_output_profile()
+    assert device.profile is None and not device.events
+    assert not switch.native_breathing and not switch.scoped_sfp
+    await switch.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("profile", [p for p in QUALIFIED if len(p.firmware_pairs) > 1], ids=lambda p: p.key)
+async def test_firmware_upgrade_preserves_saved_scene_and_device_identity(profile, config):
+    from etherlighting_evolved.session import SessionManager
+
+    manager = SessionManager(config)
+    device = MemoryTransport()
+    device.board = identity(profile)
+    device.host_key_fingerprint = "SHA256:firmware-upgrade-fixture"
+    switch = EtherlightSwitch(device, auto_detect=True)
+    await switch.connect()
+    saved = None
+    for daemon, mcu in (*profile.firmware_pairs, profile.firmware_pairs[0]):
+        device.daemon = daemon + "  /proc/123/exe"
+        device.firmware = mcu + "  /usr/share/firmware/port_led_fw.bin"
+        await switch.probe()
+        switch.require_output_profile()
+        store = manager._device_store(switch)
+        if saved is None:
+            store.save({"brightness": 37, "name": "Saved settings"})
+            saved = store
+        else:
+            assert store.path == saved.path and store.identity == saved.identity
+            assert store.load() == {"brightness": 37, "name": "Saved settings"}
+    assert not device.events
+    await switch.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("daemon_variant,mcu_variant,accepted", [
+    (0, 0, True), (1, 1, True), (0, 1, False), (1, 0, False),
+])
+async def test_firmware_pair_admission_does_not_allow_crossed_pairs(
+        daemon_variant, mcu_variant, accepted, monkeypatch):
+    from etherlighting_evolved import hardware
+
+    profile = PROFILES["USWPXG24"]
+    daemons = (profile.daemon_sha256, "a" * 64)
+    mcus = (profile.mcu_sha256, "b" * 64)
+    monkeypatch.setattr(hardware, "_ADDITIONAL_FIRMWARE", {
+        profile.family: ((daemons[1], mcus[1]),),
+    })
+    device = MemoryTransport()
+    device.board = identity(profile)
+    device.daemon = daemons[daemon_variant] + "  /proc/123/exe"
+    device.firmware = mcus[mcu_variant] + "  /usr/share/firmware/port_led_fw.bin"
+    switch = EtherlightSwitch(device, auto_detect=True)
+    await switch.connect()
+    await switch.probe()
+    if accepted:
+        switch.require_output_profile()
+        assert device.profile is profile
+    else:
+        with pytest.raises(ValueError):
+            switch.require_output_profile()
+        assert device.profile is None
+        assert not switch.native_breathing and not switch.scoped_sfp
+    assert not device.events
+    await switch.close()

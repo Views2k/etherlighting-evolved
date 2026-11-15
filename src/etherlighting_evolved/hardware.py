@@ -17,6 +17,13 @@ _FIRMWARE = {
     "USWF004": ("36f84073384f271008f83dd37ac900b2c59e68e8a210de30fb9fa755d1d49ec3",
                 "9d8740e2767cf676822648573d00ec82d07f5903e9ebad197684f5be17267224"),
 }
+# Retain the original pair above because saved scene identities include it.
+_ADDITIONAL_FIRMWARE = {
+    "USWED42": (("9de90875f77a65c5d3006308ab4e707a79d420cca8f4c4994a3de2896df59109",
+                  "8c79c0050ba28fa933f3b1a71d530665ef560775793f133fae17a85482508322"),),
+    "USWF001": (("4599de216f558d4425782518a7cfd8fe234bc2d4eba3967c9802951debdb4220",
+                  "8c79c0050ba28fa933f3b1a71d530665ef560775793f133fae17a85482508322"),),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +40,12 @@ class HardwareProfile:
     daemon_sha256: str = ""
     mcu_sha256: str = ""
     sfp_masks: tuple[tuple[int, str], ...] = ()
+
+    @property
+    def firmware_pairs(self) -> tuple[tuple[str, str], ...]:
+        if PROFILES.get(self.key) is not self or not self.output_verified:
+            return ()
+        return ((self.daemon_sha256, self.mcu_sha256), *_ADDITIONAL_FIRMWARE.get(self.family, ()))
 
     def public_dict(self) -> dict:
         return {
