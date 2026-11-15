@@ -7,29 +7,35 @@ export async function checkPortNameWorkflows({evaluate,until,send,screenshot,url
   };
   const check=(expression,label)=>until(()=>evaluate(expression),label);
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const fill=(id,text)=>evaluate(`(()=>{const input=document.querySelector('[data-port-name="${id}"]');input.value=${JSON.stringify(text)};input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  const fill=async(id,text)=>{
+    assert.ok(await evaluate(`(()=>{const input=document.querySelector('.port-names:modal [data-port-name="${id}"]');return !!input&&!input.disabled;})()`),'Active port-name input is ready');
+    await evaluate(`(()=>{const input=document.querySelector('.port-names:modal [data-port-name="${id}"]');input.value=${JSON.stringify(text)};input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  };
   const scene=async()=>(await (await fetch(url+'api/scene')).json());
   const before=await scene(),original=await request(),report={};
   const open=async()=>{
     await click('#port-details');await check('!!document.querySelector(".port-details:modal")','port details');
-    await evaluate('[...document.querySelectorAll(".port-details button")].find(b=>b.textContent==="Edit names").click()');
-    await check('!!document.querySelector(".port-names:modal")&&!document.querySelector(".port-names button[type=submit]").disabled','port name editor loaded');
+    await evaluate('[...document.querySelectorAll(".port-details:modal button")].find(b=>b.textContent==="Edit names").click()');
+    await check('!!document.querySelector(".port-names:modal")&&!document.querySelector(".port-names:modal button[type=submit]").disabled','port name editor loaded');
   };
-  const closeDetails=()=>evaluate('document.querySelector(".port-details").close()');
-  const save=async()=>{await evaluate('document.querySelector(".port-names form").requestSubmit()');await check('!document.querySelector(".port-names")','names saved');};
+  const closeDetails=async()=>{
+    await evaluate('document.querySelector(".port-details:modal").close()');
+    await check('!document.querySelector(".port-details")','port details removed');
+  };
+  const save=async()=>{await evaluate('document.querySelector(".port-names:modal form").requestSubmit()');await check('!document.querySelector(".port-names")','names saved');};
   const label=id=>evaluate(`document.querySelector('[data-port="${id}"] .port-label').textContent`);
   await click('[data-page=Lighting]');await check('!!document.querySelector("#port-details")','Lighting ready');
   await click('#select-all');
   await open();
-  assert.equal(await evaluate('document.querySelector("[name=useUnifi]").checked'),true);
-  await click('[name=useUnifi]');
+  assert.equal(await evaluate('document.querySelector(".port-names:modal [name=useUnifi]").checked'),true);
+  await click('.port-names:modal [name=useUnifi]');
   await fill(1,'Desk & dock');await fill(9,'Rack fiber');await save();await closeDetails();
   await until(async()=>await label(1)==='Desk & dock'&&await label(9)==='Rack fiber','saved labels reach map');
-  await open();await click('[name=useUnifi]');await save();await closeDetails();
+  await open();await click('.port-names:modal [name=useUnifi]');await save();await closeDetails();
   await until(async()=>await label(1)!=='Desk & dock','automatic labels reach map');
   assert.equal((await request()).names['1'],'Desk & dock');
-  await open();await click('[name=useUnifi]');
-  assert.equal(await evaluate('document.querySelector("[data-port-name=\\"1\\"]").value'),'Desk & dock');
+  await open();await click('.port-names:modal [name=useUnifi]');
+  assert.equal(await evaluate('document.querySelector(".port-names:modal [data-port-name=\\"1\\"]").value'),'Desk & dock');
   await save();await closeDetails();
   const identity=await evaluate('performance.timeOrigin');await send('Page.reload',{ignoreCache:true});
   await until(async()=>{
@@ -37,20 +43,21 @@ export async function checkPortNameWorkflows({evaluate,until,send,screenshot,url
     catch(e){if(/context|destroyed/i.test(e.message))return false;throw e;}
   },'names persist after reload');
   await click('#select-all');await open();
-  await fill(1,'Cancelled name');await click('.port-names .dialog-footer button:nth-child(2)');await closeDetails();
+  await fill(1,'Cancelled name');await click('.port-names:modal .dialog-footer button:nth-child(2)');
+  await check('!document.querySelector(".port-names")','cancelled editor removed');await closeDetails();
   assert.equal((await request()).names['1'],'Desk & dock');
   await open();await fill(1,'Unsaved draft');
   const current=await request();await request('PUT',{expected_revision:current.revision,use_unifi:false,names:{'1':'Other window'}});
-  await evaluate('document.querySelector(".port-names form").requestSubmit()');
-  await check('!document.querySelector(".port-names [role=alert]").hidden','conflict shown');
-  assert.equal(await evaluate('document.querySelector("[data-port-name=\\"1\\"]").value'),'Unsaved draft');
-  await click('.port-names .dialog-footer button:first-child');
-  await check('document.querySelector("[data-port-name=\\"1\\"]").value==="Other window"','explicit reload');
+  await evaluate('document.querySelector(".port-names:modal form").requestSubmit()');
+  await check('!document.querySelector(".port-names:modal [role=alert]").hidden','conflict shown');
+  assert.equal(await evaluate('document.querySelector(".port-names:modal [data-port-name=\\"1\\"]").value'),'Unsaved draft');
+  await click('.port-names:modal .dialog-footer button:first-child');
+  await check('document.querySelector(".port-names:modal [data-port-name=\\"1\\"]").value==="Other window"','explicit reload');
   await fill(1,'Retry draft');
   await evaluate(`window.savedNameFetch=window.fetch;window.fetch=(path,options)=>path==='/api/port-names'&&options?.method==='PUT'?Promise.reject(new Error('Fixture disconnect')):window.savedNameFetch(path,options)`);
-  await evaluate('document.querySelector(".port-names form").requestSubmit()');
-  await check('!document.querySelector(".port-names [role=alert]").hidden','save failure shown');
-  assert.equal(await evaluate('document.querySelector("[data-port-name=\\"1\\"]").value'),'Retry draft');
+  await evaluate('document.querySelector(".port-names:modal form").requestSubmit()');
+  await check('!document.querySelector(".port-names:modal [role=alert]").hidden','save failure shown');
+  assert.equal(await evaluate('document.querySelector(".port-names:modal [data-port-name=\\"1\\"]").value'),'Retry draft');
   assert.equal((await request()).names['1'],'Other window');
   await evaluate('window.fetch=window.savedNameFetch;delete window.savedNameFetch');
   await fill(1,'<img src=x onerror=alert(1)>');await save();await closeDetails();
@@ -59,10 +66,10 @@ export async function checkPortNameWorkflows({evaluate,until,send,screenshot,url
   await open();await fill(1,'Office workstation and docking station');
   for(const [width,height] of [[1366,768],[390,844],[1280,400]]){
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
-    await evaluate('document.querySelector(".port-names button[type=submit]").scrollIntoView({block:"nearest"})');
-    assert.ok(await evaluate('(()=>{const d=document.querySelector(".port-names"),b=d.querySelector("button[type=submit]").getBoundingClientRect();return d.scrollWidth<=d.clientWidth+1&&b.bottom<=innerHeight&&b.top>=0;})()'),'editor fits with reachable save');
-    await evaluate('document.querySelector("[data-port-name=\\"10\\"]").scrollIntoView({block:"nearest"})');
-    assert.ok(await evaluate('(()=>{const d=document.querySelector(".port-names"),t=d.querySelector("[name=useUnifi]").getBoundingClientRect(),b=d.querySelector("button[type=submit]").getBoundingClientRect();return t.top>=d.getBoundingClientRect().top&&t.bottom<=innerHeight&&b.bottom<=innerHeight;})()'),'naming mode and Save stay visible while scrolling ports');
+    await evaluate('document.querySelector(".port-names:modal button[type=submit]").scrollIntoView({block:"nearest"})');
+    assert.ok(await evaluate('(()=>{const d=document.querySelector(".port-names:modal"),b=d.querySelector("button[type=submit]").getBoundingClientRect();return d.scrollWidth<=d.clientWidth+1&&b.bottom<=innerHeight&&b.top>=0;})()'),'editor fits with reachable save');
+    await evaluate('document.querySelector(".port-names:modal [data-port-name=\\"10\\"]").scrollIntoView({block:"nearest"})');
+    assert.ok(await evaluate('(()=>{const d=document.querySelector(".port-names:modal"),t=d.querySelector("[name=useUnifi]").getBoundingClientRect(),b=d.querySelector("button[type=submit]").getBoundingClientRect();return t.top>=d.getBoundingClientRect().top&&t.bottom<=innerHeight&&b.bottom<=innerHeight;})()'),'naming mode and Save stay visible while scrolling ports');
     await screenshot('port-names-'+width);report[width]={height,save_reachable:true,mode_visible:true};
   }
   await send('Emulation.setDeviceMetricsOverride',{width:1366,height:768,deviceScaleFactor:1,mobile:false});
