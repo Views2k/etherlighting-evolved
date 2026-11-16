@@ -277,6 +277,7 @@ const privateAccessMessages = {
   private_access_invalid_configuration:'Check the Tailscale configuration on this PC, then refresh status.',
   unavailable:'Private access could not be checked. Refresh status to try again.',
   forbidden:'Change this setting in EE on the host computer.',
+  admin_required:'To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.',
 };
 
 export function privateAccessError(error) {
@@ -336,6 +337,9 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const [message,status]=notice();
   section.append(header,help,scope,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
   const canConfigure=()=>current?.can_configure===true;
+  // A local tab without administration access on a live host. The demo gateway reports neither field, so a demo tab
+  // keeps the general text.
+  const locked=()=>current?.admin_required===true&&(current.available===true||typeof current.error==='object'&&current.error!==null);
   const canRetry=()=>current?.enabled===true&&current?.available===true&&current?.ready!==true;
   const currentPort=()=>Number.isInteger(current?.https_port)&&current.https_port>=1024&&current.https_port<=65535?current.https_port:8444;
   const readyUrl=()=>{const url=privateAccessUrl(current?.url);return current?.available===true&&current.enabled===true&&current.ready===true&&url&&Number(new URL(url).port)===currentPort()?url:null;};
@@ -353,6 +357,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!audienceChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
     apply.textContent=pending==='apply'?'Applying…':chosen===enabled&&canRetry()?'Retry private access':'Apply setting';refresh.disabled=Boolean(pending);
     section.setAttribute('aria-busy',String(Boolean(pending)));readOnly.hidden=!current||canConfigure();
+    readOnly.textContent=locked()?privateAccessMessages.admin_required:privateAccessMessages.forbidden;
     port.value=portDraft??String(currentPort());port.disabled=Boolean(pending)||!canChangePort();advanced.hidden=!current||!canConfigure();
     resetPort.hidden=portDraft===null;resetPort.disabled=Boolean(pending)||!canConfigure();
     const setupAction=current?.setup_action,setupUrl=privateAccessSetupUrl(current?.action_url,setupAction);
@@ -398,7 +403,14 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
       else if(saving&&(result.enabled!==wanted||portChange&&result.https_port!==wantedPort||audienceChange&&result.audience!==wantedAudience))status('The setting could not be confirmed. Refresh status before trying again.',true);
       else if(saving)status(audienceChange&&wanted===wasEnabled?'Private access updated.':wanted?'Private access enabled.':'Private access disabled.');
       else if(login&&result.setup_action==='approve')status('Continue in Tailscale to finish signing in, then refresh status.');
-    }catch(error){if(active){status(privateAccessError(error),true);if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});}}
+    }catch(error){
+      if(active){
+        status(privateAccessError(error),true);
+        // The page was opened before EE restarted, or without administration access: show the read-only status.
+        if(error?.code==='admin_required'){try{const latest=await request('/api/private-access');if(active)update(latest);}catch{}}
+        if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});
+      }
+    }
     finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});else if(login)(setupLink.hidden?refresh:setupLink).focus({preventScroll:true});}}
   };
   const start=(operation,check=false)=>{if(pending)return completion;completion=perform(operation,check);return completion;};

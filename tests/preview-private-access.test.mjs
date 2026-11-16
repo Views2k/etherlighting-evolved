@@ -35,6 +35,50 @@ test('read-only phone status prevents configuration even with a programmatic cli
   assert.equal(ui.status.textContent,'Private access connected');
 });
 
+const LOCKED='To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.';
+const HOST_ONLY='Change this setting in EE on the host computer.';
+function readOnlyHelp(dom){return dom.findAll(dom.host,item=>item.tagName==='p'&&[LOCKED,HOST_ONLY].includes(item.textContent))[0];}
+const locked={...connected,can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null,admin_required:true};
+
+test('a local tab without administration access explains where to change private access',async context=>{
+  const dom=rendererDom(context),sent=[];
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return locked;});dom.after(cleanup);
+  await flush();const ui=controls(dom),help=readOnlyHelp(dom);
+  assert.equal(help.textContent,LOCKED);assert.equal(help.hidden,false);
+  assert.equal(ui.toggle.disabled,true);assert.equal(ui.button('Apply setting').disabled,true);
+  assert.equal(dom.findAll(dom.host,item=>item.name==='private_audience')[0].parentNode.hidden,true);
+  assert.equal(dom.byClass(dom.host,'connection-options')[0].hidden,true);assert.equal(dom.byClass(dom.host,'connection-setup')[0].hidden,true);
+  change(ui.toggle,false);ui.button('Apply setting').click();await flush();
+  ui.button('Refresh private access').click();await flush();
+  assert.deepEqual(sent,[['/api/private-access'],['/api/private-access']]);
+  assert.equal(ui.status.textContent,'Private access connected');
+});
+
+test('the administration text also covers a host where Tailscale is missing, and not the demo or a remote device',async context=>{
+  for(const [status,text] of [
+    [{available:false,enabled:false,ready:false,can_configure:false,admin_required:true,error:{code:'tailscale_not_installed'}},LOCKED],
+    [{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:false,admin_required:true},HOST_ONLY],
+    [{...connected,can_configure:false},HOST_ONLY]]){
+    const dom=rendererDom(context),cleanup=renderPrivateAccess(dom.host,async()=>status);dom.after(cleanup);
+    await flush();assert.equal(readOnlyHelp(dom).textContent,text);assert.equal(readOnlyHelp(dom).hidden,false);
+  }
+  assert.equal(privateAccessError('admin_required'),LOCKED);
+});
+
+test('a change refused for administration access reads the status once and keeps the draft',async context=>{
+  const dom=rendererDom(context),sent=[];
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{
+    sent.push(args);
+    if(args[1]==='PUT')throw Object.assign(new Error(LOCKED),{code:'admin_required'});
+    return sent.length===1?disabled:{...disabled,can_configure:false,can_close_workspace:false,admin_required:true};
+  });dom.after(cleanup);
+  await flush();const ui=controls(dom);change(ui.toggle,true);ui.button('Apply setting').click();await flush();
+  assert.deepEqual(sent,[['/api/private-access'],['/api/private-access','PUT',{enabled:true}],['/api/private-access']]);
+  assert.equal(ui.toggle.disabled,true);assert.equal(ui.button('Apply setting').disabled,true);
+  assert.equal(readOnlyHelp(dom).textContent,LOCKED);assert.equal(readOnlyHelp(dom).hidden,false);
+  assert.equal(ui.notice.textContent,LOCKED);assert.equal(cleanup.hasChanges(),true);assert.equal(ui.toggle.checked,true);
+});
+
 test('local refresh checks external Tailscale state and retains an unapplied choice',async context=>{
   const dom=rendererDom(context),sent=[];
   const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return disabled;});dom.after(cleanup);

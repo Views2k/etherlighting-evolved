@@ -64,7 +64,8 @@ function uiDom(context){
 
 const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
 
-async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false}={}){
+async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,
+  capabilities=privateStatus,onCloseWorkspace}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
     calls.push({path,method,body});
@@ -72,11 +73,11 @@ async function settings(context,{send=async()=>complete(),reconcile=complete(),a
     if(path==='/api/session/handoff')return send();
     if(path==='/api/session')return ++sessionReads===1?first:reconcile;
     if(path==='/api/state')return {num_ports:8,ports:[],sfp:[],mode:'running',stats:{}};
-    if(path==='/api/private-access')return privateStatus;
+    if(path==='/api/private-access')return capabilities;
     if(path==='/api/controller')return {connected:true,configured:true,preferences_supported:true,auto_reconnect:true,saved_login_available:true};
     throw new Error(`Unexpected request ${path}`);
   };
-  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote});
+  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote,onCloseWorkspace});
   dom.after(cleanup);await flush();return {...dom,calls,sessions,cleanup};
 }
 
@@ -86,6 +87,17 @@ async function handoffMessage(ui){
   const dialog=ui.dialog(),message=ui.findAll(dialog,node=>node.tagName==='p')[0].textContent;
   ui.button('Cancel',dialog).click();await flush();return message;
 }
+
+test('Close web session needs administration access, and a tab without it says where to close the session',async context=>{
+  const CLOSE_HELP='To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.';
+  const shown=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.textContent===CLOSE_HELP).length;
+  for(const [capabilities,button,help] of [[{...privateStatus,can_close_workspace:true},true,0],
+    [{...privateStatus,can_close_workspace:false,admin_required:true},false,1],[{...privateStatus,can_close_workspace:false},false,0]]){
+    const ui=await settings(context,{capabilities,onCloseWorkspace:async()=>{}});
+    assert.equal(Boolean(ui.button('Close web session')),button,JSON.stringify(capabilities));
+    assert.equal(shown(ui),help,JSON.stringify(capabilities));
+  }
+});
 
 test('remote Settings leaves out saved-login removal and UniFi Network setup',async context=>{
   const ui=await settings(context,{remote:true}),nav=ui.byClass(ui.host,'settings-nav')[0];

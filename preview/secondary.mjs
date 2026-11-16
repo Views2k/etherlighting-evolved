@@ -809,6 +809,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       if (onCloseWorkspace && capabilities.can_close_workspace === true) content.append(button('Close web session',()=>gate.run(async()=>{
         if(await confirmAction(host,'Close web session?','This releases the switch connection and closes the web service. Your saved setup is preserved.','Close web session',lifecycle.signal)&&gate.active)await onCloseWorkspace();
       }),'quiet'));
+      else if (onCloseWorkspace && capabilities.admin_required === true) content.append(node('p','help-text','To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.'));
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();
