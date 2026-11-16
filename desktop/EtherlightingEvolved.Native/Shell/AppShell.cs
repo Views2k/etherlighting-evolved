@@ -433,6 +433,8 @@ public sealed class AppShell : UserControl
         Studio.SaveUiState(PageName);
         ResetWorkspace();
         UpdateConnection();
+        connection.Set("EE service stopped", "error");
+        controller.IsVisible = false;
         ShowServiceFailure(message, retry);
     }
 

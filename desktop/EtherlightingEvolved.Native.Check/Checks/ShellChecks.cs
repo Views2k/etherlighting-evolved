@@ -8,6 +8,7 @@ using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Core.Model;
 using EtherlightingEvolved.Native.Pages;
 using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
@@ -121,7 +122,8 @@ internal static class ShellChecks
                     shell.ShowServiceStopped("The EE service stopped.", () => Task.CompletedTask);
                     await Task.Delay(1800);
                     check(!workspace.Ready && !workspace.StreamOpen && shell.CurrentPage is null
-                          && window.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Try again")),
+                          && window.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Try again"))
+                          && window.GetLogicalDescendants().OfType<StateLine>().Any(line => line.Label == "EE service stopped" && line.Tone == "error"),
                         "a stopped service ends reconnecting and offers to start it again");
                 }
                 finally
