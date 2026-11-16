@@ -95,6 +95,10 @@ class ApiConfig:
         if self.host not in LOOPBACK_BINDS and len(self.token) < 32:
             raise ValueError("Network access requires an API token of at least 32 characters; "
                              "set EE_API_TOKEN or api.token")
+        if "*" in self.cors_origins and len(self.token) < 32:
+            raise ValueError('api.cors_origins = ["*"] lets every website use the API, so it requires an API token '
+                             "of at least 32 characters; set EE_API_TOKEN or api.token, or list the allowed "
+                             "origins instead")
 
 
 @dataclass

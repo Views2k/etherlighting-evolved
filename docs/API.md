@@ -1123,10 +1123,9 @@ These endpoints work without logging in.
 
 ## WebSocket: `/api/ws`
 
-When an API token is configured, desktop clients authenticate with an `Authorization: Bearer <token>`
-header. The web gateway supplies authentication for REST edits and WebSocket telemetry so the token stays out of browser URLs. The protocol also accepts
-a `token` query parameter; a supplied Authorization header takes precedence and an invalid header cannot be
-overridden by a query token.
+When an API token is configured, clients authenticate with an `Authorization: Bearer <token>` header. A missing
+or wrong header closes the socket with code 4401. The token is not accepted as a query parameter, so it never
+appears in URLs or access logs. The web gateway supplies the header for REST edits and WebSocket telemetry.
 
 Writable sockets are bound to the switch session present when the socket opens.
 After login or session replacement, reopen the socket before sending changes.

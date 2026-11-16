@@ -65,6 +65,22 @@ def test_configured_origins_are_allowed(config):
         assert c.get("/api/session").json()["logged_in"]
 
 
+def test_wildcard_origins_require_a_token(config):
+    config.api.cors_origins = ["*"]
+    with pytest.raises(ValueError, match="cors_origins"):
+        create_app(config, autoconnect=False)
+    config.api.token = "wildcard-origin-test-token-32-characters"
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
+        headers = {"Origin": "https://evil.example"}
+        assert c.put("/api/brightness", json={"value": 5}, headers=headers).status_code == 401
+
+
+def test_a_non_ascii_token_header_is_refused_without_a_server_error(config):
+    config.api.token = "non-ascii-header-test-token-32-characters"
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
+        assert c.get("/api/health", headers={"Authorization": b"Bearer caf\xe9"}).status_code == 401
+
+
 def test_listening_on_the_network_skips_the_host_check(config):
     config.api.host = "0.0.0.0"
     config.api.token = "network-test-token-32-characters-long"

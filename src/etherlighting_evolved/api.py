@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import html
 import logging
 from contextlib import asynccontextmanager
@@ -152,6 +153,11 @@ def scene_envelope(scene: dict) -> dict:
     return {"scene": scene, "revision": scene_revision(scene)}
 
 
+def token_matches(authorization: str | None, token: str) -> bool:
+    # Header values arrive decoded as latin-1, and the configured token is printable ASCII.
+    return hmac.compare_digest((authorization or "").encode("latin-1"), f"Bearer {token}".encode("ascii"))
+
+
 def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
     """The quick, high-frequency controls. Everything else goes through REST."""
     kind = msg.get("type")
@@ -275,7 +281,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     token = config.api.token
 
     def require_token(authorization: str | None = Header(default=None)) -> None:
-        if token and authorization != f"Bearer {token}":
+        if token and not token_matches(authorization, token):
             raise HTTPException(401, detail={"code": "bad_token", "message": "missing or wrong API token"})
 
     def require_workspace() -> None:
@@ -840,9 +846,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @app.websocket("/api/ws")
     async def websocket(ws: WebSocket):
-        authorization = ws.headers.get("authorization")
-        authenticated = authorization == f"Bearer {token}" if authorization else ws.query_params.get("token") == token
-        if token and not authenticated:
+        if token and not token_matches(ws.headers.get("authorization"), token):
             await ws.close(code=4401)
             return
         bound_engine = (ref(sessions.engine) if sessions.engine is not None and sessions.engine.connected
