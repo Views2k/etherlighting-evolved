@@ -12,7 +12,10 @@ from threading import RLock
 
 from fastapi import Body, HTTPException
 
+from .storage import NewerFormatError, check_version
 from .storage import atomic_write_json as write_json
+
+FORMAT_VERSION = 1
 
 
 def validate_names(names):
@@ -46,7 +49,11 @@ class PortNameStore:
         with self._lock:
             try:
                 record = json.loads(self.path(binding).read_text("utf-8"))
-                if (not isinstance(record, dict) or set(record) != {"revision", "use_unifi", "names"}
+                if not isinstance(record, dict):
+                    raise ValueError()
+                # Releases up to 0.5.1 saved no version, which is format version 1.
+                check_version(record.pop("version", 1), FORMAT_VERSION, "Port names")
+                if (set(record) != {"revision", "use_unifi", "names"}
                         or not isinstance(record["revision"], str)
                         or not re.fullmatch(r"[0-9a-f]{32}", record["revision"])
                         or type(record["use_unifi"]) is not bool):
@@ -54,6 +61,8 @@ class PortNameStore:
                 record["names"] = validate_names(record["names"])
             except FileNotFoundError:
                 record = self.defaults()
+            except NewerFormatError:
+                raise
             except (OSError, ValueError) as exc:
                 raise OSError("Port names could not be read. Check the saved port names and try again.") from exc
             self._cache[binding] = record
@@ -76,7 +85,7 @@ class PortNameStore:
                 if key not in names:
                     updated.pop(key, None)
             record = {"revision": uuid.uuid4().hex, "use_unifi": body["use_unifi"], "names": updated}
-            write_json(self.path(binding), record)
+            write_json(self.path(binding), {"version": FORMAT_VERSION, **record})
             self._cache[binding] = record
             return copy.deepcopy(record)
 
@@ -111,6 +120,8 @@ def attach_port_name_routes(api, engine, sessions, store):
             raise HTTPException(409, detail={"code": "port_names_changed", "message": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(400, detail={"message": str(exc)}) from exc
+        except NewerFormatError as exc:
+            raise HTTPException(503, detail={"code": "port_names_unavailable", "message": str(exc)}) from exc
         except OSError as exc:
             raise HTTPException(503, detail={"code": "port_names_unavailable", "message":
                                             "Port names could not be saved or loaded. Check the data folder, "

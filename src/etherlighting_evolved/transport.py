@@ -16,9 +16,10 @@ import secrets
 import time
 from abc import ABC, abstractmethod
 
-from .storage import atomic_write_json
+from .storage import NewerFormatError, atomic_write_json, check_version
 
 SSH_CLOSE_TIMEOUT = 3.0
+HOST_KEY_FORMAT_VERSION = 1
 READ_PORTS = "swctrl port show"
 READ_POE = "swctrl poe show 2>/dev/null"
 READ_CPU = 'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "$b"'
@@ -72,10 +73,18 @@ class HostKeyStore:
         if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                              for k, v in data.items()):
             raise TransportError("The saved SSH host keys have an invalid format")
+        # Releases up to 0.5.1 saved no version, which is format version 1. The version is a string, beside the
+        # "host:port" keys, because those releases accept only string values in this file.
+        version = data.pop("version", str(HOST_KEY_FORMAT_VERSION))
+        try:
+            check_version(int(version) if version.isdecimal() else None, HOST_KEY_FORMAT_VERSION,
+                          "The saved SSH host keys")
+        except (NewerFormatError, ValueError) as exc:
+            raise TransportError(str(exc)) from exc
         return data
 
     def _save(self, data: dict[str, str]) -> None:
-        atomic_write_json(self.path, data)
+        atomic_write_json(self.path, {**data, "version": str(HOST_KEY_FORMAT_VERSION)})
 
     @staticmethod
     def _key(host: str, port: int) -> str:

@@ -1,4 +1,8 @@
-"""Saved files: atomic replacement, reading, and setting aside files that cannot be used."""
+"""Saved files: atomic replacement, reading, format versions, and setting aside files that cannot be used.
+
+A store refuses a file whose format version is newer than the one it knows. It does not read such a file in part
+and never overwrites it, so the fields a newer release added are still there when that release runs again.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+class NewerFormatError(OSError):
+    """A saved file was written by a newer EE release in a format this release does not know."""
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -38,6 +46,13 @@ def read_json(path: Path, default):
     except (OSError, json.JSONDecodeError):
         return default
     return data if isinstance(data, type(default)) else default
+
+
+def check_version(version, supported: int, subject: str) -> None:
+    if type(version) is not int or version < 1:
+        raise ValueError(f"{subject} have an invalid format version.")
+    if version > supported:
+        raise NewerFormatError(f"{subject} were saved by a newer version of EE. Update EE to use them.")
 
 
 def quarantine(path: Path, problem: str) -> None:

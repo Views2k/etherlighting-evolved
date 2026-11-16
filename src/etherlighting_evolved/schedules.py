@@ -24,12 +24,14 @@ from pathlib import Path
 from .engine import NotFound
 from .presets import PresetStore, ProfileStoreError
 from .rules import WEEKDAYS, finite_number, parse_clock
+from .storage import NewerFormatError, check_version
 from .storage import atomic_write_json as write_json
 from .transport import TransportError
 
 log = logging.getLogger(__name__)
 
 ACTIONS = ("preset", "brightness", "release", "resume")
+FORMAT_VERSION = 1
 
 
 @dataclass
@@ -134,14 +136,23 @@ class ScheduleStore:
     def _load(self) -> None:
         try:
             try:
-                entries = json.loads(self.path.read_text("utf-8"))
+                data = json.loads(self.path.read_text("utf-8"))
             except FileNotFoundError:
-                entries = []
-            if not isinstance(entries, list):
+                data = []
+            # Releases up to 0.5.1 saved a bare list, which is format version 1.
+            if isinstance(data, dict):
+                check_version(data.get("version"), FORMAT_VERSION, "Schedules")
+                if set(data) != {"version", "schedules"}:
+                    raise ValueError("saved schedules have unknown fields")
+                data = data["schedules"]
+            if not isinstance(data, list):
                 raise ValueError("saved schedules must be a list")
-            items = [Schedule.parse(entry) for entry in entries]
+            items = [Schedule.parse(entry) for entry in data]
             if len({item.id for item in items}) != len(items):
                 raise ValueError("saved schedule IDs must be unique")
+        except NewerFormatError as exc:
+            self._load_error = ScheduleStoreError(str(exc))
+            return
         except (OSError, ValueError, TypeError):
             self._load_error = ScheduleStoreError(
                 "Saved schedules could not be read. Restore the schedule file and try again.")
@@ -157,7 +168,8 @@ class ScheduleStore:
 
     def _save(self) -> None:
         try:
-            write_json(self.path, [{k: v for k, v in s.to_dict().items() if k != "next_run"} for s in self.items])
+            write_json(self.path, {"version": FORMAT_VERSION, "schedules": [
+                {k: v for k, v in s.to_dict().items() if k != "next_run"} for s in self.items]})
         except OSError as exc:
             raise ScheduleStoreError("Schedules could not be saved. Check storage access and try again.") from exc
 

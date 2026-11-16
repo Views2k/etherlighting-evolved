@@ -5,6 +5,7 @@ from test_session_restore import LocalTransport
 
 from etherlighting_evolved import storage
 from etherlighting_evolved.session import SessionManager
+from etherlighting_evolved.transport import HostKeyStore, TransportError
 
 
 def test_atomic_write_replaces_the_file_and_leaves_no_temporary_file(tmp_path):
@@ -44,8 +45,35 @@ def test_failed_flush_to_disk_keeps_the_previous_file(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_host_keys_gain_a_version_that_earlier_releases_still_read(tmp_path):
+    path = tmp_path / "known_switches.json"
+    path.write_text(json.dumps({"switch.invalid:22": "SHA256:original"}), "utf-8")
+    store = HostKeyStore(path)
+    assert store.get("switch.invalid", 22) == "SHA256:original"
+    assert store.verify_or_pin("second.invalid", 22, "SHA256:second")
+    saved = json.loads(path.read_text("utf-8"))
+    assert saved == {"version": "1", "switch.invalid:22": "SHA256:original", "second.invalid:22": "SHA256:second"}
+    # Releases up to 0.5.1 refuse the whole file unless every value is a string.
+    assert all(isinstance(value, str) for value in saved.values())
+    assert store.forget("second.invalid", 22) and HostKeyStore(path).get("second.invalid", 22) is None
+
+
+@pytest.mark.parametrize("version", ["2", "x"])
+def test_host_keys_in_an_unknown_format_are_refused_and_never_overwritten(tmp_path, version):
+    path = tmp_path / "known_switches.json"
+    content = json.dumps({"version": version, "switch.invalid:22": "SHA256:original"})
+    path.write_text(content, "utf-8")
+    store = HostKeyStore(path)
+    message = "newer version of EE" if version == "2" else "invalid format"
+    with pytest.raises(TransportError, match=message):
+        store.verify_or_pin("second.invalid", 22, "SHA256:second")
+    with pytest.raises(TransportError, match=message):
+        store.forget("switch.invalid", 22)
+    assert path.read_text("utf-8") == content
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("content", [b"", b'{"version": 1, "identity": "other", "scene": {"brightness": 5}}'])
+@pytest.mark.parametrize("content", [b"",b'{"version": 1, "identity": "other", "scene": {"brightness": 5}}'])
 async def test_unusable_device_scene_is_moved_aside_and_login_offers_the_scene_choice(config, caplog, content):
     sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
     try:
