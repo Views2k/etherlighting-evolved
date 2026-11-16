@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import random
@@ -287,9 +288,105 @@ class LocalTransport:
         return result.stdout.decode()
 
 
+class ChannelTransport:
+    """One long-running shell fed each command and an end marker, the way SSHTransport uses a switch channel.
+
+    A command that leaves something attached to the channel, or that reads the channel's input, stalls here
+    exactly as it would on the switch.
+    """
+
+    def __init__(self, switch, program, isolated):
+        import queue
+        import threading
+        self.process = subprocess.Popen([program, "-s", "ee_test"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, env=switch["env"])
+        self.lines = queue.Queue()
+        self.sequence = 0
+        # SSHTransport.run ends a command with "echo marker"; run_isolated starts the marker on a new line.
+        self.isolated = isolated
+        if not isolated:
+            self.run_isolated = None
+
+        def pump():
+            for line in iter(self.process.stdout.readline, b""):
+                self.lines.put(line.decode())
+            self.lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+        self._send('PATH="$EE_TEST_BIN:$PATH"; export PATH', 10)
+
+    def _send(self, command, timeout):
+        import queue
+        command = command.replace(fans._CHECK_DIRECTORY, '[ ! -L "$d" ] && [ -d "$d" ]')
+        self.sequence += 1
+        marker = f"__EE_DONE_{self.sequence}__"
+        end = f"printf '\\n%s\\n' {marker}" if self.isolated else f"echo {marker}"
+        self.process.stdin.write(f"{command}\n{end}\n".encode())
+        self.process.stdin.flush()
+        deadline = time.monotonic() + timeout
+        output = []
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TransportError(f"the switch did not answer within {timeout:g}s: {command[:120]!r}") from None
+            if line is None:
+                raise TransportError("the switch closed the shell")
+            if line.strip() == marker:
+                text = "".join(output)
+                return text[:-1] if self.isolated and text.endswith("\n") else text
+            output.append(line)
+
+    async def run(self, command, *, channel="main", timeout=10.0):
+        return await asyncio.to_thread(self._send, command, timeout)
+
+    async def run_isolated(self, command, *, channel, timeout=10.0):
+        return await asyncio.to_thread(self._send, command, timeout)
+
+    def close(self):
+        with contextlib.suppress(Exception):
+            self.process.stdin.close()
+        with contextlib.suppress(Exception):
+            self.process.wait(timeout=10)
+
+
 def backend_for(switch, location):
     return SwitchFans(LocalTransport(switch), location=location, hw=switch["hw"].as_posix(),
                       phy=switch["phy"].as_posix())
+
+
+def _shell_named(name):
+    if SHELL is None:
+        return None
+    sibling = Path(SHELL).with_name(name + (".exe" if os.name == "nt" else ""))
+    return str(sibling) if sibling.is_file() else shutil.which(name)
+
+
+@needs_shell
+@pytest.mark.parametrize("isolated", [True, False])
+@pytest.mark.parametrize("program", ["dash", "sh"])
+async def test_switch_fans_over_one_long_running_shell(mock_switch, program, isolated):
+    """The switch keeps one shell per channel; every fan command must return its end marker in time."""
+    path = _shell_named(program)
+    if path is None:
+        pytest.skip(f"{program} is not installed")
+    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    channel = ChannelTransport(mock_switch, path, isolated)
+    backend = SwitchFans(channel, location=location, hw=mock_switch["hw"].as_posix(), phy=mock_switch["phy"].as_posix())
+    try:
+        assert (await backend.read())["controller"] == "absent"
+        reading = await backend.apply("manual 70")
+        assert reading["controller"] == "running" and reading["config"] == "manual 70"
+        assert (mock_switch["hw"] / "pwm1").read_text().strip() == "179"
+        reading = await backend.apply("curve 45 30 60 50 70 75 80 100")
+        assert reading["config"].startswith("curve")
+        await backend.stop()
+        assert (await backend.read())["controller"] == "absent"
+        assert _daemon_state(mock_switch["daemon"]) != "T"
+    finally:
+        with contextlib.suppress(Exception):
+            await backend.stop()
+        channel.close()
 
 
 @needs_shell
@@ -352,3 +449,47 @@ async def test_unsupported_model_is_refused(mock_switch):
         await backend.apply("manual 40")
     await backend.stop()
     assert _daemon_state(mock_switch["daemon"]) != "T"
+
+
+# The isolated command path on the real SSH transport, with a fake connection.
+
+@pytest.mark.parametrize("fault", ["timeout", "cancel", "eof"])
+async def test_isolated_fan_command_failure_keeps_the_lighting_connection(fault):
+    from test_health_integration import Connection, Process
+
+    from etherlighting_evolved.transport import SSHTransport
+
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    led_process = Process()
+    transport._channels["leds"] = type("Channel", (), {"process": led_process})()
+    pending = asyncio.create_task(transport.run_isolated("sleep 60", channel="ee-fans", timeout=0.05))
+    await connection.process.started.wait()
+    if fault == "cancel":
+        pending.cancel()
+    elif fault == "eof":
+        connection.process.replies.put_nowait("")
+    with pytest.raises(asyncio.CancelledError if fault == "cancel" else TransportError):
+        await pending
+    assert transport._conn is connection and not connection.closed
+    assert not led_process.closed and "leds" in transport._channels
+    assert connection.process.closed and "ee-fans" not in transport._channels
+
+
+async def test_isolated_command_returns_output_without_a_trailing_newline():
+    from test_health_integration import Connection
+
+    from etherlighting_evolved.transport import SSHTransport
+
+    transport = SSHTransport("fixture.invalid")
+    connection = transport._conn = Connection()
+    pending = asyncio.create_task(transport.run_isolated("printf done", channel="ee-fans", timeout=5))
+    await connection.process.started.wait()
+    sent = connection.process.writes[0]
+    marker = sent.rsplit(" ", 1)[1].strip()
+    assert sent.startswith(r"printf done" + "\n" + r"printf '\n%s\n' __EE_DONE_")
+    # The command printed no newline, so the marker's own leading newline ends that line.
+    for line in ("done\n", f"{marker}\n"):
+        connection.process.replies.put_nowait(line)
+    assert await pending == "done"
+    assert not connection.closed and not connection.process.closed

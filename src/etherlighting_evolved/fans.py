@@ -222,7 +222,9 @@ class SwitchFans:
         self.digest = hashlib.sha256(self.script.encode("ascii")).hexdigest()
 
     async def _run(self, command: str, timeout: float = 10) -> str:
-        return (await self.transport.run("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
+        # Fan commands use their own shell: a failure there must not close the lighting connection.
+        run = getattr(self.transport, "run_isolated", None) or self.transport.run
+        return (await run("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
 
     async def read(self) -> dict[str, Any]:
         reading = parse_reading(await self._run(self.paths + _READ))
@@ -265,7 +267,7 @@ class SwitchFans:
                      'echo $! > pid && echo started')
             if await self._run(self._inside(start)) != "started":
                 raise TransportError("The switch did not start fan control.")
-        confirm = 'printf "%s|%s" "$(cat active 2>/dev/null)" "$(cat status 2>/dev/null)"'
+        confirm = 'printf "%s|%s\\n" "$(cat active 2>/dev/null)" "$(cat status 2>/dev/null)"'
         for _ in range(16):
             active, _, status = (await self._run(self._inside(confirm))).partition("|")
             if active == line:
