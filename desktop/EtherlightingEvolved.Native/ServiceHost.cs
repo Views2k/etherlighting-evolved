@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using System.Text.Json;
+using EtherlightingEvolved.Native.Core;
 
 namespace EtherlightingEvolved.Native;
 
@@ -81,8 +81,8 @@ public sealed class ServiceHost
         {
             var address = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
             using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
-            using var workspace = JsonDocument.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
-            if (WorkspaceModel.Bool(workspace.RootElement, "live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
+            var workspace = Json.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
+            if (workspace.Bool("live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
             Address = address;
             return address;
         }
@@ -138,8 +138,8 @@ public sealed class ServiceHost
                 using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
                 using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode) return false;
-                using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
-                if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
+                var body = Json.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+                if (body.Bool("closed") != true) return false;
             }
             running.StandardInput.Close();
             await running.WaitForExitAsync(deadline.Token).ConfigureAwait(false);

@@ -62,6 +62,8 @@ internal sealed class PortTile : Button
     public bool Selected { set { check.IsVisible = value; } }
     public bool Previewed { set { if (highlighted == value) return; highlighted = value; preview.BorderThickness = new Thickness(value ? 1 : 0); } }
     public void PaintColor(double[] rgb) => socket.Set(rgb);
+    /// <summary>How many times the LED color changed and was repainted (development checks).</summary>
+    internal int LedRepaints => socket.Repaints;
     public void Read(JsonObject port)
     {
         var link = PM.LinkStatus(port); var watts = PM.PortPower(port); var label = PM.PortLabel(port, Sfp);
@@ -176,11 +178,12 @@ internal sealed class PortTile : Button
                     context.DrawGeometry(Led, null, optical ? OpticalRim : CopperRim);
             }
         }
+        public int Repaints { get; private set; }
         public void Set(double[] rgb)
         {
             static byte Chan(double d) => (byte)Math.Clamp((int)Math.Round(d), 0, 255);
             var r = Chan(rgb[0]); var g = Chan(rgb[1]); var b = Chan(rgb[2]); var key = r << 16 | g << 8 | b; if (previous == key) return;
-            previous = key; light.Led = new Avalonia.Media.Immutable.ImmutableSolidColorBrush(Color.FromRgb(r, g, b)); light.InvalidateVisual();
+            previous = key; light.Led = new Avalonia.Media.Immutable.ImmutableSolidColorBrush(Color.FromRgb(r, g, b)); light.InvalidateVisual(); Repaints++;
         }
     }
 }

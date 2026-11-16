@@ -1,6 +1,5 @@
 // Port of the logic exports of preview/port-map.mjs: port labels, link and PoE readouts, scope options, group names,
-// selection and the switch title. This class shares its name with the EtherlightingEvolved.Native.PortMap control;
-// qualify it where both are in scope.
+// selection and the switch title.
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 

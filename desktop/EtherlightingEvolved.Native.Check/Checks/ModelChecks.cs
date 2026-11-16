@@ -8,10 +8,6 @@ using EtherlightingEvolved.Native.Core.Model;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
-// These two names also exist in EtherlightingEvolved.Native (the port map control and the lighting record).
-using LightingState = EtherlightingEvolved.Native.Core.Model.LightingState;
-using PortMap = EtherlightingEvolved.Native.Core.Model.PortMap;
-
 public static class ModelChecks
 {
     delegate void Expect(bool ok, string? what = null);

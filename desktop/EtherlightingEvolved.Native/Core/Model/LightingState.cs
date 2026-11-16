@@ -1,7 +1,6 @@
 // Port of preview/lighting-state.mjs: who controls each port, fixed-color settings, the validated list of requests that
 // applies a lighting draft (lightingOperations), the scene those requests produce (lightingSnapshot) and applying the
 // plan one request at a time. Effect validation uses the bundled catalog (Effects.Default), as the module does.
-// This class shares its name with EtherlightingEvolved.Native.LightingState; qualify it where both are in scope.
 using System.Text.Json.Nodes;
 
 namespace EtherlightingEvolved.Native.Core.Model;
