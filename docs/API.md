@@ -896,7 +896,11 @@ returns `400 invalid` with the reason.
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
 - `manual` runs both fans at `manual_percent`.
-- `target` adjusts the speed to keep the CPU at or below `target_celsius` with the lowest fan speed.
+- `target` adjusts the speed to keep the CPU at or below `target_celsius` with the lowest fan speed. A new target
+  starts at the speed estimated to hold it, from the CPU reading and the average speed of the last couple of
+  minutes, and corrects from there without running the fans far above that speed.
+- A new mode or setting takes effect within about a second and starts at its own speed; it does not ease from the
+  previous mode's speed.
 
 The same object is `fans` in `GET /api/state` and WebSocket state messages, and arrives every 5 seconds as a
 `fans` WebSocket message.

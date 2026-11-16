@@ -7,6 +7,8 @@
 #   sh fans.sh guard <pid>      started by run: returns the fans to the switch if run stops
 #   sh fans.sh compute <cpu> <sfp> <phy> <last> <integral> <mode> [values]
 #                               print "<duty> <integral> <reason>" for one step (tests)
+#   sh fans.sh estimate <cpu> <average> <target>
+#                               print the speed estimated to hold the target (tests)
 #
 # ./config holds one line: "manual <percent>", "target <celsius>" or
 # "curve <celsius> <percent> ..." with up to eight points in rising order.
@@ -19,10 +21,19 @@ PHY=${EE_FAN_PHY:-/proc/phy_temp}
 SYSINFO=${EE_FAN_SYSINFO:-/proc/ubnthal/system.info}
 TICK=${EE_FAN_TICK:-5}
 MIN=30
-# Thermal target tuning: percent per degree C, and integral gain in
-# thousandths of a percent per degree C per step.
+# Thermal target tuning: percent per degree C (the boost from it is at most
+# BOOST percent either way), and integral gain in thousandths of a percent per
+# degree C per step. Within BAND degrees of the target the integral corrects
+# at full rate; farther away at a sixteenth of it, so the fans do not pile on
+# speed while the switch is still cooling down to the target.
 KP=4
 KI=150
+BOOST=5
+BAND=2
+# The switch CPU settles about HEAT / (29.1 + fan percent) degrees C above the
+# room (fitted to measured fan tests). HEAT is in millidegrees times tenths of
+# a percent, so the arithmetic stays in whole numbers.
+HEAT=39830000
 # Every mode speeds the fans up as a sensor nears the switch's own limit.
 CPU_GUARD="85 95"
 SFP_GUARD="65 75"
@@ -51,7 +62,11 @@ step() {
             num "$1" || return 1
             error=$((cpu - $1 * 1000))
             p=$((KP * error / 1000))
-            next=$((integral + KI * error / 1000))
+            [ "$p" -le "$BOOST" ] || p=$BOOST
+            [ "$p" -ge $((-BOOST)) ] || p=$((-BOOST))
+            rate=$KI
+            [ "$error" -le $((BAND * 1000)) ] && [ "$error" -ge $((-BAND * 1000)) ] || rate=$((KI / 16))
+            next=$((integral + rate * error / 1000))
             [ "$next" -ge 0 ] || next=0
             [ "$next" -le $(((100 - MIN) * 1000)) ] || next=$(((100 - MIN) * 1000))
             try=$((MIN + p + next / 1000))
@@ -74,7 +89,8 @@ step() {
                     fi
                 done
             fi
-            # Slow down gradually: at most 2 percent per step.
+            # Slow down gradually as the switch cools: at most 2 percent per step.
+            # A new setting is passed with last 0, so it takes effect at once.
             [ "$duty" -ge $((last - 2)) ] || duty=$((last - 2)) ;;
         *) return 1 ;;
     esac
@@ -86,6 +102,16 @@ step() {
     set -- $PHY_GUARD; ramp "$phy" "$1" "$2"; [ "$r" -le "$guard" ] || guard=$r
     if [ "$guard" -gt "$duty" ]; then duty=$guard; why=guard; fi
     return 0
+}
+
+# Sets estimated to the fan speed that would hold the CPU at $1 C, from the
+# CPU reading (cpu) and the recent average speed (average, tenths of a percent).
+estimate() {
+    room=$((cpu - HEAT / (291 + average)))
+    need=$(($1 * 1000 - room))
+    if [ "$need" -le 0 ]; then estimated=100; else estimated=$(((HEAT / need - 291) / 10)); fi
+    [ "$estimated" -ge "$MIN" ] || estimated=$MIN
+    [ "$estimated" -le 100 ] || estimated=100
 }
 
 daemons() { pidof ubnt-fanctrl 2>/dev/null; }
@@ -162,6 +188,9 @@ run() {
     watcher=$!
     last=50; integral=0; faults=0; active=
     read -r p1 < "$HW/pwm1" && num "$p1" && last=$((p1 * 100 / 255))
+    # The CPU temperature follows the fan speed of the last couple of minutes,
+    # so the target estimate uses that average (in tenths of a percent).
+    average=$((last * 10))
     while [ ! -e stop ]; do
         if ! kill -0 "$watcher" 2>/dev/null; then
             sh fans.sh guard $$ </dev/null >/dev/null 2>&1 &
@@ -170,13 +199,16 @@ run() {
         hold || exit 1
         line=; read -r line < config 2>/dev/null
         set -- $line
+        # A new setting starts at its own speed instead of easing from the old one.
+        slew=$last
+        [ "$active" = "$line" ] || slew=0
         if [ "$1" = target ] && num "$2" && [ "$active" != "$line" ] && sample; then
-            # Start from the current speed so a mode change does not jump.
-            integral=$(((last - MIN) * 1000 - KP * (cpu - $2 * 1000)))
-            [ "$integral" -ge 0 ] || integral=0
-            [ "$integral" -le $(((100 - MIN) * 1000)) ] || integral=$(((100 - MIN) * 1000))
+            # Start at the speed estimated to hold the target; the integral corrects the rest.
+            estimate "$2"
+            integral=$(((estimated - MIN) * 1000))
         fi
-        if sample && step "$cpu" "$sfp" "$phy" "$last" "$integral" $line; then
+        if sample && step "$cpu" "$sfp" "$phy" "$slew" "$integral" $line; then
+            average=$((average + (duty * 10 - average) / 24))
             faults=0
         else
             faults=$((faults + 1))
@@ -214,5 +246,10 @@ case "$1" in
         shift
         step "$@" || { echo invalid; exit 1; }
         echo "$duty $integral $why" ;;
-    *) echo "usage: sh fans.sh check|run|guard <pid>|compute ..."; exit 2 ;;
+    estimate)
+        cpu=$2; average=$3
+        num "$cpu" && num "$average" && num "$4" || { echo invalid; exit 1; }
+        estimate "$4"
+        echo "$estimated" ;;
+    *) echo "usage: sh fans.sh check|run|guard <pid>|compute ...|estimate <cpu> <average> <target>"; exit 2 ;;
 esac

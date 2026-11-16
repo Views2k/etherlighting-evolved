@@ -86,28 +86,62 @@ def test_guard_raises_any_mode_near_the_switch_limits():
     assert step(50_000, 40_000, 105_000, 30, 0, manual) == (65, 0, "guard")
 
 
-def test_target_from_a_hot_start_runs_the_fans_at_full_speed():
-    integral = fans.start_integral(74_000, 42, 55)
-    assert integral == 0
-    assert step(74_000, 60_000, 80_000, 42, integral, ["target", "55"])[0] == 100
-    # Already at the target: the current speed is kept.
-    assert step(55_000, 50_000, 80_000, 70, fans.start_integral(55_000, 70, 55), ["target", "55"])[0] == 70
+def test_a_new_target_starts_near_its_holding_speed_not_full_speed():
+    # 74 C at an average of 42%: holding 55 C takes about 78%, and the boost adds at most 5%.
+    integral = fans.start_integral(74_000, 420, 55)
+    duty = step(74_000, 60_000, 80_000, 42, integral, ["target", "55"])[0]
+    assert 75 <= duty <= 90
+    # Already at the target: about the current speed.
+    assert 67 <= step(55_000, 50_000, 80_000, 70, fans.start_integral(55_000, 700, 55), ["target", "55"])[0] <= 72
+    # A target the fans cannot reach runs them at full speed.
+    assert fans.estimate(74_000, 1000, 40) == 100
 
 
-def test_target_settles_without_windup():
-    sim = SimulatedFans(ambient=15, clock=lambda: 0)
-    sim.cpu, sim.duty = 71.0, 42
-    sim.line = "target 55"
-    sim.integral = fans.start_integral(71_000, 42, 55)
+def test_a_new_curve_or_speed_takes_effect_at_once():
+    low = FanSettings(mode="curve", curve="low").config_line().split()
+    # Within one setting the speed eases down 2% per step as the switch cools...
+    assert step(60_000, 40_000, 70_000, 100, 0, low)[0] == 98
+    # ...but a new setting is passed with last 0 and goes straight to the curve.
+    assert step(60_000, 40_000, 70_000, 0, 0, low)[0] == 33
+
+
+def _hour(sim):
     history = []
-    for _ in range(720):  # one hour
+    for _ in range(720):
         sim.updated -= fans.POLL_INTERVAL
         sim._advance()
         history.append((sim.cpu, sim.duty))
+    return history
+
+
+def test_target_settles_without_a_trip_to_full_speed():
+    sim = SimulatedFans(ambient=15, clock=lambda: 0)
+    sim.cpu, sim.duty, sim.average = 71.0, 42, 420
+    sim.line = "target 55"
+    sim.integral = fans.start_integral(71_000, 420, 55)
+    history = _hour(sim)
     late = history[360:]
     assert all(abs(cpu - 55) < 1.0 for cpu, _ in late)
     assert min(d for _, d in late) >= 60
     assert max(d for _, d in late) <= 80
+    assert max(d for _, d in history) <= 82, "the fans should not run far above their holding speed"
+    assert min(cpu for cpu, _ in history) > 53
+
+
+async def test_target_after_full_speed_starts_from_the_holding_speed():
+    """Choosing a target right after Manual 100% does not start the target mode at 100%."""
+    now = [0.0]
+    sim = SimulatedFans(ambient=15, clock=lambda: now[0])
+    await sim.apply("manual 60")
+    for _ in range(60):  # settle at 60% for five minutes
+        now[0] += fans.POLL_INTERVAL
+        sim._advance()
+    await sim.apply("manual 100")
+    reading = await sim.apply("target 60")
+    assert reading["duty"] < 75
+    history = _hour(sim)
+    assert max(d for _, d in history) < 80
+    assert all(abs(cpu - 60) < 1.0 for cpu, _ in history[360:])
     assert min(cpu for cpu, _ in history) > 53
 
 
@@ -212,6 +246,16 @@ def test_shell_step_matches_python():
         assert result.returncode == 0, result.stderr
         duty, new_integral, why = step(cpu, sfp, port, last, integral, line.split())
         assert result.stdout.split() == [str(duty), str(new_integral), why], (cpu, sfp, port, last, integral, line)
+
+
+@needs_shell
+def test_shell_estimate_matches_python():
+    script = fans.SCRIPT.as_posix()
+    for cpu, average, target in ((74_000, 420, 55), (55_000, 700, 55), (64_000, 610, 50), (50_000, 1000, 45),
+                                 (45_000, 300, 85), (90_000, 1000, 50), (60_250, 555, 58)):
+        result = shell(script, "estimate", str(cpu), str(average), str(target))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == [str(fans.estimate(cpu, average, target))], (cpu, average, target)
 
 
 @needs_shell
@@ -409,11 +453,16 @@ async def test_switch_fans_end_to_end(mock_switch):
     assert (mock_switch["hw"] / "pwm2").read_text().strip() == "179"
     assert _daemon_state(mock_switch["daemon"]) == "T"
     # A running controller picks up a new setting without restarting.
-    # A target well below the current temperature runs the fans at full speed right away.
+    # A target well below the current temperature starts near its estimated holding speed, not at full speed.
     put(mock_switch["hw"] / "temp1_input", "74000")
     reading = await backend.apply("target 55")
     assert reading["config"] == "target 55" and reading["reason"] == "target"
-    assert (mock_switch["hw"] / "pwm1").read_text().strip() == "255"
+    assert 190 <= int((mock_switch["hw"] / "pwm1").read_text()) < 255
+    # From full speed, a new curve goes straight to its own speed: Low at 60 C is 33%.
+    await backend.apply("manual 100")
+    put(mock_switch["hw"] / "temp1_input", "60000")
+    await backend.apply("curve " + " ".join(f"{t} {d}" for t, d in CURVES["low"]))
+    assert (mock_switch["hw"] / "pwm1").read_text().strip() == str((33 * 255 + 50) // 100)
     await backend.stop()
     reading = await backend.read()
     assert reading["controller"] == "absent"

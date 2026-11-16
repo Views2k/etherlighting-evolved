@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using EtherlightingEvolved.Native.Core;
@@ -57,10 +58,13 @@ public static class FansPageChecks
         check(await Until(async () => (await Fans()).Int("settings.target_celsius") == 61), "moving the target slider sets the target temperature");
 
         // A choice shows at once; the switch confirms it in the background.
+        var current = (await Fans())?["reading"]?["fans"]?[0].Int("percent") ?? 0;
         Find(Page(), "Manual")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         check(Find(Page(), "Manual")!.Classes.Contains("selected") && Shows("Sending the new setting"),
             "a chosen mode shows as selected before the switch answers");
         check(await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "Manual holds a fixed fan speed");
+        check((await Fans()).Int("settings.manual_percent") == Math.Clamp(current, 30, 100),
+            $"choosing Manual keeps the fans at their current speed ({current}%) instead of the last saved one");
         check(await Until(() => Task.FromResult(Visible(30) is not null)), "Manual shows the speed slider");
         var speed = Visible(30)!;
         speed.Value = 82;
@@ -97,10 +101,30 @@ public static class FansPageChecks
                 check(await Until(() => Task.FromResult(Fits(8))), "in a 1280 × 400 rack window Fans fills the space with large controls and does not scroll");
                 check(await Click("Manual") && await Until(() => Task.FromResult(Visible(30) is not null && Find(Page(), "+") is not null)),
                     "the rack layout shows the speed slider with − and + buttons");
-                var before = (await Fans()).Int("settings.manual_percent") ?? 0;
-                check(await Click("+") && await Until(async () => (await Fans()).Int("settings.manual_percent") == Math.Min(100, before + 5)),
+                var shown = (int)Visible(30)!.Value;
+                await Until(async () => (await Fans()) is { } fans && fans.Str("settings.mode") == "manual" && fans.Int("settings.manual_percent") == shown);
+                check(await Click("+") && await Until(async () => (await Fans()).Int("settings.manual_percent") == Math.Min(100, shown + 5)),
                     "+ raises the fan speed by 5%");
                 check(await Until(() => Task.FromResult(Fits(6))), "the rack layout still fits with the slider shown");
+
+                // Touch input: a tap must not leave a tooltip on screen, and a mouse brings tooltips back.
+                var plus = Find(Page(), "+")!;
+                ToolTip.SetTip(plus, "Higher");
+                ToolTip.SetIsOpen(plus, true);
+                void Press(PointerType type)
+                {
+                    var pointer = new Pointer(Pointer.GetNextFreeId(), type, true);
+                    var properties = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.Other);
+                    window.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, plus, pointer, window, new Point(10, 10), 0, properties, KeyModifiers.None));
+                }
+                Press(PointerType.Touch);
+                var closed = !ToolTip.GetIsOpen(plus);
+                ToolTip.SetIsOpen(plus, true);
+                check(closed && !ToolTip.GetIsOpen(plus) && !ToolTip.GetServiceEnabled(window),
+                    "touch input closes tooltips and keeps them from opening");
+                Press(PointerType.Mouse);
+                check(ToolTip.GetServiceEnabled(window), "mouse input turns tooltips back on");
+                ToolTip.SetIsOpen(plus, false);
             }
             finally
             {

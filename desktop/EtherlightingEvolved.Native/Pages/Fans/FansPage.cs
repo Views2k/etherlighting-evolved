@@ -97,7 +97,7 @@ public sealed class FansPage : Page
         foreach (var (mode, label) in Modes)
         {
             var button = U.Button(label, "quiet");
-            button.Click += (_, _) => Choose(new JsonObject { ["mode"] = mode });
+            button.Click += (_, _) => Choose(ModeChange(mode));
             button.BorderThickness = new Thickness(0);
             button.Margin = new Thickness(1.5, 0);
             button.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -208,7 +208,7 @@ public sealed class FansPage : Page
 
     /// <summary>
     /// A rack window: readings fill the left side in a two by two grid, the mode buttons and the chosen mode's controls
-    /// fill the right side. Nothing scrolls; the help text is a tooltip on the controls.
+    /// fill the right side. Nothing scrolls. The longer help stays in the normal layout and on the Help page.
     /// </summary>
     Control RackLayout()
     {
@@ -235,7 +235,6 @@ public sealed class FansPage : Page
         right.Children.Add(details);
         Grid.SetRow(error, 2);
         right.Children.Add(error);
-        ToolTip.SetTip(details, Footer);
 
         var root = new Grid { ColumnDefinitions = new ColumnDefinitions("5*,6*"), ColumnSpacing = 22, Margin = new Thickness(18, 14, 18, 12) };
         root.Children.Add(tiles);
@@ -359,8 +358,9 @@ public sealed class FansPage : Page
         syncing = true;
         try
         {
-            if (!manual.IsPointerOver) manual.Value = settings.Int("manual_percent") ?? 60;
-            if (!target.IsPointerOver) target.Value = settings.Int("target_celsius") ?? 55;
+            // A value being chosen is in chosen, so this never moves a slider out from under a finger or the mouse.
+            manual.Value = settings.Int("manual_percent") ?? 60;
+            target.Value = settings.Int("target_celsius") ?? 55;
         }
         finally { syncing = false; }
         manualValue.Text = $"{(int)manual.Value}%";
@@ -442,6 +442,19 @@ public sealed class FansPage : Page
     }
 
     // ---- Changes
+
+    /// <summary>
+    /// Switching to Manual starts at the fans' current speed, so choosing the mode does not jump to the last saved
+    /// speed; the slider then sets the speed from there.
+    /// </summary>
+    JsonObject ModeChange(string mode)
+    {
+        var change = new JsonObject { ["mode"] = mode };
+        if (mode == "manual" && Settings.Str("mode") != "manual"
+            && (Fans?["reading"]?["fans"] as JsonArray) is { Count: > 0 } fans && fans[0].Int("percent") is { } percent)
+            change["manual_percent"] = Math.Clamp(percent, 30, 100);
+        return change;
+    }
 
     /// <summary>Shows a choice at once and sends it.</summary>
     void Choose(JsonObject change)

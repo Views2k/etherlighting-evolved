@@ -40,6 +40,9 @@ TARGET_RANGE = (45, 85)
 # These match fans.sh.
 KP = 4
 KI = 150
+BOOST = 5
+BAND = 2
+HEAT = 39_830_000
 GUARDS = {"cpu": (85, 95), "sfp": (65, 75), "port": (100, 110)}
 
 LOCATION = "/tmp/ee-fan-control-v1"
@@ -77,8 +80,9 @@ def step(cpu: int, sfp: int, port: int, last: int, integral: int, words: list[st
         duty = values[0]
     elif mode == "target":
         error = cpu - values[0] * 1000
-        p = _trunc(KP * error, 1000)
-        following = min(max(integral + _trunc(KI * error, 1000), 0), (100 - MIN_DUTY) * 1000)
+        p = min(max(_trunc(KP * error, 1000), -BOOST), BOOST)
+        rate = KI if -BAND * 1000 <= error <= BAND * 1000 else _trunc(KI, 16)
+        following = min(max(integral + _trunc(rate * error, 1000), 0), (100 - MIN_DUTY) * 1000)
         trial = MIN_DUTY + p + _trunc(following, 1000)
         if not (trial > 100 and error > 0) and not (trial < MIN_DUTY and error < 0):
             integral = following
@@ -102,9 +106,22 @@ def step(cpu: int, sfp: int, port: int, last: int, integral: int, words: list[st
     return duty, integral, why
 
 
-def start_integral(cpu: int, last: int, target: int) -> int:
-    """The integral that keeps the current speed when the target mode starts, within its working range."""
-    return min(max((last - MIN_DUTY) * 1000 - KP * (cpu - target * 1000), 0), (100 - MIN_DUTY) * 1000)
+def estimate(cpu: int, average: int, target: int) -> int:
+    """The fan speed that would hold the CPU at the target, from the CPU reading in millidegrees and the
+    average fan speed of the last couple of minutes in tenths of a percent."""
+    room = cpu - _trunc(HEAT, 291 + average)
+    need = target * 1000 - room
+    speed = 100 if need <= 0 else _trunc(_trunc(HEAT, need) - 291, 10)
+    return min(max(speed, MIN_DUTY), 100)
+
+
+def start_integral(cpu: int, average: int, target: int) -> int:
+    """The integral a new thermal target starts with: the estimated holding speed."""
+    return (estimate(cpu, average, target) - MIN_DUTY) * 1000
+
+
+def next_average(average: int, duty: int) -> int:
+    return average + _trunc(duty * 10 - average, 24)
 
 
 @dataclass(frozen=True)
@@ -326,6 +343,7 @@ class SimulatedFans:
         self.clock = clock
         self.cpu = self._equilibrium(42)
         self.duty = 42
+        self.average = 420
         self.integral = 0
         self.line: str | None = None
         self.daemon_integral = 12_000
@@ -345,6 +363,7 @@ class SimulatedFans:
                     sfp + 5000, sfp, port, self.duty, self.daemon_integral, ["target", "70"])
             else:
                 self.duty, self.integral, _ = step(cpu, sfp, port, self.duty, self.integral, self.line.split())
+            self.average = next_average(self.average, self.duty)
             self.cpu += (self._equilibrium(self.duty) - self.cpu) * POLL_INTERVAL / self.TAU
         if now - self.updated > 3600:
             self.updated = now
@@ -370,11 +389,13 @@ class SimulatedFans:
         self._advance()
         words = line.split()
         cpu, _, sfp, port = self._millidegrees()
-        if words[0] == "target" and self.line != line:
-            self.integral = start_integral(cpu, self.duty, int(words[1]))
+        fresh = self.line != line
+        if words[0] == "target" and fresh:
+            self.integral = start_integral(cpu, self.average, int(words[1]))
         self.line = line
-        # The switch confirms a setting after the controller's first step with it.
-        self.duty, self.integral, _ = step(cpu, sfp, port, self.duty, self.integral, words)
+        # The switch confirms a setting after the controller's first step with it; a new setting skips the easing.
+        self.duty, self.integral, _ = step(cpu, sfp, port, 0 if fresh else self.duty, self.integral, words)
+        self.average = next_average(self.average, self.duty)
         return await self.read()
 
     async def stop(self) -> None:
