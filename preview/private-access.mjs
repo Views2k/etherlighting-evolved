@@ -32,7 +32,7 @@ const MESSAGES={
 };
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
-function fail(code){const error=new Error(MESSAGES[code]);error.code=code;throw error;}
+function fail(code,cause){const error=new Error(MESSAGES[code],cause===undefined?undefined:{cause});error.code=code;throw error;}
 
 function parseJSON(value){
   if(typeof value!=='string'||Buffer.byteLength(value)>65536)fail('private_access_invalid_configuration');
@@ -112,6 +112,9 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     throw new Error('Private access requires local configuration and listener callbacks.');
   const deviceConfigPath=path.join(path.dirname(configPath),'approved-device.json');
   let saved=null,loaded=false,operation=Promise.resolve(),httpsPort=PRIVATE_HTTPS_PORT,listenerPort=PRIVATE_LISTENER_PORT,audience='owner';
+  // shutdown() aborts this signal, which ends the CLI call of an operation already running.
+  let cli=new AbortController(),stopped=false;
+  const run=args=>runTailscale(args,{signal:cli.signal});
   const record=value=>{const next={...value};delete next.audience;if(audience!=='owner')next.audience=audience;return next;};
   let state={available:false,enabled:false,ready:false,url:null,error:null,setup_action:null,action_url:null};
   const status=()=>({...state,audience,https_port:httpsPort,can_change_port:!state.enabled&&!state.ready&&!['private_access_cleanup_unconfirmed','private_access_shutdown_unconfirmed','private_access_invalid_configuration','private_access_identity_changed'].includes(state.error?.code),error:state.error?{...state.error}:null});
@@ -149,7 +152,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
   }
   async function identityStatus(){
     let text;
-    try{text=await runTailscale(['status','--json','--peers=false']);}catch(error){if(Object.hasOwn(MESSAGES,error.code))throw error;fail('tailscale_unavailable');}
+    try{text=await run(['status','--json','--peers=false']);}catch(error){if(Object.hasOwn(MESSAGES,error.code))throw error;fail('tailscale_unavailable');}
     return parseJSON(text);
   }
   async function identity(){
@@ -161,7 +164,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     if(info.BackendState==='Running'&&(info.Self?.Expired===true||Array.isArray(info.Self?.Tags)&&info.Self.Tags.length))fail('tailscale_device_identity_required');
     const current=identityFrom(info,httpsPort,audience,deviceConfigPath,runTailscale);state.available=true;return current;
   }
-  async function serve(){return parseJSON(await runTailscale(['serve','status','--json']));}
+  async function serve(){return parseJSON(await run(['serve','status','--json']));}
   async function close(){
     state.ready=false;state.url=null;
     try{await stopListener();}catch{fail('private_access_shutdown_unconfirmed');}
@@ -174,7 +177,35 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     try{const address=await startListener(current.gate,requested);if(address?.port&&validPort(address.port))listenerPort=address.port;}
     catch{fail('private_access_listener_failed');}
   }
+  // Adds EE's route on a port with no Serve configuration. The listener is open and the record saved beforehand.
+  async function addRoute(current,before){
+    let setupError;
+    try{await run(['serve','--bg',`--https=${httpsPort}`,targetFor(listenerPort)]);}catch(error){setupError=error;}
+    let after;
+    try{after=await serve();}catch{fail('private_access_setup_unconfirmed');}
+    if(routeState(after,current.origin,listenerPort)!=='exact'||unrelatedRoutes(before,httpsPort)!==unrelatedRoutes(after,httpsPort)){
+      if(setupError?.actionUrl){setupError.code='tailscale_approval_required';throw setupError;}
+      if(setupError?.code==='tailscale_permission_required')throw setupError;
+      fail('private_access_setup_unconfirmed');
+    }
+  }
+  // Removes the saved route only when its port holds exactly EE's route. The cause of a failed first read is kept so
+  // shutdown() can tell a computer without Tailscale from an unconfirmed removal.
+  async function removeRoute(){
+    let before;
+    try{before=await serve();}catch(error){fail('private_access_cleanup_unconfirmed',error);}
+    const route=routeState(before,saved.origin,saved.listenerPort);
+    if(route==='absent')return 'absent';
+    if(route!=='exact')fail('private_access_cleanup_unconfirmed');
+    try{await run(['serve',`--https=${saved.httpsPort}`,'off']);}catch{}
+    let after;
+    try{after=await serve();}catch{fail('private_access_cleanup_unconfirmed');}
+    if(routeState(after,saved.origin,saved.listenerPort)!=='absent'||unrelatedRoutes(before,saved.httpsPort)!==unrelatedRoutes(after,saved.httpsPort))
+      fail('private_access_cleanup_unconfirmed');
+    return 'removed';
+  }
   async function initialize(){
+    if(stopped)return status();
     reset();
     try{
       await load();const current=await identity();
@@ -184,10 +215,21 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
         return status();
       }
       if(!matches(current))fail('private_access_identity_changed');
-      const route=routeState(await serve(),saved.origin,saved.listenerPort);
+      const before=await serve(),route=routeState(before,saved.origin,saved.listenerPort);
       if(route==='public')fail('private_access_funnel_enabled');
-      if(route!=='exact')fail(route==='absent'?'private_access_route_unavailable':'private_access_port_in_use');
-      await openListener(current);
+      if(route==='occupied')fail('private_access_port_in_use');
+      if(route==='absent'){
+        // EE removed its route when it last stopped. The saved local port is reused; the record changes only when
+        // that port is taken.
+        try{await openListener(current,saved.listenerPort);}
+        catch{await openListener(current,0);await save(record({...saved,listenerPort}));}
+        await addRoute(current,before);
+      }else{
+        // A route left by an unclean stop. If its local port is now taken, the route is removed so it cannot reach
+        // another program.
+        try{await openListener(current);}
+        catch(error){try{await removeRoute();}catch{}throw error;}
+      }
       state.ready=true;state.url=current.origin;
     }catch(error){await stopAfter(error);}
     return status();
@@ -202,17 +244,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       if(route!=='absent'&&!(route==='exact'&&saved&&matches(current)))fail('private_access_port_in_use');
       await openListener(current,route==='absent'?0:listenerPort);
       await save(record({version:2,enabled:true,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort}));
-      if(route==='absent'){
-        let setupError;
-        try{await runTailscale(['serve','--bg',`--https=${httpsPort}`,targetFor(listenerPort)]);}catch(error){setupError=error;}
-        let after;
-        try{after=await serve();}catch{fail('private_access_setup_unconfirmed');}
-        if(routeState(after,current.origin,listenerPort)!=='exact'||unrelatedRoutes(before,httpsPort)!==unrelatedRoutes(after,httpsPort)){
-          if(setupError?.actionUrl){setupError.code='tailscale_approval_required';throw setupError;}
-          if(setupError?.code==='tailscale_permission_required')throw setupError;
-          fail('private_access_setup_unconfirmed');
-        }
-      }
+      if(route==='absent')await addRoute(current,before);
       state.ready=true;state.url=current.origin;state.error=null;
     }catch(error){await stopAfter(error);}
     return status();
@@ -223,33 +255,48 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       await close();await load();
       if(!saved){state.enabled=false;return status();}
       await save(record({...saved,enabled:false}));
-      let before;
-      try{before=await serve();}catch{fail('private_access_cleanup_unconfirmed');}
-      const route=routeState(before,saved.origin,saved.listenerPort);
-      if(route==='absent')return status();
-      if(route!=='exact')fail('private_access_cleanup_unconfirmed');
-      try{await runTailscale(['serve',`--https=${saved.httpsPort}`,'off']);}catch{}
-      let after;
-      try{after=await serve();}catch{fail('private_access_cleanup_unconfirmed');}
-      if(routeState(after,saved.origin,saved.listenerPort)!=='absent'||unrelatedRoutes(before,saved.httpsPort)!==unrelatedRoutes(after,saved.httpsPort))
-        fail('private_access_cleanup_unconfirmed');
+      await removeRoute();
     }catch(error){state.ready=false;state.url=null;setError(error);}
     return status();
   }
   async function login(){
+    if(stopped)return status();
     await initialize();
     if(state.error?.code!=='tailscale_signin_required')return status();
     const info=await identityStatus();
     if(info.BackendState!=='NeedsLogin')return status();
-    try{await runTailscale(['login','--timeout=5s']);}
+    try{await run(['login','--timeout=5s']);}
     catch(error){setError(error);return status();}
     return initialize();
+  }
+  // Stops private access when the gateway stops and removes EE's route, keeping the saved setting so the next start
+  // adds the route again. It rejects only for an invalid time limit or a listener that cannot be stopped.
+  function shutdown({timeoutMs=4000}={}){
+    if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1000||timeoutMs>60000)return Promise.reject(new RangeError('Choose a cleanup time from 1 to 60 seconds.'));
+    const deadline=Date.now()+timeoutMs;
+    if(!stopped){stopped=true;cli.abort();}
+    return serial(async()=>{
+      const limit=new AbortController();cli=limit;
+      const timer=setTimeout(()=>limit.abort(),Math.max(0,deadline-Date.now()));
+      try{
+        await close();
+        try{await load();}catch(error){return {route:'unconfirmed',https_port:null,code:error.code};}
+        if(!saved)return {route:'none',https_port:null};
+        if(Date.now()>=deadline)return {route:'unconfirmed',https_port:saved.httpsPort,code:'private_access_cleanup_unconfirmed'};
+        try{return {route:await removeRoute(),https_port:saved.httpsPort};}
+        catch(error){
+          if(error.cause?.code==='tailscale_not_installed')return {route:'no_tailscale',https_port:saved.httpsPort};
+          return {route:'unconfirmed',https_port:saved.httpsPort,code:error.code??'private_access_cleanup_unconfirmed'};
+        }
+      }finally{clearTimeout(timer);}
+    });
   }
   return Object.freeze({status,initialize:()=>serial(initialize),login:()=>serial(login),configure:(enabled,{httpsPort:requestedPort,audience:requestedAudience}={})=>{
     if(typeof enabled!=='boolean')return Promise.reject(new Error('Choose whether to enable private access.'));
     if(requestedPort!==undefined&&!validPort(requestedPort))return Promise.reject(new Error('Choose a port between 1024 and 65535.'));
     if(requestedAudience!==undefined&&!ACCESS_AUDIENCES.includes(requestedAudience))return Promise.reject(new Error('Choose who can use private access.'));
     return serial(async()=>{
+      if(stopped)return status();
       const previous=audience;
       try{
       await load();
@@ -271,5 +318,5 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       if(!state.ready&&kept!==audience)audience=kept;
       return status();
     });
-  },close:()=>serial(close)});
+  },close:()=>serial(close),shutdown});
 }

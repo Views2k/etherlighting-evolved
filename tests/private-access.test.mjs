@@ -70,14 +70,22 @@ test('explicit enable and disable preserve the existing service and persist no l
   assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET],['serve','--https=8444','off']]);
 });
 
-test('startup only restores a verified owned route and does not reconfigure Serve',async t=>{
+test('startup with EE\'s route still in place reuses it without Serve writes',async t=>{
   const f=await fixture(t);await f.manager.configure(true);await f.manager.close();f.calls=[];
   const next=createPrivateAccessManager(f.options);
   assert.equal((await next.initialize()).ready,true);assert.deepEqual(writes(f),[]);
-  delete f.route.TCP[8444];delete f.route.Web[AUTHORITY];
-  const unavailable=await next.initialize();
-  assert.equal(unavailable.ready,false);assert.equal(unavailable.url,null);
-  assert.equal(unavailable.error.code,'private_access_route_unavailable');assert.equal(f.active,null);
+});
+
+test('startup after a clean stop adds EE\'s route back on the saved local port without saving',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);
+  assert.deepEqual(await f.manager.shutdown(),{route:'removed',https_port:8444});
+  const file=await readFile(f.configPath,'utf8');f.calls=[];
+  const status=await createPrivateAccessManager(f.options).initialize();
+  assert.equal(status.ready,true);assert.equal(status.url,ORIGIN);assert.equal(status.error,null);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
+  assert.deepEqual(f.route.TCP[8443],existing.TCP[8443]);
+  assert.deepEqual(f.route.Web['existing.fixture-tailnet.ts.net:8443'],existing.Web['existing.fixture-tailnet.ts.net:8443']);
+  assert.equal(await readFile(f.configPath,'utf8'),file);
 });
 
 test('another service or unowned matching route cannot be adopted or overwritten',async t=>{
@@ -278,7 +286,7 @@ test('missing installation and machine approval have actionable states without m
   assert.deepEqual(writes(f),[]);assert.equal(f.calls.some(args=>args[0]==='login'),false);
 });
 
-test('HTTPS approval leaves the listener closed and retries only after explicit Apply',async t=>{
+test('after the HTTPS approval, a status check completes the saved setup with one Serve write',async t=>{
   const f=await fixture(t),runner=f.runTailscale;let approved=false;
   f.options.runTailscale=async args=>{
     if(!approved&&args[0]==='serve'&&args.includes('--bg'))throw Object.assign(new Error(),{actionUrl:'https://login.tailscale.com/f/serve?node=fixture'});
@@ -286,8 +294,9 @@ test('HTTPS approval leaves the listener closed and retries only after explicit 
   };
   const manager=createPrivateAccessManager(f.options),result=await manager.configure(true);
   assert.equal(result.setup_action,'approve');assert.equal(result.ready,false);assert.equal(f.active,null);
-  approved=true;assert.equal((await manager.initialize()).ready,false);assert.deepEqual(writes(f),[]);
-  assert.equal((await manager.configure(true)).ready,true);
+  approved=true;f.calls=[];
+  assert.equal((await manager.initialize()).ready,true);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
 });
 
 test('invalid ports and malformed persisted listener ports never reach the CLI',async t=>{
@@ -381,4 +390,168 @@ test('a saved audience outside the known values is an invalid configuration with
   const next=createPrivateAccessManager(f.options),status=await next.initialize();
   assert.equal(status.ready,false);assert.equal(status.error.code,'private_access_invalid_configuration');
   assert.equal(f.active,null);assert.deepEqual(writes(f),[]);
+});
+
+const unavailable=()=>Object.assign(new Error('aborted'),{code:'tailscale_unavailable'});
+// Like the installed CLI, a call on an aborted signal fails at once, and a running call fails when the signal aborts.
+function abortable(runner,{hold=()=>false}={}){
+  return async(args,{signal}={})=>{
+    if(signal?.aborted)throw unavailable();
+    const result=await runner(args);
+    if(!hold(args))return result;
+    return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(unavailable()),{once:true}));
+  };
+}
+
+test('shutdown removes only EE\'s route, keeps the setting, and finds nothing to remove the second time',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);f.calls=[];
+  const file=await readFile(f.configPath,'utf8');
+  assert.deepEqual(await f.manager.shutdown(),{route:'removed',https_port:8444});
+  assert.equal(f.active,null);assert.deepEqual(f.route,existing);
+  assert.deepEqual(writes(f),[['serve','--https=8444','off']]);
+  assert.equal(await readFile(f.configPath,'utf8'),file);assert.equal(JSON.parse(file).enabled,true);
+  f.calls=[];
+  assert.deepEqual(await f.manager.shutdown(),{route:'absent',https_port:8444});assert.deepEqual(writes(f),[]);
+});
+
+test('shutdown without a saved setting stops the listener and calls nothing',async t=>{
+  const f=await fixture(t);
+  assert.deepEqual(await f.manager.shutdown(),{route:'none',https_port:null});
+  assert.deepEqual(f.calls,[]);assert.equal(f.stopped,1);
+});
+
+test('shutdown leaves a route that is no longer exactly EE\'s',async t=>{
+  for(const variant of ['owner','funnel']){
+    const f=await fixture(t);await f.manager.configure(true);f.calls=[];
+    if(variant==='owner')f.route.Web[AUTHORITY].Handlers['/'].Proxy='http://127.0.0.1:5555';
+    else f.route.AllowFunnel={[AUTHORITY]:true};
+    const before=structuredClone(f.route),result=await f.manager.shutdown();
+    assert.equal(result.route,'unconfirmed',variant);assert.equal(result.https_port,8444,variant);
+    assert.deepEqual(writes(f),[],variant);assert.deepEqual(f.route,before,variant);assert.equal(f.active,null,variant);
+  }
+});
+
+test('shutdown reports an unreadable Serve status and a missing Tailscale without rejecting',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);f.failRouteRead=true;
+  assert.deepEqual(await f.manager.shutdown(),{route:'unconfirmed',https_port:8444,code:'private_access_cleanup_unconfirmed'});
+  assert.equal(f.active,null);
+  const missing=createPrivateAccessManager({...f.options,runTailscale:async()=>{throw Object.assign(new Error(),{code:'tailscale_not_installed'});}});
+  assert.deepEqual(await missing.shutdown(),{route:'no_tailscale',https_port:8444});
+});
+
+test('shutdown rejects when the listener cannot be stopped and then changes nothing in Serve',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);f.calls=[];f.failStop=true;
+  await assert.rejects(f.manager.shutdown(),{code:'private_access_shutdown_unconfirmed'});
+  assert.deepEqual(f.calls,[]);
+});
+
+test('shutdown ends a CLI call that does not answer at its deadline',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.close();
+  let received;
+  const manager=createPrivateAccessManager({...f.options,runTailscale:(_args,{signal}={})=>{
+    received=signal;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(unavailable()),{once:true}));
+  }});
+  const started=Date.now(),result=await manager.shutdown({timeoutMs:1000});
+  assert.ok(Date.now()-started<1500);
+  assert.equal(result.route,'unconfirmed');assert.equal(result.https_port,8444);assert.equal(received.aborted,true);
+});
+
+test('shutdown during a restore ends its Serve call and removes the route it added',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();
+  let entered;const waiting=new Promise(resolve=>{entered=resolve;});
+  const manager=createPrivateAccessManager({...f.options,runTailscale:abortable(f.runTailscale,{hold:args=>{
+    if(!args.includes('--bg'))return false;entered();return true;
+  }})});
+  const restoring=manager.initialize();
+  await waiting;
+  const stopping=manager.shutdown();
+  assert.equal((await restoring).ready,false);
+  assert.deepEqual(await stopping,{route:'removed',https_port:8444});
+  assert.deepEqual(f.route,existing);assert.equal(f.active,null);
+});
+
+test('a shutdown whose time runs out while it waits for another operation makes no Serve call',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.close();f.calls=[];
+  let release,entered;const blocked=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  const manager=createPrivateAccessManager({...f.options,runTailscale:async args=>{
+    if(args[0]==='status'){entered();await blocked;}
+    return f.runTailscale(args);
+  }});
+  const refreshing=manager.initialize();
+  await started;
+  const stopping=manager.shutdown({timeoutMs:1000});
+  await new Promise(resolve=>setTimeout(resolve,1100));
+  f.identity.BackendState='Stopped';release();
+  assert.equal((await refreshing).error.code,'tailscale_not_running');
+  assert.deepEqual(await stopping,{route:'unconfirmed',https_port:8444,code:'private_access_cleanup_unconfirmed'});
+  assert.deepEqual(f.calls.filter(args=>args[0]==='serve'),[]);
+});
+
+test('shutdown with private access off removes a route left by an unconfirmed turn-off',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);
+  await writeFile(f.configPath,JSON.stringify({...JSON.parse(await readFile(f.configPath,'utf8')),enabled:false}));
+  assert.deepEqual(await createPrivateAccessManager(f.options).shutdown(),{route:'removed',https_port:8444});
+  assert.deepEqual(f.route,existing);
+});
+
+test('shutdown accepts a time limit from 1 to 60 seconds and later operations make no CLI calls',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);f.calls=[];
+  for(const timeoutMs of [999,60001,1.5])await assert.rejects(f.manager.shutdown({timeoutMs}),RangeError);
+  assert.deepEqual(f.calls,[]);
+  await f.manager.shutdown();f.calls=[];
+  await f.manager.initialize();await f.manager.configure(true);await f.manager.configure(false);await f.manager.login();
+  assert.deepEqual(f.calls,[]);assert.equal(f.active,null);
+});
+
+test('a restore moves to a free local port when the saved one is taken and saves it',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();f.calls=[];
+  const requested=[];
+  f.options.startListener=async(gate,port)=>{requested.push(port);if(port===4184)throw new Error('in use');f.active=gate;return {port:port||52001};};
+  const manager=createPrivateAccessManager(f.options);
+  assert.equal((await manager.initialize()).ready,true);assert.deepEqual(requested,[4184,0]);
+  const saved=JSON.parse(await readFile(f.configPath,'utf8'));
+  assert.equal(saved.version,2);assert.equal(saved.listenerPort,52001);assert.equal(saved.enabled,true);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444','http://127.0.0.1:52001']]);
+  assert.deepEqual(await manager.shutdown(),{route:'removed',https_port:8444});assert.deepEqual(f.route,existing);
+});
+
+test('a leftover route whose local port is taken is removed and then restored on a free port',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.close();f.calls=[];
+  f.options.startListener=async(gate,port)=>{if(port===4184)throw new Error('in use');f.active=gate;return {port:port||52001};};
+  const manager=createPrivateAccessManager(f.options);
+  const failed=await manager.initialize();
+  assert.equal(failed.error.code,'private_access_listener_failed');assert.deepEqual(f.route,existing);
+  assert.deepEqual(writes(f),[['serve','--https=8444','off']]);
+  assert.equal((await manager.initialize()).ready,true);
+  assert.equal(f.route.Web[AUTHORITY].Handlers['/'].Proxy,'http://127.0.0.1:52001');
+});
+
+test('a restore never changes Serve or the saved file when the setting is off or the port is not EE\'s',async t=>{
+  for(const variant of ['off','identity','occupied','public']){
+    const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();
+    if(variant==='off')await writeFile(f.configPath,JSON.stringify({...JSON.parse(await readFile(f.configPath,'utf8')),enabled:false}));
+    if(variant==='identity')f.identity.Self.ID='changed-device';
+    if(variant==='occupied'){f.route.TCP[8444]={HTTPS:true};f.route.Web[AUTHORITY]={Handlers:{'/':{Proxy:'http://127.0.0.1:5555'}}};}
+    if(variant==='public')f.route.AllowFunnel={[AUTHORITY]:true};
+    const before=structuredClone(f.route),file=await readFile(f.configPath,'utf8');f.calls=[];
+    const status=await createPrivateAccessManager(f.options).initialize();
+    assert.equal(status.ready,false,variant);assert.deepEqual(writes(f),[],variant);
+    assert.deepEqual(f.route,before,variant);assert.equal(await readFile(f.configPath,'utf8'),file,variant);
+  }
+});
+
+test('a restore whose Serve change is not confirmed closes the listener and keeps the setting on',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();f.failBeforeMutation=true;
+  const status=await createPrivateAccessManager(f.options).initialize();
+  assert.equal(status.error.code,'private_access_setup_unconfirmed');assert.equal(status.enabled,true);assert.equal(f.active,null);
+  assert.equal(JSON.parse(await readFile(f.configPath,'utf8')).enabled,true);
+});
+
+test('a version one record restored after a clean stop stays version one',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();
+  const saved=JSON.parse(await readFile(f.configPath));delete saved.httpsPort;delete saved.listenerPort;saved.version=1;
+  const text=JSON.stringify(saved);await writeFile(f.configPath,text);f.calls=[];
+  assert.equal((await createPrivateAccessManager(f.options).initialize()).ready,true);
+  assert.equal(await readFile(f.configPath,'utf8'),text);
+  assert.deepEqual(writes(f),[['serve','--bg','--https=8444',TARGET]]);
 });
