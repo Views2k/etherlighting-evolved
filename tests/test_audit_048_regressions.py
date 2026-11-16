@@ -146,10 +146,15 @@ async def test_failed_profile_schedule_records_failure_and_does_not_skip_other_d
         def __init__(self):
             self.engine = self
             self.values = []
-            self._sfp_revisions = {}
 
         def schedule_identity(self):
             return "demo"
+
+        def sfp_revisions(self):
+            return {}
+
+        async def confirm_sfp_output(self, expected):
+            return None
 
         def set_brightness(self, value):
             self.values.append(value)

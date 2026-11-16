@@ -17,7 +17,7 @@ def attach(api: APIRouter, ctx: ApiContext) -> None:
     @api.get("/schedules")
     async def list_schedules():
         return {"schedules": scheduler.list(), "actions": list(ACTIONS), "history": scheduler.history,
-                "history_available": not scheduler._journal_error,
+                "history_available": scheduler.history_available,
                 "clock": Engine.schedule_clock() if sessions.engine else None}
 
     def bind_schedule(data):

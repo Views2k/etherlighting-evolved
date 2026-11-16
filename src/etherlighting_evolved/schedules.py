@@ -256,6 +256,10 @@ class Scheduler:
         with contextlib.suppress(ProfileStoreError, ScheduleStoreError):
             self.migrate_profiles()
 
+    @property
+    def history_available(self) -> bool:
+        return not self._journal_error
+
     def _save_journal(self) -> None:
         if self._journal_error:
             raise ScheduleStoreError("Schedule history could not be verified. "
@@ -374,25 +378,18 @@ class Scheduler:
             if current is None or current.revision != schedule.revision:
                 return {"result": "skipped: the schedule changed before it could run"}
             engine = self.sessions.engine
-            before = dict(engine._sfp_revisions) if engine is not None else {}
+            before = engine.sfp_revisions() if engine is not None else {}
             entry = self.run(schedule, now, occurrence=occurrence, defer_confirmation=True)
             if entry is None or entry["result"] != "pending output confirmation":
                 return entry
-            expected = dict(engine._sfp_revisions)
+            expected = engine.sfp_revisions()
             try:
                 if schedule.action["type"] == "release":
                     await engine.wait_for_output_idle()
                 else:
-                    for port, revision in expected.items():
-                        if before.get(port) == revision and schedule.action["type"] != "resume":
-                            continue
-                        if engine._sfp_revisions.get(port) != revision:
-                            raise ValueError("Lighting changed during schedule confirmation.")
-                        await engine.wait_for_sfp(port)
-                        if engine._sfp_revisions.get(port) != revision:
-                            raise ValueError("Lighting changed during schedule confirmation.")
-                        if engine.mode == "running" and engine._sfp_acknowledged.get(port) != revision:
-                            raise ValueError("SFP output is still pending. Check the connected switch.")
+                    await engine.confirm_sfp_output({
+                        port: revision for port, revision in expected.items()
+                        if before.get(port) != revision or schedule.action["type"] == "resume"})
                 if self.sessions.engine is not engine:
                     raise ValueError("The connected switch changed during schedule confirmation.")
                 entry["result"] = "ok"

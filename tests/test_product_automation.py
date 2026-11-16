@@ -17,9 +17,13 @@ def scheduler_fixture(tmp_path):
     profiles = PresetStore(tmp_path / "profiles.json")
     store = ScheduleStore(tmp_path / "schedules.json")
     calls = []
+
+    async def confirm_sfp_output(expected):
+        return None
+
     engine = SimpleNamespace(
         set_brightness=lambda value: calls.append(value), apply_snapshot=lambda scene: calls.append(scene),
-        _sfp_revisions={},
+        sfp_revisions=lambda: {}, confirm_sfp_output=confirm_sfp_output,
     )
     sessions = SimpleNamespace(engine=engine, schedule_identity=lambda: "demo")
     return profiles, store, calls, sessions
@@ -195,19 +199,20 @@ def test_rule_tester_refuses_rules_that_saving_refuses(config):
 async def test_schedule_does_not_certify_pending_optical_acknowledgment(tmp_path):
     profiles, store, _, sessions = scheduler_fixture(tmp_path)
     item = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
-    sessions.engine._sfp_revisions = {9: 1}
-    sessions.engine._sfp_acknowledged = {9: 1}
-    sessions.engine.mode = "running"
+    revisions, requested = {9: 1}, []
 
     def change(_):
-        sessions.engine._sfp_revisions[9] += 1
+        revisions[9] += 1
 
-    async def pending(_):
-        return
+    async def pending(expected):
+        requested.append(expected)
+        raise TransportError("Lighting settings were saved, but SFP output is still pending.")
 
     sessions.engine.set_brightness = change
-    sessions.engine.wait_for_sfp = pending
+    sessions.engine.sfp_revisions = lambda: dict(revisions)
+    sessions.engine.confirm_sfp_output = pending
     scheduler = Scheduler(store, profiles, sessions)
     result = await scheduler.run_confirmed(item)
+    assert requested == [{9: 2}]
     assert result["result"].startswith("unconfirmed")
     assert "pending" in result["result"]

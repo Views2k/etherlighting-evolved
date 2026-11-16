@@ -32,7 +32,12 @@ def test_bad_schedules(bad):
 class FakeEngine:
     def __init__(self):
         self.calls = []
-        self._sfp_revisions = {}
+
+    def sfp_revisions(self):
+        return {}
+
+    async def confirm_sfp_output(self, expected):
+        return None
 
     def apply_snapshot(self, scene):
         self.calls.append(("scene", scene))
