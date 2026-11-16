@@ -18,6 +18,7 @@ from etherlighting_evolved.fans import (
     CURVES,
     FanControl,
     FanSettings,
+    FanSettingsError,
     FanStore,
     SimulatedFans,
     SwitchFans,
@@ -163,16 +164,46 @@ def test_store_round_trip(tmp_path):
     assert store.load() == FanSettings(mode="target", target_celsius=58)
 
 
-@pytest.mark.parametrize("content", ["{not json", "[]", json.dumps({"mode": "manual", "manual_percent": 5}),
-                                     json.dumps({"curve": []})])
-def test_unusable_settings_are_moved_aside_and_the_switch_keeps_control(tmp_path, caplog, content):
+@pytest.mark.parametrize("content", ["{not json", "[]", ""])
+def test_unreadable_settings_are_moved_aside(tmp_path, caplog, content):
     path = tmp_path / "fans.json"
     path.write_text(content, "utf-8")
-    assert FanStore(path).load() == FanSettings()
+    with pytest.raises(FanSettingsError, match="could not be read"):
+        FanStore(path).load()
     assert not path.exists()
     [moved] = tmp_path.glob("fans.json.corrupt-*")
     assert moved.read_text("utf-8") == content
     assert str(moved) in caplog.text
+
+
+@pytest.mark.parametrize("content", [{"mode": "manual", "manual_percent": 5}, {"curve": []}, {"mode": "auto"}])
+def test_settings_this_release_cannot_use_stay_in_place(tmp_path, caplog, content):
+    # A newer release may save a mode or value this one does not know; that release can still read it later.
+    path = tmp_path / "fans.json"
+    path.write_text(json.dumps(content), "utf-8")
+    with pytest.raises(FanSettingsError):
+        FanStore(path).load()
+    assert json.loads(path.read_text("utf-8")) == content
+    assert not list(tmp_path.glob("fans.json.corrupt-*"))
+    assert str(path) in caplog.text
+
+
+async def test_lost_fan_choice_stays_reported_until_a_new_one_is_saved(tmp_path):
+    path = tmp_path / "fans.json"
+    path.write_text("{not json", "utf-8")
+    backend = SimulatedFans()
+    await backend.apply("manual 40")
+    control = FanControl(backend, FanStore(path), supported=True)
+    assert control.settings == FanSettings()
+    message = "Saved fan settings could not be read. The switch controls the fans until you choose a mode."
+    assert control.to_dict()["settings_error"] == message
+    # The switch takes the fans back, which clears error but not the report of the lost choice.
+    await control.poll()
+    assert control.reading["controller"] == "absent"
+    assert control.to_dict()["error"] is None and control.to_dict()["settings_error"] == message
+    await control.update({"mode": "manual", "manual_percent": 50})
+    assert control.to_dict()["settings_error"] is None
+    assert FanStore(path).load() == FanSettings(mode="manual", manual_percent=50)
 
 
 def test_parse_reading():

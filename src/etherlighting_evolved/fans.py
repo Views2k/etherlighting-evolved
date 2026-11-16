@@ -11,7 +11,6 @@ uses the Python version.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import functools
 import hashlib
 import json
@@ -159,26 +158,41 @@ class FanSettings:
         return None
 
 
+class FanSettingsError(ValueError):
+    """A fan choice was saved but cannot be used, so the switch keeps control of its fans, the safe default."""
+
+
+_UNUSABLE_SETTINGS = "Saved fan settings could not be read. The switch controls the fans until you choose a mode."
+
+
 class FanStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def load(self) -> FanSettings:
-        """The saved choice. Without a usable one the switch keeps control of its fans, the safe default."""
+        """The saved choice, or the switch's own control when nothing was saved.
+
+        Raises FanSettingsError when a saved choice cannot be used. A file that holds no JSON object is moved aside
+        first. A JSON object this release cannot use, such as a choice saved by a newer release, stays in place
+        until a new choice replaces it.
+        """
         try:
             data = json.loads(self.path.read_text("utf-8"))
         except FileNotFoundError:
             return FanSettings()
         except OSError as exc:
-            log.warning("The saved fan settings could not be read, so the switch controls the fans: %s", exc)
-            return FanSettings()
+            log.warning("The saved fan settings in %s could not be read: %s", self.path, exc)
+            raise FanSettingsError(_UNUSABLE_SETTINGS) from exc
         except ValueError:
             data = None
-        if isinstance(data, dict):
-            with contextlib.suppress(ValueError, TypeError):
-                return FanSettings.from_dict(data)
-        quarantine(self.path, "The saved fan settings could not be used, so the switch controls the fans")
-        return FanSettings()
+        if not isinstance(data, dict):
+            quarantine(self.path, "The saved fan settings could not be read")
+            raise FanSettingsError(_UNUSABLE_SETTINGS)
+        try:
+            return FanSettings.from_dict(data)
+        except (ValueError, TypeError) as exc:
+            log.warning("The saved fan settings in %s are not ones this version of EE can use: %s", self.path, exc)
+            raise FanSettingsError(_UNUSABLE_SETTINGS) from exc
 
     def save(self, settings: FanSettings) -> None:
         atomic_write_json(self.path, asdict(settings))
@@ -430,7 +444,15 @@ class FanControl:
         self.backend = backend
         self.store = store
         self.supported = supported
-        self.settings = store.load() if store else FanSettings()
+        self.settings = FanSettings()
+        # Kept apart from error, which the next successful step clears, so the lost choice stays reported until
+        # a new one is saved.
+        self.settings_error: str | None = None
+        if store:
+            try:
+                self.settings = store.load()
+            except FanSettingsError as exc:
+                self.settings_error = str(exc)
         self.reading: dict[str, Any] | None = None
         self.error: str | None = None
         self.unsupported: str | None = None if supported else "Fan control needs a USW-Pro-XG-8-PoE."
@@ -449,6 +471,7 @@ class FanControl:
             "settings": asdict(self.settings),
             "reading": self.reading,
             "error": self.error,
+            "settings_error": self.settings_error,
             "curves": {name: {"name": CURVE_NAMES[name], "points": [list(p) for p in points]}
                        for name, points in CURVES.items()},
             "limits": {"manual_percent": list(MANUAL_RANGE), "target_celsius": list(TARGET_RANGE)},
@@ -470,6 +493,7 @@ class FanControl:
             self.settings = settings
             if self.store:
                 self.store.save(settings)
+            self.settings_error = None
 
     async def _enforce(self, settings: FanSettings) -> None:
         line = settings.config_line()
