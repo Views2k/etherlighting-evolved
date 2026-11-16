@@ -109,16 +109,18 @@ class ControllerIntegration:
 
     async def _complete(self, operation):
         task = asyncio.create_task(operation)
+        # asyncio.wait, unlike shield, does not report a failure that arrives after the caller was cancelled.
         try:
-            return await asyncio.shield(task)
+            await asyncio.wait({task})
         except asyncio.CancelledError:
             # Drain the client's bounded HTTPS operation before shutdown clears its credentials.
             while not task.done():
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await asyncio.shield(task)
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait({task})
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 task.result()
             raise
+        return task.result()
 
     def _failure(self, error):
         self._failures += 1
