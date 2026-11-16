@@ -55,7 +55,7 @@ internal static class ShellChecks
         shell.ShowConnectionProblem("EE cannot open https://example.test/path.");
         check(Texts(shell).Contains("EE cannot open https://example.test/path.")
               && shell.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Change workspace address")),
-            "a refused --url shows the reason and Change workspace address instead of starting the service");
+            "the workspace error view shows why an address was refused and offers Change workspace address");
     }
 
     public static void ExerciseDesktop(string output, Action<bool, string> check, string? page = null)
@@ -158,7 +158,8 @@ internal static class ShellChecks
         var service = workspace.About.Str("version");
         check(service is { Length: > 0 } && texts.Contains(service) && texts.Contains(App.Version) && buttons.Contains("Releases"),
             "About shows the app and service versions and a Releases link");
-        check(workspace.Disclaimer.Contains("use at your own risk") && texts.Contains(workspace.Disclaimer), "About shows the service's full disclaimer");
+        check(workspace.Disclaimer == (await workspace.Request("/api/about")).Str("disclaimer") && texts.Contains(workspace.Disclaimer),
+            "About shows the service's full disclaimer");
         var clock = Stopwatch.StartNew();
         bool SessionShown() => Texts(settings).Any(text => text is "No earlier session has been recorded." or "Stage");
         while (!SessionShown() && clock.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(25);
