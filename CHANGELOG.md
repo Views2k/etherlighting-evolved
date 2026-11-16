@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- The first connection to a switch shows the switch's SSH host key fingerprint, and EE sends the password only after you accept the key. Reconnecting with a saved login or at startup no longer trusts an unknown key either. Switches that EE has connected to before keep their saved key.
+- After a switch is reset or replaced, EE shows the saved and the new key fingerprints. The new key can be accepted only in EE on the computer that runs it. Lighting, schedules and port names saved for the previous key stay on disk but are not used with the new key.
+- Devices that open EE through Tailscale can use only the requests listed for remote use: lighting, effects, automation, profiles, schedules, port names, fans, status and reconnecting to the saved switch. Logging in to a new switch, forgetting the saved login, UniFi Network setup, Tailscale settings and accepting a switch's key work only on the computer that runs EE. Update macOS and Linux clients that connect by address.
+- Changing the Mobile & remote access settings or closing the web session from a browser needs a secret that EE creates at each start. Open the browser tab with Open in browser in the desktop app. Tabs opened another way show these settings read-only.
+- EE removes its own Tailscale Serve route when it stops and adds it again when it starts with private access on. Uninstalling EE removes the route.
+- Fans saves the fan mode for each switch, and a switch that EE has not controlled before starts in Switch control. The mode chosen in 0.5.1 moves to the first USW-Pro-XG-8-PoE that EE connects to after the update.
+- Handoff to UniFi also returns the fans of a USW-Pro-XG-8-PoE to the switch's own controller, and EE restores the switch's saved fan mode when you connect again. Uninstalling EE does not connect to the switch, so choose Handoff to UniFi for each switch before you uninstall.
+- EE replaces its fan control program on the switch once after the update, because the program changed.
+- When the saved fan settings cannot be read, the Fans page says so until you choose a mode, and the switch controls the fans meanwhile. A fan setting that takes effect but cannot be saved is reported instead of failing with a server error.
+- When EE's fan control on the switch stops, EE starts it again. If that fails, EE tries again every 60 seconds and shows that the fans are back on switch control.
+- When the saved lighting for a switch cannot be read, EE renames the file with `.corrupt-` and the time and offers to start a new lighting setup. If the switch plays that lighting from its memory, the login stops with a message and the file is kept. Saved lighting from a newer EE version is refused with a message to update EE. The desktop app and the browser show these messages instead of a general connection error.
+- Schedules, port names and pinned host keys are saved with a format version, and EE refuses files saved by a newer version instead of overwriting them. EE 0.5.1 cannot read the schedules and port names saved by this version.
+- When the EE service stops on its own, the desktop window says so and offers to start it again. The browser workspace's gateway stops as well, instead of answering every request with an error.
+- Settings → About in the desktop app shows the app and service versions and the service's disclaimer. The browser workspace shows the same disclaimer.
+- The desktop app no longer has Close web session in Settings, so a client connected by address cannot close the workspace of the computer it connects to. `--url` and `EE_WORKSPACE_URL` accept only the addresses that the workspace address dialog accepts.
+- `service-diagnostics.log` also records EE's fixed error codes and log message templates, still without hosts, names or passwords.
+- The local gateway and the engine refuse API and WebSocket requests that a browser marks as coming from another website (403 `forbidden`) and request bodies over 1 MiB (413 `too_large`).
+- API changes: the WebSocket accepts the token only in the `Authorization` header. `cors_origins = ["*"]` requires a token of at least 32 characters. `POST /api/presets/{name}/apply` waits for SFP output and can return 409 `output_unconfirmed` or 503 `offline_scene_unconfirmed`. `POST /api/rules/test` refuses the rules that the save routes refuse. Login fields have length limits (422 `invalid_credentials`), zones are limited to 64 and rules to 256.
+- Removed API routes that no client used: `POST /api/session/switch-playback`, `POST /api/session/switch-playback/check`, `GET` and `PUT /api/session/switch-playback/effects`, `GET /api/controller/diagnostics` and `POST /api/presets/action`, and the `can_save_to_switch` session field.
+- `etherlighting-evolved serve` serves the API only. Its page at `/` links to the API documentation at `/docs`. The old standalone browser front end, the 0.4 desktop host and the separate WPF client are removed from the repository.
+- Updating EE replaces the whole application folder, so no file from an earlier version stays behind. The app keeps no data in that folder.
+- The Windows package bundles Python 3.14 and Node.js 24.18.0, and the desktop apps use .NET 10. The macOS client needs macOS 12 or later.
+- Releases are built by GitHub Actions from a version tag and published on GitHub with `SHA256SUMS` and build provenance attestations. The installer and the apps are not code-signed yet.
+
 ## 0.5.1
 
 - Fans controls the two fans of a USW-Pro-XG-8-PoE. Choose Switch control to leave the fans to the switch, one of four curves (Low, Medium, High and Max) that set the fan speed from the CPU temperature, Manual for one fixed speed on both fans, or Thermal target to run the fans as slowly as possible while keeping the CPU at a chosen temperature. The page shows the CPU, SFP and port chip temperatures and both fan speeds.
@@ -25,7 +51,6 @@
 - Workspace owners can approve individual tagged Tailscale devices. Linux clients can use the private workspace address when local DNS cannot resolve it.
 - The uplink graph scrolls the last minute of download and upload traffic using each existing switch counter reading. A delayed measurement is labeled “Last reading.”
 - Choose Quit in the Windows tray to close EE. EE can recover the lighting connection during shutdown so the switch can resume its saved scene.
-
 - The Windows app opens Lighting, Effects, Automation, Profiles, Settings and Help in a native desktop window. The installer includes the workspace service and lighting engine.
 - macOS and Linux desktop clients can connect to an existing EE workspace. The client remembers the workspace address for the next launch.
 - The native port map follows the switch's reported colors and traffic. Minimize the window or hide it in the notification area to pause the live display. Opening it again refreshes the readings.
@@ -62,11 +87,10 @@
 
 - Rename Ethernet and SFP ports in Port details, or use UniFi port names automatically. Manual names stay saved when switching modes and appear across the map, search, details and SFP source selector.
 
-## Unreleased
+## 0.4.20
 
 - A lighting session that ended without a confirmed shutdown (power loss, a forced restart, a stopped process) no longer locks the switch out of EE. The next login takes over the retained ownership record, returns the switch lighting to its defaults with acknowledged commands, and clears the record; a record left by a different switch at the same address is dropped without any command. When Windows signs out or shuts down, the desktop app asks Windows to wait while it returns the lighting first.
 - Choose from nine dark themes and three light themes in Settings, including Silver and Midnight. Each device remembers its selection.
-
 - Find ports by number or device name, inspect live traffic and link changes, and identify a socket for ten seconds.
 - Save named effect settings and reusable port selections. Review recent lighting setups and restore one from history.
 - Create weekly schedules and test rule conditions and priority before applying.
@@ -74,7 +98,6 @@
 - Review concurrent lighting edits before applying them. Port previews reflect updated group membership and SFP brightness.
 - Health shows reported PoE budget, measured draw, available headroom, and the largest consumers.
 - Settings shows the last session outcome. Desktop exit and parent-loss cleanup preserve unresolved recovery status.
-
 - Regular effects can run on selected SFP lights, on their own or alongside Ethernet ports. Return to SFP lighting restores the saved indicator settings.
 - Activity Glow, Traffic Trails, and Live Traffic can include measured uplink traffic.
 
