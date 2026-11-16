@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The pull request's own commits are checked below.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
@@ -35,6 +37,17 @@ jobs:
           cache-dependency-path: |
             requirements-ci.txt
             pyproject.toml
+      - name: Check commit authors and messages
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $authors = @(git log --format=%ae "$env:BASE_SHA..$env:HEAD_SHA" | Sort-Object -Unique)
+          $others = @($authors | Where-Object { $_ -ne '292889387+Views2k@users.noreply.github.com' })
+          if ($others.Count) { throw "Commits in this pull request have other authors: $($others -join ', ')" }
+          git log --format=%B "$env:BASE_SHA..$env:HEAD_SHA" | python -c "import runpy, sys; found = runpy.run_path('tools/check-repository.py')['AI_MARKER'].search(sys.stdin.read()); sys.exit(found and 'A commit message contains: ' + found.group())"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
