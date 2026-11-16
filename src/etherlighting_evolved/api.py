@@ -220,12 +220,8 @@ def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
 
 
 def create_app(config: Config | None = None, *, demo: bool = False, autoconnect: bool = True,
-               transport_factory=None, on_show=None, on_quit=None) -> FastAPI:
-    """Build the API. demo=True logs straight in to the simulator (no switch needed).
-
-    on_show and on_quit come from the desktop app. A second copy of the app uses them to bring the running copy's
-    window to the front, and the installer uses them to stop it.
-    """
+               transport_factory=None) -> FastAPI:
+    """Build the API. demo=True logs straight in to the simulator (no switch needed)."""
     config = config or Config()
     config.api.validate()
     sessions = SessionManager(config, transport_factory=transport_factory)
@@ -461,18 +457,6 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             return await sessions.forget_saved_login()
         except LoginError as exc:
             return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
-
-    if on_show is not None:
-        @api.post("/desktop/show", include_in_schema=False)
-        async def desktop_show():
-            on_show()
-            return {"ok": True}
-
-    if on_quit is not None:
-        @api.post("/desktop/quit", include_in_schema=False)
-        async def desktop_quit():
-            on_quit()
-            return {"ok": True}
 
     @api.post("/session/forget-host-key")
     async def forget_host_key(body: HostKeyForget):
