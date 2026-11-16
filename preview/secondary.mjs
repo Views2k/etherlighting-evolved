@@ -732,9 +732,12 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       healthDetails.append(term,node('dd','',reading));
     }
   };
-  const about = node('section','settings-about panel');
-  about.append(node('h2','','Etherlighting Evolved'),node('p','muted','Open-source UniFi Etherlighting controller.'),node('p','muted','Unofficial community project. Not affiliated with Ubiquiti.'));
+  const about = node('section','settings-about panel'), disclaimer = node('p','muted','Unofficial community project. Not affiliated with Ubiquiti.');
+  about.append(node('h2','','Etherlighting Evolved'),node('p','muted','Open-source UniFi Etherlighting controller.'),disclaimer);
   if (onHelp) about.append(button('Open help',onHelp,'quiet'));
+  // The service's disclaimer adds the risk of driving undocumented switch interfaces; the short line stays if the
+  // service does not answer.
+  request('/api/about').then(info => { if (gate.active) disclaimer.textContent = info.disclaimer; }, () => {});
   let controllerCleanup, switchState;
   const privateHost=node('div','private-access-settings'),lastSessionHost=node('div','last-session-settings');
   const lastSessionCleanup=mountLastSession(lastSessionHost,{request});

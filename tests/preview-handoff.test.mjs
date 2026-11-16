@@ -62,10 +62,13 @@ function uiDom(context){
     dialog:()=>dom.findAll(dom.doc.body,node=>node.tagName==='dialog')[0]};
 }
 
-async function settings(context,{send=async()=>complete(),reconcile=complete()}={}){
+const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
+
+async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
     calls.push({path,method,body});
+    if(path==='/api/about')return about();
     if(path==='/api/session/handoff')return send();
     if(path==='/api/session')return ++sessionReads===1?connected():reconcile;
     if(path==='/api/state')return {num_ports:8,ports:[],sfp:[],mode:'running',stats:{}};
@@ -261,4 +264,11 @@ test('Settings section navigation scrolls its pane without replacing form values
   assert.equal(ui.button('Remote',nav).getAttribute('aria-pressed'),'true');
   assert.equal(field.isConnected,true);assert.equal(field.value,'Unapplied fixture value');assert.equal(ui.calls.length,before);
   ui.cleanup();assert.equal(pane.listeners.has('scroll'),false);
+});
+
+test('About shows the service disclaimer, including its risk sentence, and keeps the short line without it',async context=>{
+  const text=ui=>ui.findAll(ui.byClass(ui.host,'settings-about')[0],node=>node.tagName==='p').map(node=>node.textContent);
+  assert.ok(text(await settings(context)).includes(aboutInfo.disclaimer));
+  const offline=await settings(context,{about:async()=>{throw new Error('The workspace could not be reached.');}});
+  assert.ok(text(offline).includes('Unofficial community project. Not affiliated with Ubiquiti.'));
 });
