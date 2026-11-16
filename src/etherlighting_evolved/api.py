@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import html
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException
@@ -26,63 +25,15 @@ from .lighting_library import attach_library_routes
 from .port_names import attach_port_name_routes
 from .presets import PresetStore, ProfileConflict, ProfileStoreError
 from .routes import about as about_routes
+from .routes import fans as fan_routes
+from .routes import lighting as lighting_routes
+from .routes import rules as rule_routes
 from .routes import session as session_routes
+from .routes import simulator as simulator_routes
 from .routes import ws as ws_routes
-from .routes.context import ApiContext, apply, await_output, scene_envelope
-from .scene_history import attach_routes as attach_history_routes
+from .routes.context import ApiContext, apply, scene_envelope
 from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
 from .session import LoginError, SessionManager
-from .transport import TransportError
-
-ColorValue = str | list[int] | dict[str, int]
-
-
-class EffectRequest(BaseModel):
-    id: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    clear_overrides: bool = False
-
-
-class ParamsRequest(BaseModel):
-    params: dict[str, Any]
-
-
-class ZonesRequest(BaseModel):
-    zones: list[dict[str, Any]]
-
-
-class RulesRequest(BaseModel):
-    rules: list[dict[str, Any]]
-
-
-class OrderRequest(BaseModel):
-    ids: list[str]
-
-
-class SceneRestore(BaseModel):
-    scene: dict[str, Any]
-    expected_revision: str = Field(min_length=1)
-    preserve_unchanged: bool = False
-    confirm_output: bool = False
-
-
-class PortColor(BaseModel):
-    color: ColorValue
-    brightness: int | None = Field(default=None, ge=0, le=100)
-
-
-class BulkPorts(BaseModel):
-    ports: dict[int, PortColor]
-
-
-class NumberValue(BaseModel):
-    value: float
-
-
-class OutputSettings(BaseModel):
-    gamma: float | None = Field(default=None, ge=1.0, le=3.0)
-    transition: float | None = Field(default=None, ge=0.0, le=5.0)
-    max_commands: float | None = Field(default=None, ge=5.0, le=200.0)
 
 
 class PresetSave(BaseModel):
@@ -92,36 +43,11 @@ class PresetSave(BaseModel):
     overwrite: bool = False
 
 
-class RuleTest(BaseModel):
-    port: int = Field(ge=1, le=256)
-    rules: list[dict[str, Any]] = Field(max_length=256)
-    at: str | None = None
-
-
 class ProfileChange(BaseModel):
     expected_revision: int = Field(ge=1)
     action: str = "replace"
     name: str | None = None
     disable_schedules: bool = False
-
-
-class SimLink(BaseModel):
-    up: bool
-
-
-class SimAnomaly(BaseModel):
-    code: int = Field(ge=0)
-
-
-class SimPoe(BaseModel):
-    pd_class: int | None = Field(default=None, ge=0, le=8, alias="class")
-
-
-class FanChange(BaseModel):
-    mode: str | None = None
-    curve: str | None = None
-    manual_percent: int | None = None
-    target_celsius: int | None = None
 
 
 def create_app(config: Config | None = None, *, demo: bool = False, autoconnect: bool = True,
@@ -213,8 +139,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         RequestGuard, allowed_origins=config.api.cors_origins, local_only=config.api.host in LOOPBACK_BINDS
     )
 
-    engine, require_workspace = ctx.engine, ctx.require_workspace
-    apply_port_change, commit_scene, simulator = ctx.apply_port_change, ctx.commit_scene, ctx.simulator
+    engine, require_workspace, commit_scene = ctx.engine, ctx.require_workspace, ctx.commit_scene
 
     api = APIRouter(prefix="/api", dependencies=[Depends(ctx.require_token)])
     controller.routes(api)
@@ -222,205 +147,9 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     attach_port_name_routes(api, engine, sessions, controller.port_names)
     about_routes.attach(api, ctx)
     session_routes.attach(api, ctx)
-
-    # Live state
-
-    @api.get("/state")
-    async def state():
-        return controller.state(engine().state())
-
-    @api.get("/ports")
-    async def ports():
-        return controller.ports(engine().ports())
-
-    # Zones and their effects
-
-    @api.get("/zones")
-    async def zones():
-        return engine().state()["zones"]
-
-    @api.put("/zones")
-    async def set_zones(body: ZonesRequest):
-        e = engine()
-        return await apply_port_change(e, e.set_zones, body.zones)
-
-    @api.put("/effect")
-    async def set_effect_everywhere(body: EffectRequest):
-        """One effect on every port (replaces all zones)."""
-        e = engine()
-        ports = sorted(set(range(1, e.num_ports + 1)) | {p for zone in e.zones for p in zone.ports})
-        return await apply_port_change(e, e.set_zones, [{"id": "all", "name": "All ports", "ports": ports,
-                                                         "effect": {"id": body.id, "params": body.params}}],
-                                       clear_overrides=body.clear_overrides)
-
-    @api.put("/zones/{zone_id}/effect")
-    async def set_zone_effect(zone_id: str, body: EffectRequest):
-        e = engine()
-        return await apply_port_change(e, e.set_effect, body.id, body.params, zone=zone_id,
-                                       clear_overrides=body.clear_overrides)
-
-    @api.patch("/zones/{zone_id}/params")
-    async def set_zone_params(zone_id: str, body: ParamsRequest):
-        e = engine()
-        return await apply_port_change(e, e.update_params, body.params, zone=zone_id)
-
-    # Rules
-
-    @api.post("/rules/test")
-    async def test_rules(body: RuleTest):
-        e = engine()
-        if body.port not in [*range(1, e.num_ports + 1), *e.switch.sfp_ports]:
-            raise HTTPException(400, detail={"code": "invalid", "message": "Choose a port on this switch."})
-        now = apply(datetime.fromisoformat, body.at) if body.at else datetime.now()
-        if now.tzinfo is not None:
-            raise HTTPException(400, detail={"code": "invalid", "message":
-                "Use the EE computer's local date and time."})
-        return {**apply(e.explain_rules, body.port, body.rules, now),
-                "scene_revision": scene_envelope(e.snapshot())["revision"]}
-
-    @api.get("/rules")
-    async def rules():
-        return engine().state()["rules"]
-
-    @api.put("/rules")
-    async def replace_rules(body: RulesRequest):
-        e = engine()
-        apply(e.set_rules, body.rules)
-        return e.state()["rules"]
-
-    @api.post("/rules", status_code=201)
-    async def add_rule(rule: dict[str, Any] = Body(...)):
-        e = engine()
-        position = rule.pop("position", None)
-        return apply(e.add_rule, rule, position=None if position is None else apply(int, position)).to_dict()
-
-    @api.put("/rules/order")
-    async def order_rules(body: OrderRequest):
-        e = engine()
-        apply(e.reorder_rules, body.ids)
-        return e.state()["rules"]
-
-    @api.patch("/rules/{rule_id}")
-    async def update_rule(rule_id: str, changes: dict[str, Any] = Body(...)):
-        return apply(engine().update_rule, rule_id, changes).to_dict()
-
-    @api.delete("/rules/{rule_id}")
-    async def delete_rule(rule_id: str):
-        e = engine()
-        apply(e.delete_rule, rule_id)
-        return e.state()["rules"]
-
-    # Colors set by hand
-
-    @api.put("/sfp/sync")
-    async def set_sfp_sync(settings: dict[str, Any] = Body(...)):
-        e = engine()
-        return controller.state(await apply_port_change(e, e.set_sfp_sync, settings))
-
-    @api.put("/sfp/{port}")
-    async def set_sfp(port: int, settings: dict[str, Any] = Body(...)):
-        e = engine()
-        return await apply_port_change(e, e.set_sfp, port, settings)
-
-    @api.put("/ports")
-    async def set_ports(body: BulkPorts):
-        e = engine()
-        apply(e.set_overrides, {p: v.model_dump() for p, v in body.ports.items()})
-        return e.state()
-
-    @api.delete("/ports")
-    async def clear_ports():
-        e = engine()
-        e.clear_override()
-        return e.state()
-
-    @api.put("/ports/{port}")
-    async def set_port(port: int, body: PortColor):
-        e = engine()
-        apply(e.set_override, port, body.color, body.brightness)
-        return e.state()
-
-    @api.delete("/ports/{port}")
-    async def clear_port(port: int):
-        e = engine()
-        apply(e.clear_override, port)
-        return e.state()
-
-    # Fans
-
-    @api.get("/fans")
-    async def fans():
-        e = engine()
-        return e.fans.to_dict() if e.fans is not None else None
-
-    @api.put("/fans")
-    async def change_fans(body: FanChange):
-        e = engine()
-        change = body.model_dump(exclude_none=True)
-        try:
-            await e.update_fans(change)
-        except TransportError as exc:
-            raise HTTPException(409, detail={"code": "fans_unconfirmed", "message": str(exc)}) from exc
-        except ValueError as exc:
-            raise HTTPException(400, detail={"code": "invalid", "message": str(exc)}) from exc
-        return e.fans.to_dict()
-
-    # Global controls
-
-    @api.put("/brightness")
-    async def brightness(body: NumberValue):
-        e = engine()
-        apply(e.set_brightness, body.value)
-        return e.state()
-
-    @api.put("/fps")
-    async def fps(body: NumberValue):
-        e = engine()
-        apply(e.set_fps, body.value)
-        return e.state()
-
-    @api.put("/output")
-    async def output(body: OutputSettings):
-        e = engine()
-        apply(e.set_output, **body.model_dump())
-        return e.state()
-
-    @api.post("/release")
-    async def release():
-        e = engine()
-        e.release()
-        await await_output(e.wait_for_output_idle)
-        return e.state()
-
-    @api.post("/resume")
-    async def resume():
-        e = engine()
-        apply(e.resume)
-        return e.state()
-
-    # Scene history
-
-    @api.get("/scene")
-    async def get_scene():
-        return scene_envelope(engine().snapshot())
-
-    @api.put("/scene")
-    async def restore_scene(body: SceneRestore):
-        e = engine()
-        current = scene_envelope(e.snapshot())
-        if body.expected_revision != current["revision"]:
-            raise HTTPException(409, detail={
-                "code": "scene_changed",
-                "message": "The lighting setup changed. Review the current setup before applying.",
-            })
-        return await commit_scene(e, body.scene, preserve_unchanged=body.preserve_unchanged,
-                                  confirm_output=body.confirm_output)
-
-    async def restore_history_scene(scene, revision):
-        return await restore_scene(SceneRestore(scene=scene, expected_revision=revision,
-                                               preserve_unchanged=True, confirm_output=True))
-
-    attach_history_routes(api, engine, apply, restore_history_scene)
+    lighting_routes.attach(api, ctx)
+    rule_routes.attach(api, ctx)
+    fan_routes.attach(api, ctx)
 
     # Presets
 
@@ -588,25 +317,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
                                             "Review and apply this schedule for the connected switch first."})
         return await scheduler.run_confirmed(schedule)
 
-    # Simulator controls (demo login only)
-
-    @api.put("/simulator/links/{port}")
-    async def simulator_link(port: int, body: SimLink):
-        apply(simulator().set_link, port, body.up)
-        return {"port": port, "up": body.up}
-
-    @api.put("/simulator/anomaly/{port}")
-    async def simulator_anomaly(port: int, body: SimAnomaly):
-        apply(simulator().set_anomaly, port, body.code)
-        return {"port": port, "code": hex(body.code)}
-
-    @api.put("/simulator/poe/{port}")
-    async def simulator_poe(port: int, body: SimPoe):
-        sim = simulator()
-        if port not in sim.poe_class:
-            raise HTTPException(400, detail={"code": "invalid", "message": f"port {port} has no PoE"})
-        sim.poe_class[port] = body.pd_class
-        return {"port": port, "class": body.pd_class}
+    simulator_routes.attach(api, ctx)
 
     app.include_router(api)
     ws_routes.attach(app, ctx)
