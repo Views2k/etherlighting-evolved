@@ -216,6 +216,58 @@ test('the login section keeps SSH form values and uses separate explicit private
   const form=dom.findAll(dom.host,item=>item.tagName==='form')[0];assert.equal(form.contains(ui.toggle),false);
 });
 
+const REMOTE_SAVED='Reconnect to the switch saved on the computer running EE.';
+const REMOTE_NONE='No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.';
+function remoteConnection(context,session,restoreSaved=async()=>({logged_in:true,workspace_id:'remote'})){
+  const dom=rendererDom(context),create=dom.doc.createElement,sent=[],restores=[],entered=[];
+  dom.doc.createElement=tag=>{
+    const element=create(tag);element.toggleAttribute=()=>{};element.querySelector=()=>null;
+    if(tag==='form')Object.defineProperty(element,'elements',{get:()=>dom.findAll(element,item=>['input','button','select'].includes(item.tagName))});
+    return element;
+  };
+  const cleanup=renderSwitchConnection(dom.host,{request:async(...args)=>{sent.push(args);return disabled;},session,remote:true,
+    restoreSaved:async()=>{restores.push(true);return restoreSaved();},onConnected:async value=>entered.push(value)});dom.after(cleanup);
+  return {...dom,sent,restores,entered,
+    button:label=>dom.findAll(dom.host,item=>item.tagName==='button'&&item.textContent===label)[0],
+    intro:()=>dom.findAll(dom.host,item=>item.tagName==='p'&&item.className==='help-text')[0].textContent,
+    notice:()=>dom.byClass(dom.host,'connection-notice')[0].textContent};
+}
+
+test('a remote device sees only Connect with saved login when the host has a saved login',async context=>{
+  const ui=remoteConnection(context,{has_saved_login:true});await flush();
+  for(const name of ['host','username','password','port','remember'])assert.equal(ui.findAll(ui.host,item=>item.name===name).length,0,name);
+  for(const label of ['Connect to switch','Forget saved login','Continue with demo'])assert.equal(ui.button(label),undefined,label);
+  assert.equal(ui.intro(),REMOTE_SAVED);
+  const restore=ui.button('Connect with saved login');assert.equal(restore.hidden,false);
+  restore.click();await flush();assert.equal(ui.restores.length,1);assert.equal(ui.entered.length,1);
+});
+
+test('a remote device without a saved login on the host is sent to that computer',async context=>{
+  const ui=remoteConnection(context,{has_saved_login:false});await flush();
+  assert.equal(ui.button('Connect with saved login').hidden,true);assert.equal(ui.intro(),REMOTE_NONE);
+  assert.deepEqual(ui.sent,[['/api/private-access']]);
+});
+
+test('a failed remote reconnect names the computer running EE',async context=>{
+  for(const [code,text] of [['no_saved_login',REMOTE_NONE],['auth_failed','The switch rejected the saved login. Sign in to the switch on the computer running EE.']]){
+    const ui=remoteConnection(context,{has_saved_login:true},async()=>{throw Object.assign(new Error('private detail'),{code});});await flush();
+    ui.button('Connect with saved login').click();await flush();
+    assert.equal(ui.notice(),text);assert.equal(ui.doc.activeElement,ui.button('Connect with saved login'));
+  }
+});
+
+test('a saved login the host cannot open is reported to a remote device',async context=>{
+  const ui=remoteConnection(context,{has_saved_login:true,saved_login_error:'x'});await flush();
+  assert.equal(ui.notice(),'The saved login could not be opened. Sign in to the switch on the computer running EE.');
+});
+
+test('private access says what devices on Tailscale can use',async context=>{
+  const dom=rendererDom(context),cleanup=renderPrivateAccess(dom.host,async()=>disabled);dom.after(cleanup);await flush();
+  const help=dom.byClass(dom.host,'help-text').map(item=>item.textContent);
+  assert.equal(help[1],'Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.');
+  assert.equal(help[0],'Use Tailscale to open this workspace on your phone or another device.');
+});
+
 test('the audience is chosen explicitly, sent once with Apply, and confirmed from the reply',async context=>{
   const dom=rendererDom(context),sent=[];let reply={...connected,audience:'accounts'};
   const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return args[1]==='PUT'?reply:connected;});dom.after(cleanup);

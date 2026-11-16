@@ -341,7 +341,7 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
   }else {
     view.innerHTML = '';
     const renderer = {Automation: renderAutomation, Profiles: renderProfiles, Settings: renderSettings,Help:renderHelp}[page];
-    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,getDraftScene:previewScene,onSavePreview:savePreviewProfile,onUndoApply:undoLastApply,canUndoApply:()=>Boolean(lastApplied?.after)&&!edits.size,initialRuleId:requestedRuleId,onBeforeMutation:confirmDraft,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,onChange: async () => {await refresh(false); }});
+    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,getDraftScene:previewScene,onSavePreview:savePreviewProfile,onUndoApply:undoLastApply,canUndoApply:()=>Boolean(lastApplied?.after)&&!edits.size,initialRuleId:requestedRuleId,onBeforeMutation:confirmDraft,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,remote:workspaceOptions.remote===true,onChange: async () => {await refresh(false); }});
     requestedRuleId=undefined;
   }
   updateDraftBar();
@@ -1080,7 +1080,7 @@ function showConnection() {
   if(workspaceReady)resetWorkspace();
   secondaryCleanup?.();
   secondaryCleanup=renderSwitchConnection(view,{request,session,onConnected:acceptSession,onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onHelp:showLoginHelp,
-    restoreSaved:()=>request('/api/session/restore?resume=true','POST'),
+    restoreSaved:()=>request('/api/session/restore?resume=true','POST'),remote:workspaceOptions.remote===true,
     onDemo:workspaceOptions.live?undefined:async()=>acceptSession(await request('/api/session/login','POST',{host:'demo'}))});
   const handoff=handoffStatus(session);
   updateConnection();status(handoff?.message||(session.connecting?'Connecting with saved login…':'Connect your switch'),handoff?.error===true);

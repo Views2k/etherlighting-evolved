@@ -1,7 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectionError, controllerError, controllerReconnectControls, controllerReconnectConfirmed, showSceneChoice, renderSwitchConnection} from '../preview/connections.mjs';
+import {connectionError, controllerError, controllerReconnectControls, controllerReconnectConfirmed, remoteCanRestore, remoteConnectionError, showSceneChoice, renderSwitchConnection} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
+
+test('a request refused by private access names the computer running EE', () => {
+  assert.equal(connectionError({code:'local_access_required'}), 'This action is available only on the computer running EE.');
+});
+
+test('remote devices are sent to the computer running EE for login problems', () => {
+  assert.equal(remoteConnectionError({code:'no_saved_login'}), 'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.');
+  assert.equal(remoteConnectionError({code:'saved_login_unavailable'}), 'The saved login could not be opened. Sign in to the switch on the computer running EE.');
+  for (const code of ['auth_failed','authentication_failed'])
+    assert.equal(remoteConnectionError({code}), 'The switch rejected the saved login. Sign in to the switch on the computer running EE.');
+  for (const code of ['host_key_untrusted','host_key_changed']) assert.match(remoteConnectionError({code}), /SSH host key on the computer running EE/);
+  assert.equal(remoteConnectionError({code:'unreachable'}), connectionError({code:'unreachable'}));
+});
+
+test('a remote device can restore only a saved login that opens', () => {
+  assert.equal(remoteCanRestore({has_saved_login:true}), true);
+  for (const session of [{has_saved_login:false}, {}, {has_saved_login:true,saved_login_error:'x'}, null])
+    assert.equal(remoteCanRestore(session), false);
+});
 
 test('connection errors use known codes instead of backend exception text', () => {
   const error = Object.assign(new Error('ssh://private-user:secret@private-host'), {code:'auth_failed'});
