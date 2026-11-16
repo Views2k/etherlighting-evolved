@@ -4,8 +4,9 @@ from copy import deepcopy
 import httpx
 import pytest
 
-from etherlighting_evolved.api import create_app, scene_envelope
+from etherlighting_evolved.api import create_app
 from etherlighting_evolved.engine import Engine
+from etherlighting_evolved.routes.context import scene_envelope
 from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import SimulatedTransport
 
