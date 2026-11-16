@@ -1954,6 +1954,12 @@ class Engine:
             if self._fans_wake is not None:
                 self._fans_wake.set()
 
+    async def release_fans(self) -> str | None:
+        """Return the fans to the switch's own controller for Handoff to UniFi; see FanControl.release."""
+        if self.fans is None:
+            return None
+        return await self.fans.release(connected=self.connected)
+
     def _publish_fans(self) -> None:
         if self.fans is not None and self._subscribers:
             self._publish({"type": "fans", "fans": self.fans.to_dict()})

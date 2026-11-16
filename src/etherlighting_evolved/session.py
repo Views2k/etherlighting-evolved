@@ -5,7 +5,8 @@ A previously bound device restores its scene. A new device waits for an explicit
 Logging in with the host "demo" uses the built-in simulator.
 
 Real scenes are bound to the authenticated device and qualified layout. The legacy scene remains unchanged.
-The simulator keeps its separate scene-demo.json.
+The simulator keeps its separate scene-demo.json. Fan settings are saved per device in device-fans/, under the
+identity of that device's scenes.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from . import device_playback as playback
 from .config import DEMO_HOSTS, Config
 from .credentials import CredentialStoreError, SavedLogin
 from .engine import Engine
-from .fans import FanControl, FanStore, SimulatedFans, SwitchFans
+from .fans import DeviceFanStore, FanControl, FanStore, SimulatedFans, SwitchFans
 from .handoff import HandoffIntent
 from .hardware import PRO_XG8
 from .mailbox import Mailbox
@@ -146,6 +147,8 @@ class SessionManager:
         self._historic_handoff_unknown = self._handoff.state == "unconfirmed" and not self._playback.data
         self._handoff_task: asyncio.Task | None = None
         self._handoff_generation = 0
+        # The fan result of the last handoff since the last connection, kept in memory only.
+        self._fan_handoff: str | None = None
         self._cleanup_engines: list[Engine] = []
         self._owned_switches: set[EtherlightSwitch] = set()
         self._unsaved_scenes: dict[object, tuple[SceneStore, dict]] = {}
@@ -194,6 +197,7 @@ class SessionManager:
             "switch_playback": self._playback_status if self._playback.data else None,
             "offline_lighting_error": self._offline_error,
             "handed_off": self._handoff.state == "complete" and engine is None and not self._owned_switches,
+            "fan_handoff": self._fan_handoff,
         }
 
     def workspace_id(self) -> str | None:
@@ -614,7 +618,7 @@ class SessionManager:
         self.simulated = candidate.simulated
         self._scene_store = candidate.store
         engine.attach_history(SceneHistory(self.config.data_dir / "scene-history.json"), self.schedule_identity())
-        engine.attach_fans(self._fan_control(engine.switch, candidate.simulated))
+        engine.attach_fans(self._fan_control(engine.switch, candidate.simulated, candidate.store))
         if self._handoff.state in {"pending", "unconfirmed"}:
             await self._disconnect_locked()
             raise self._fail("handoff_unconfirmed", "The switch connection was stopped for handoff.", 409)
@@ -626,16 +630,22 @@ class SessionManager:
                 raise self._fail("handoff_save_failed", "The connection preference could not be saved. "
                                  "Check the data folder and try again.", 409) from exc
         self.last_error = None
+        self._fan_handoff = None
         self._saved_revision = engine.revision
         self._autosave_task = asyncio.create_task(self._autosave(engine, candidate.simulated), name="ee-autosave")
         self._notify()
         return self.info()
 
-    def _fan_control(self, switch, simulated: bool) -> FanControl:
-        supported = switch.hardware_profile is PRO_XG8
-        backend = SimulatedFans() if simulated else SwitchFans(switch.transport)
-        store = FanStore(self.config.data_dir / ("fans-demo.json" if simulated else "fans.json"))
-        return FanControl(backend, store, supported=supported)
+    def _fan_control(self, switch, simulated: bool, store: SceneStore) -> FanControl:
+        """Fan control with the fan choice saved for this switch, under the identity of its saved lighting."""
+        supported = getattr(switch, "hardware_profile", None) is PRO_XG8
+        if simulated:
+            return FanControl(SimulatedFans(), FanStore(self.config.data_dir / "fans-demo.json"), supported=supported)
+        if not supported:
+            return FanControl(SwitchFans(switch.transport), None, supported=False)
+        fans = DeviceFanStore(self.config.data_dir / "device-fans" / f"{store.identity}.json", store.identity)
+        fans.adopt_legacy(self.config.data_dir / "fans.json")
+        return FanControl(SwitchFans(switch.transport), fans, supported=True)
 
     def _fail(self, code: str, message: str, status: int, **details) -> LoginError:
         error = LoginError(code, message, status, **details)
@@ -848,13 +858,15 @@ class SessionManager:
         task = self._handoff_task
         if task is None or task.done():
             self._handoff_generation += 1
+            retry = self._handoff.state == "unconfirmed"
             self._handoff.state = "pending"
             self._notify()
-            task = asyncio.create_task(self._perform_handoff(), name="ee-handoff")
+            task = asyncio.create_task(self._perform_handoff(retry=retry), name="ee-handoff")
             self._handoff_task = task
         return await asyncio.shield(task)
 
-    async def _perform_handoff(self) -> dict:
+    async def _perform_handoff(self, *, retry: bool = False) -> dict:
+        """`retry` is a handoff that follows an unconfirmed one, which keeps the fan result of that handoff."""
         save_error = None
         try:
             self._handoff.save("pending")
@@ -871,6 +883,15 @@ class SessionManager:
                 await self._clear_pending_locked()
             except Exception as exc:
                 cleanup_error = exc
+            # The fan result is reported on its own and never makes the lighting handoff unconfirmed.
+            if self.engine is not None:
+                try:
+                    self._fan_handoff = await self.engine.release_fans()
+                except Exception:
+                    log.exception("the fan release during handoff failed")
+                    self._fan_handoff = "unconfirmed"
+            elif not retry:
+                self._fan_handoff = None
             try:
                 await self._disconnect_locked()
             except Exception as exc:

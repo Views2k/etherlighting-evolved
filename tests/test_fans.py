@@ -6,9 +6,11 @@ import contextlib
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -16,9 +18,14 @@ import pytest
 from etherlighting_evolved import fans
 from etherlighting_evolved.fans import (
     CURVES,
+    OWNER,
+    SAVE_FAILED,
+    STOPPING,
+    DeviceFanStore,
     FanControl,
     FanSettings,
     FanSettingsError,
+    FanSettingsSaveError,
     FanStore,
     SimulatedFans,
     SwitchFans,
@@ -247,7 +254,7 @@ async def test_unsupported_switch_rejects_changes():
 
 
 class FailingBackend(SimulatedFans):
-    async def apply(self, line):
+    async def apply(self, line, owner=None):
         raise TransportError("did not confirm")
 
 
@@ -259,6 +266,467 @@ async def test_failed_apply_keeps_previous_setting_and_backs_off(tmp_path):
     control.settings = FanSettings(mode="manual")
     await control.poll()
     assert control._retry_at > time.monotonic()
+
+
+# Fan settings saved per switch, the owner token on the switch, and the hold.
+
+A, B = "a" * 64, "b" * 64
+CURVE_LOW = FanSettings(mode="curve", curve="low")
+CURVE_HIGH = FanSettings(mode="curve", curve="high")
+
+
+class CountingFans(SimulatedFans):
+    """Counts the reads and the commands that would change fan control on the switch."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.reads = self.applied = self.stopped = 0
+
+    async def read(self):
+        self.reads += 1
+        return await super().read()
+
+    async def apply(self, line, owner=None):
+        self.applied += 1
+        return await super().apply(line, owner)
+
+    async def stop(self):
+        self.stopped += 1
+        await super().stop()
+
+
+class StoppedFans(CountingFans):
+    """Another installation's controller that stopped, leaving its directory and the paused daemon behind."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.left = True
+
+    async def read(self):
+        reading = await super().read()
+        if self.left:
+            reading.update(controller="stopped", daemon="paused", owner="c" * 48)
+        return reading
+
+    async def stop(self):
+        self.left = False
+        await super().stop()
+
+
+def fan_file(root, identity=A):
+    return root / "device-fans" / f"{identity}.json"
+
+
+def envelope(**changes):
+    return {"version": 1, "identity": A, "owner": "d" * 48, "settings": asdict(CURVE_LOW), **changes}
+
+
+def write(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content if isinstance(content, str) else json.dumps(content), "utf-8")
+    return path
+
+
+def write_legacy(root, settings):
+    return write(root / "fans.json", asdict(settings))
+
+
+def test_device_store_round_trip_keeps_owner(tmp_path):
+    with pytest.raises(ValueError):
+        DeviceFanStore(fan_file(tmp_path), "A" * 64)
+    path = fan_file(tmp_path)
+    store = DeviceFanStore(path, A)
+    assert store.load() == FanSettings() and store.owner is None and store.hold is False
+    store.save(CURVE_HIGH)
+    saved = json.loads(path.read_text("utf-8"))
+    assert saved["version"] == 1 and saved["identity"] == A and saved["settings"] == asdict(CURVE_HIGH)
+    assert OWNER.fullmatch(saved["owner"])
+    again = DeviceFanStore(path, A)
+    assert again.load() == CURVE_HIGH and again.owner == saved["owner"]
+    again.save(FanSettings(mode="manual", manual_percent=45))
+    assert json.loads(path.read_text("utf-8"))["owner"] == saved["owner"]
+
+
+BAD_FILES = {
+    "invalid JSON": "{not json",
+    "version 2": envelope(version=2),
+    "version true": envelope(version=True),
+    "another identity": envelope(identity=B),
+    "47-character owner": envelope(owner="d" * 47),
+    "uppercase owner": envelope(owner="D" * 48),
+    "missing owner": {key: value for key, value in envelope().items() if key != "owner"},
+    "manual_percent 5": envelope(settings={"mode": "manual", "manual_percent": 5}),
+    "settings as a list": envelope(settings=[]),
+}
+
+
+@pytest.mark.parametrize("content", BAD_FILES.values(), ids=BAD_FILES.keys())
+async def test_device_store_holds_on_bad_files(tmp_path, content):
+    for name, owner in (("ownerless", None), ("owned", "b" * 48)):
+        path = write(fan_file(tmp_path / name), content)
+        data = path.read_text("utf-8")
+        backend = CountingFans()
+        await backend.apply(CURVE_HIGH.config_line(), owner)
+        backend.applied = 0
+        store = DeviceFanStore(path, A)
+        control = FanControl(backend, store, supported=True)
+        assert control.settings == FanSettings() and store.owner is None and store.hold is True
+        await control.poll()
+        assert (backend.applied, backend.stopped) == (0, 0)
+        assert control.to_dict()["hold"] == "settings_unreadable" and control.to_dict()["settings_error"]
+        if isinstance(content, str):
+            # A file that holds no JSON object is set aside with its content.
+            [moved] = path.parent.glob(f"{A}.json.corrupt-*")
+            assert not path.exists() and moved.read_text("utf-8") == data
+        else:
+            assert path.read_text("utf-8") == data
+
+
+async def test_a_newer_fan_file_is_never_overwritten(tmp_path):
+    path = write(fan_file(tmp_path), envelope(version=2, added_by_a_newer_release=True))
+    data = path.read_text("utf-8")
+    backend = CountingFans()
+    control = FanControl(backend, DeviceFanStore(path, A), supported=True)
+    state = control.to_dict()
+    assert state["hold"] == "settings_unreadable" and "newer version of EE" in state["settings_error"]
+    with pytest.raises(ValueError, match="newer version of EE"):
+        await control.update({"mode": "manual", "manual_percent": 50})
+    assert backend.applied == 0 and path.read_text("utf-8") == data and control.to_dict()["supported"]
+
+
+async def test_hold_still_cleans_a_stopped_controller(tmp_path):
+    backend = StoppedFans()
+    control = FanControl(backend, DeviceFanStore(write(fan_file(tmp_path), envelope(identity=B)), A), supported=True)
+    await control.poll()
+    assert backend.stopped == 1
+    reading = await backend.read()
+    assert reading["controller"] == "absent" and reading["daemon"] != "paused"
+
+
+async def test_switch_control_cleans_a_stopped_foreign_directory(tmp_path):
+    DeviceFanStore(fan_file(tmp_path), A).save(FanSettings())
+    backend = StoppedFans()
+    control = FanControl(backend, DeviceFanStore(fan_file(tmp_path), A), supported=True)
+    assert control.to_dict()["hold"] is None
+    await control.poll()
+    assert backend.stopped == 1 and control.to_dict()["hold"] is None
+
+
+def test_legacy_fans_json_moves_to_the_first_switch_only(tmp_path):
+    legacy = write_legacy(tmp_path, CURVE_HIGH)
+    original = legacy.read_bytes()
+    first = DeviceFanStore(fan_file(tmp_path, A), A)
+    first.adopt_legacy(legacy)
+    saved = json.loads(first.path.read_text("utf-8"))
+    assert saved["settings"] == asdict(CURVE_HIGH) and OWNER.fullmatch(saved["owner"]) and not first.hold
+    assert legacy.read_bytes() == original
+    second = DeviceFanStore(fan_file(tmp_path, B), B)
+    second.adopt_legacy(legacy)
+    assert not second.path.exists() and second.load() == FanSettings()
+    write_legacy(tmp_path, FanSettings(mode="manual", manual_percent=90))
+    for identity in (A, B):
+        DeviceFanStore(fan_file(tmp_path, identity), identity).adopt_legacy(legacy)
+    assert DeviceFanStore(first.path, A).load() == CURVE_HIGH and not second.path.exists()
+
+
+def test_a_fan_file_set_aside_still_ends_the_migration(tmp_path):
+    legacy = write_legacy(tmp_path, CURVE_HIGH)
+    # The temporary file of an interrupted save does not count.
+    write(fan_file(tmp_path).with_name(f".{A}.json.x1y2.tmp"), "{}")
+    first = DeviceFanStore(fan_file(tmp_path, A), A)
+    first.adopt_legacy(legacy)
+    assert first.load() == CURVE_HIGH
+    write(first.path, "{not json")
+    with pytest.raises(FanSettingsError):
+        DeviceFanStore(first.path, A).load()
+    second = DeviceFanStore(fan_file(tmp_path, B), B)
+    second.adopt_legacy(legacy)
+    assert not first.path.exists() and not second.path.exists()
+
+
+def test_legacy_invalid_file_migrates_as_switch_control(tmp_path):
+    legacy = write(tmp_path / "fans.json", "{not json")
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    store.adopt_legacy(legacy)
+    assert json.loads(store.path.read_text("utf-8"))["settings"]["mode"] == "switch"
+    assert legacy.read_text("utf-8") == "{not json"
+
+
+async def test_legacy_read_error_does_not_migrate_or_touch_the_switch(tmp_path, monkeypatch):
+    legacy = write_legacy(tmp_path, CURVE_HIGH)
+    read_bytes = Path.read_bytes
+
+    def refuse(self):
+        if self == legacy:
+            raise PermissionError("fixture: no access")
+        return read_bytes(self)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", refuse)
+        store = DeviceFanStore(fan_file(tmp_path), A)
+        store.adopt_legacy(legacy)
+        assert store.hold and not store.path.exists() and legacy.exists()
+        backend = CountingFans()
+        await backend.apply(CURVE_HIGH.config_line())
+        backend.applied = 0
+        control = FanControl(backend, store, supported=True)
+        await control.poll()
+        assert (backend.applied, backend.stopped) == (0, 0)
+        assert control.to_dict()["hold"] == "settings_unreadable"
+    retry = DeviceFanStore(fan_file(tmp_path), A)
+    retry.adopt_legacy(legacy)
+    assert retry.load() == CURVE_HIGH and not retry.hold
+
+
+def test_legacy_listing_error_does_not_migrate(tmp_path, monkeypatch):
+    legacy = write_legacy(tmp_path, CURVE_HIGH)
+    folder = fan_file(tmp_path).parent
+    folder.mkdir()
+    iterdir, read_bytes, reads = Path.iterdir, Path.read_bytes, []
+
+    def refuse(self):
+        if self == folder:
+            raise PermissionError("fixture: no listing")
+        return iterdir(self)
+
+    def counting(self):
+        reads.append(self)
+        return read_bytes(self)
+
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "iterdir", refuse)
+        patch.setattr(Path, "read_bytes", counting)
+        store.adopt_legacy(legacy)
+    assert store.hold and legacy not in reads and not list(folder.iterdir())
+
+
+def test_legacy_save_failure_holds_and_retries(tmp_path, monkeypatch):
+    legacy = write_legacy(tmp_path, CURVE_HIGH)
+
+    def fail(self, settings):
+        raise OSError("fixture: the disk is full")
+
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    with monkeypatch.context() as patch:
+        patch.setattr(DeviceFanStore, "save", fail)
+        store.adopt_legacy(legacy)
+    assert store.hold and not store.path.exists() and legacy.exists()
+    retry = DeviceFanStore(fan_file(tmp_path), A)
+    retry.adopt_legacy(legacy)
+    assert retry.load() == CURVE_HIGH
+
+
+def test_parse_reading_reads_the_owner_line():
+    reading = ("R 179 179 4300 4410 55250 49000 50750 73125\nD T\nC 1 abc\n"
+               "S 1234 manual 70 4300 4410 55250 49000 50750 73125 manual\nF manual 70\n")
+    assert parse_reading(reading + f"O {'a' * 48}\n")["owner"] == "a" * 48
+    for line in ("O \n", "O junk\n", f"O {'a' * 49}\n", ""):
+        assert parse_reading(reading + line)["owner"] is None, line
+
+
+async def test_check_leaves_another_installations_controller(tmp_path):
+    for settings in (FanSettings(), CURVE_LOW):
+        backend = CountingFans()
+        await backend.apply("manual 50", owner="a" * 48)
+        backend.applied = 0
+        path = fan_file(tmp_path / settings.mode)
+        DeviceFanStore(path, A).save(settings)
+        control = FanControl(backend, DeviceFanStore(path, A), supported=True)
+        await control.poll()
+        assert backend.line == "manual 50" and (backend.applied, backend.stopped) == (0, 0)
+        state = control.to_dict()
+        assert state["hold"] == "other_installation" and "owner" not in state["reading"]
+
+
+async def test_check_adopts_a_controller_without_owner(tmp_path):
+    medium = FanSettings(mode="curve", curve="medium")
+    backend = CountingFans()
+    await backend.apply(medium.config_line())
+    backend.applied = 0
+    DeviceFanStore(fan_file(tmp_path, A), A).save(medium)
+    control = FanControl(backend, DeviceFanStore(fan_file(tmp_path, A), A), supported=True)
+    await control.poll()
+    assert backend.applied == 0 and backend.line == medium.config_line() and control.to_dict()["hold"] is None
+    DeviceFanStore(fan_file(tmp_path, B), B).save(FanSettings())
+    control = FanControl(backend, DeviceFanStore(fan_file(tmp_path, B), B), supported=True)
+    await control.poll()
+    assert backend.stopped == 1 and backend.line is None
+
+
+async def test_explicit_change_takes_over_and_saves_owner(tmp_path):
+    backend = CountingFans()
+    await backend.apply("manual 50", owner="a" * 48)
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    control = FanControl(backend, store, supported=True)
+    await control.poll()
+    assert control.to_dict()["hold"] == "other_installation"
+    await control.update({"mode": "curve", "curve": "low"})
+    assert backend.line == CURVE_LOW.config_line() and backend.owner == store.owner and OWNER.fullmatch(store.owner)
+    saved = json.loads(store.path.read_text("utf-8"))
+    assert saved["owner"] == store.owner and saved["settings"] == asdict(CURVE_LOW)
+    assert control.to_dict()["hold"] is None
+    await backend.apply("manual 60", owner="b" * 48)
+    await control.update({"mode": "switch"})
+    assert backend.line is None
+
+
+async def test_failed_change_in_a_hold_keeps_the_file_and_the_hold(tmp_path):
+    path = write(fan_file(tmp_path), envelope(identity=B))
+    data = path.read_bytes()
+    control = FanControl(FailingBackend(), DeviceFanStore(path, A), supported=True)
+    with pytest.raises(TransportError):
+        await control.update({"mode": "curve", "curve": "low"})
+    assert path.read_bytes() == data and control.to_dict()["hold"] == "settings_unreadable"
+
+
+async def test_save_failure_after_confirm_keeps_new_setting(tmp_path, monkeypatch):
+    backend = CountingFans()
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    control = FanControl(backend, store, supported=True)
+
+    def fail(settings):
+        raise OSError("fixture: the disk is full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "save", fail)
+        with pytest.raises(FanSettingsSaveError):
+            await control.update({"mode": "manual", "manual_percent": 50})
+        assert control.settings == FanSettings(mode="manual", manual_percent=50) and backend.line == "manual 50"
+        assert control.to_dict()["error"] == SAVE_FAILED
+        backend.applied = 0
+        await control.poll()
+        assert backend.applied == 0 and control.to_dict()["error"] == SAVE_FAILED
+    await control.update({"manual_percent": 55})
+    assert control.to_dict()["error"] is None
+
+
+async def test_release_returns_fans_and_keeps_saved_mode(tmp_path):
+    backend = CountingFans()
+    store = DeviceFanStore(fan_file(tmp_path), A)
+    control = FanControl(backend, store, supported=True)
+    await control.update({"mode": "curve", "curve": "medium"})
+    data = store.path.read_bytes()
+    assert await control.release(connected=True) == "returned" and backend.line is None
+    assert DeviceFanStore(store.path, A).load() == FanSettings(mode="curve", curve="medium")
+    assert store.path.read_bytes() == data
+    backend.reads = backend.applied = backend.stopped = 0
+    await control.poll()
+    assert (backend.reads, backend.applied, backend.stopped) == (0, 0, 0)
+    with pytest.raises(TransportError, match=re.escape(STOPPING)):
+        await control.update({"mode": "manual"})
+
+
+class FailingStop(CountingFans):
+    async def stop(self):
+        raise TransportError("fixture: the switch did not answer")
+
+
+class Unreadable(CountingFans):
+    failing = False
+
+    async def read(self):
+        if self.failing:
+            raise TransportError("fixture: the switch did not answer")
+        return await super().read()
+
+
+async def test_release_results():
+    backend = CountingFans()
+    assert await FanControl(backend, None, supported=True).release(connected=True) is None and backend.stopped == 0
+
+    backend = CountingFans()
+    await backend.apply("manual 50", owner="a" * 48)
+    assert await FanControl(backend, None, supported=True).release(connected=True) == "returned"
+    assert backend.line is None
+
+    backend = FailingStop()
+    await backend.apply("manual 50")
+    assert await FanControl(backend, None, supported=True).release(connected=True) == "unconfirmed"
+
+    backend = CountingFans()
+    control = FanControl(backend, None, supported=True)
+    await control.update({"mode": "curve"})
+    backend.reads = backend.stopped = 0
+    assert await control.release(connected=False) == "unconfirmed" and (backend.reads, backend.stopped) == (0, 0)
+
+    control = FanControl(CountingFans(), None, supported=True)
+    await control.poll()
+    assert await control.release(connected=False) is None
+    assert await FanControl(CountingFans(), None, supported=True).release(connected=False) == "unconfirmed"
+
+    # A failed reading clears the reading, but not what the last one showed.
+    backend = Unreadable()
+    control = FanControl(backend, None, supported=True)
+    await control.poll()
+    backend.failing = True
+    with pytest.raises(TransportError):
+        await control.poll()
+    assert control.reading is None
+    assert await control.release(connected=True) is None
+
+    assert await FanControl(CountingFans(), None, supported=False).release(connected=True) is None
+
+
+async def test_release_waits_for_a_change_in_progress():
+    class Blocking(SimulatedFans):
+        def __init__(self):
+            super().__init__()
+            self.entered, self.proceed = asyncio.Event(), asyncio.Event()
+
+        async def apply(self, line, owner=None):
+            self.entered.set()
+            await self.proceed.wait()
+            return await super().apply(line, owner)
+
+    backend = Blocking()
+    control = FanControl(backend, None, supported=True)
+    change = asyncio.create_task(control.update({"mode": "manual", "manual_percent": 70}))
+    await backend.entered.wait()
+    release = asyncio.create_task(control.release(connected=True))
+    await asyncio.sleep(0.01)
+    assert not release.done()
+    backend.proceed.set()
+    await change
+    assert await release == "returned" and backend.line is None
+
+
+async def test_release_times_out_as_unconfirmed(monkeypatch):
+    class Slow(SimulatedFans):
+        async def read(self):
+            await asyncio.sleep(1)
+            return await super().read()
+
+    monkeypatch.setattr(fans, "RELEASE_TIMEOUT", 0.05)
+    started = time.monotonic()
+    assert await FanControl(Slow(), None, supported=True).release(connected=True) == "unconfirmed"
+    assert time.monotonic() - started < 0.5
+
+
+def test_release_budget_fits_client_timeouts():
+    assert fans.RELEASE_TIMEOUT <= 15 and fans.RELEASE_READ_TIMEOUT < fans.RELEASE_TIMEOUT, (
+        "The desktop app, the browser and the private gateway give up on a request after 30 seconds, and the rest "
+        "of the handoff needs time too.")
+
+
+def test_fans_script_digest_is_pinned():
+    assert SwitchFans(None).digest == "28f041a1d7fee452bbdf9b828722787e44e4807c38ceaabcd7ec64b48457e2df", (
+        "A change to fans.sh restarts fan control once on every switch at its next check. Name it in the changelog, "
+        "then update this digest.")
+
+
+async def test_apply_rejects_a_malformed_owner(tmp_path):
+    class Untouchable:
+        async def run_isolated(self, *args, **kwargs):
+            pytest.fail("a fan command was sent")
+
+    with pytest.raises(TransportError, match="could not be prepared"):
+        await SwitchFans(Untouchable()).apply("manual 50", owner="x")
+    control = FanControl(SwitchFans(Untouchable()), DeviceFanStore(fan_file(tmp_path), A), supported=True)
+    control.store.owner = "x"
+    with pytest.raises(TransportError):
+        await control.update({"mode": "manual", "manual_percent": 50})
+    assert control.to_dict()["supported"]
 
 
 # The shell controller must compute exactly what the Python step does.
@@ -508,6 +976,32 @@ async def test_switch_fans_end_to_end(mock_switch):
     reading = await backend.read()
     assert reading["controller"] == "absent"
     assert _daemon_state(mock_switch["daemon"]) != "T"
+
+
+@needs_shell
+async def test_switch_fans_writes_the_owner_beside_the_setting(mock_switch):
+    location = mock_switch["location"]
+    backend = backend_for(mock_switch, location)
+
+    def config():
+        return shell("-c", f'cat "{location}/config"', env=mock_switch["env"]).stdout.splitlines()
+
+    try:
+        reading = await backend.apply("manual 70", owner="a" * 48)
+        assert config() == ["manual 70", "owner " + "a" * 48]
+        assert reading["owner"] == "a" * 48 and reading["config"] == "manual 70"
+        assert (mock_switch["hw"] / "pwm1").read_text().strip() == "179"
+        # Releases up to 0.5.1 read the whole file and use only its first line.
+        earlier = fans._READ.replace(fans._CONFIG_READ, 'echo "F $(cat "$d/config" 2>/dev/null)"')
+        assert parse_reading(await backend._run(backend.paths + earlier))["config"] == "manual 70"
+        reading = await backend.apply("manual 40")
+        assert config() == ["manual 40"] and reading["owner"] is None
+        await backend.stop()
+        assert (await backend.read())["controller"] == "absent"
+        assert _daemon_state(mock_switch["daemon"]) != "T"
+    finally:
+        with contextlib.suppress(Exception):
+            await backend.stop()
 
 
 @needs_shell
