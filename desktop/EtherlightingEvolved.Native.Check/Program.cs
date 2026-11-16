@@ -42,6 +42,7 @@ AppBuilder.Configure<App>()
 ShellChecks.Contracts(Check);
 ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
+HostKeyReviewChecks.Run(Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");

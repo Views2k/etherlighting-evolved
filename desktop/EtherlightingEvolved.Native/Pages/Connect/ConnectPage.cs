@@ -48,7 +48,9 @@ public sealed class ConnectPage : Page
     readonly Button? firstPanelButton;
     readonly List<Control> formElements;
     readonly PrivateAccessPanel privateAccess;
-    bool active = true, completed, dirty, forgetting, retryingHandoff, updating;
+    readonly HostKeyFlow hostKeys = new();
+    readonly HostKeyReview review;
+    bool active = true, completed, dirty, forgetting, retryingHandoff, updating, savingKey;
     Task? pending;
     JsonObject saved;
     JsonObject? lastSession;
@@ -91,16 +93,18 @@ public sealed class ConnectPage : Page
         retryHandoff.IsVisible = false;
         var passwordField = new SecretField("SSH password", password);
         reveal = passwordField.Reveal;
+        review = new HostKeyReview(AcceptKey, DismissKey);
         var form = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Classes = { "connection-form" } };
         form.Children.Add(UiKit.Field("Switch address", address));
         form.Children.Add(UiKit.Field("SSH username", username));
         form.Children.Add(passwordField);
         form.Children.Add(rememberLabel);
         form.Children.Add(options);
+        form.Children.Add(review);
         form.Children.Add(actions);
         panel.Children.Add(message);
         panel.Children.Add(form);
-        formElements = [address, username, password, reveal, remember, port, submit];
+        formElements = [address, username, password, reveal, remember, port, .. review.Buttons, submit];
         if (restoreSaved is not null) formElements.Add(restore);
         formElements.Add(forget);
         formElements.Add(retryHandoff);
@@ -147,6 +151,11 @@ public sealed class ConnectPage : Page
                 if (updating) return;
                 dirty = true;
                 input.Classes.Remove("invalid");
+                if (input == address || input == port)
+                {
+                    hostKeys.TargetEdited();
+                    review.Hide();
+                }
             };
             input.KeyDown += (_, e) =>
             {
@@ -160,7 +169,7 @@ public sealed class ConnectPage : Page
             if (!updating) dirty = true;
         };
         submit.Click += (_, _) => Submit();
-        restore.Click += (_, _) => Connect(restoreSaved!);
+        restore.Click += (_, _) => Connect(restoreSaved!, HostKeyRetry.Saved);
         retryHandoff.Click += (_, _) => RetryHandoff();
         forget.Click += async (_, _) => await Forget();
         lastSession = session;
@@ -213,7 +222,7 @@ public sealed class ConnectPage : Page
         retryHandoff.IsVisible = HandoffRetryable(saved);
         retryHandoff.IsEnabled = !(waiting || !HandoffRetryable(saved));
         retryHandoff.Content = retryingHandoff ? "Handing off…" : "Retry handoff";
-        submit.Content = saved.Str("handoff_state") == "pending" || retryingHandoff ? "Handing off…" : waiting && !forgetting ? "Connecting…" : "Connect to switch";
+        submit.Content = saved.Str("handoff_state") == "pending" || retryingHandoff ? "Handing off…" : waiting && !forgetting && !savingKey ? "Connecting…" : "Connect to switch";
         forget.Content = forgetting ? "Removing saved login…" : "Forget saved login";
         restore.IsVisible = restoreSaved is not null && saved.Truthy("has_saved_login");
         forget.IsVisible = saved.Truthy("has_saved_login");
@@ -273,12 +282,18 @@ public sealed class ConnectPage : Page
             finally { updating = false; }
         }
         var handoff = HandoffStatus(saved);
+        var reviewing = hostKeys.Open is { } open && HostKeyProblem.From(saved.At("error"))?.Key == open.Key;
         if (HandoffBlocked(saved) && handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
         else if (saved.Truthy("pending_scene_choice")) Status("Choose lighting to finish connecting.");
         else if (saved.Truthy("connecting")) Status("Connecting with saved login…");
         else if (saved.Truthy("saved_login_error")) Status(Messages["saved_login_unavailable"], true);
-        else if (saved.Truthy("error")) Status(ConnectionError(saved["error"]), true);
+        else if (saved.Truthy("error"))
+        {
+            if (!reviewing) Status(ConnectionError(saved["error"]), true);
+        }
         else if (handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
+        if (hostKeys.FromSession(saved, address.Text, port.Text, pending is not null, HandoffBlocked(saved))) ShowReview();
+        else if (hostKeys.Open is null) review.Hide();
         SetBusy();
         if (SceneChoice.IsOpen || (!HandoffBlocked(saved) && (saved.Truthy("logged_in") || saved.Truthy("pending_scene_choice"))))
         {
@@ -287,7 +302,7 @@ public sealed class ConnectPage : Page
         }
     }
 
-    void Connect(Func<Task<JsonNode?>> action)
+    void Connect(Func<Task<JsonNode?>> action, HostKeyRetry retry)
     {
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         Status("Connecting…");
@@ -303,16 +318,110 @@ public sealed class ConnectPage : Page
             }
             catch (Exception error)
             {
-                if (active) Status(ConnectionError(error), true);
+                if (!active) return;
+                if (HostKeyProblem.From((error as ApiException)?.Details) is { } problem)
+                {
+                    hostKeys.FromAction(problem, retry);
+                    ShowReview();
+                }
+                else Status(ConnectionError(error), true);
             }
             finally
             {
                 pending = null;
                 SetBusy();
-                if (active && !completed) submit.Focus();
+                if (active && !completed)
+                {
+                    if (hostKeys.Open is not null) review.FocusHeading();
+                    else submit.Focus();
+                }
             }
         });
         SetBusy();
+    }
+
+    // ---- SSH key review
+
+    void ShowReview()
+    {
+        var problem = hostKeys.Open!;
+        review.Show(problem);
+        Status(problem.Changed ? "The switch’s SSH key changed. Review it before connecting." : "The switch’s SSH key needs your approval.", problem.Changed);
+        _ = CheckKeyAccess(problem);
+    }
+
+    async Task CheckKeyAccess(HostKeyProblem problem)
+    {
+        JsonNode? access;
+        // A client that cannot read private access counts as remote: it shows the key but cannot accept it.
+        try { access = await request("/api/private-access", "GET", null); }
+        catch (Exception) { access = null; }
+        if (active && ReferenceEquals(hostKeys.Open, problem)) review.SetCanAccept(CanAcceptHostKey(access));
+    }
+
+    void AcceptKey(HostKeyProblem problem)
+    {
+        if (!active || pending is not null || !ReferenceEquals(hostKeys.Open, problem) || review.CanAccept != true
+            || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved))
+            return;
+        var retry = hostKeys.Retry;
+        var accepted = false;
+        savingKey = true;
+        Status("Saving the SSH key…");
+        StartPending(async () =>
+        {
+            try
+            {
+                var result = await request(problem.Route, "POST", problem.Body());
+                if (!active) return;
+                if (result is JsonObject session) saved = session;
+                hostKeys.Close();
+                review.Hide();
+                accepted = true;
+            }
+            catch (Exception error)
+            {
+                if (!active) return;
+                hostKeys.Dismiss();
+                review.Hide();
+                Status(HostKeyError(error, problem), true);
+            }
+            finally
+            {
+                pending = null;
+                savingKey = false;
+                SetBusy();
+                if (active)
+                {
+                    // The retry starts its own request, so it runs after this one has released the form.
+                    if (accepted) Dispatcher.UIThread.Post(() => RunRetry(retry));
+                    else submit.Focus();
+                }
+            }
+        });
+        SetBusy();
+    }
+
+    void RunRetry(HostKeyRetry retry)
+    {
+        if (!active) return;
+        if (retry == HostKeyRetry.Form) Submit();
+        else if (retry == HostKeyRetry.Saved && restoreSaved is not null) Connect(restoreSaved, HostKeyRetry.Saved);
+        else
+        {
+            Status("SSH key saved. Connect to the switch to continue.");
+            if (string.IsNullOrEmpty(password.Text)) password.Focus();
+            else submit.Focus();
+        }
+    }
+
+    void DismissKey(HostKeyProblem problem)
+    {
+        if (!active || pending is not null || !ReferenceEquals(hostKeys.Open, problem)) return;
+        hostKeys.Dismiss();
+        review.Hide();
+        Status(problem.Changed ? "EE kept the saved SSH key and did not connect." : "Connection canceled. EE did not send your password.");
+        submit.Focus();
     }
 
     void Submit()
@@ -339,7 +448,7 @@ public sealed class ConnectPage : Page
             ["host"] = address.Text!.Trim(), ["username"] = username.Text!.Trim(), ["password"] = password.Text, ["port"] = (int)portNumber,
             ["remember"] = remember.IsChecked == true,
         };
-        Connect(() => request("/api/session/login", "POST", payload));
+        Connect(() => request("/api/session/login", "POST", payload), HostKeyRetry.Form);
     }
 
     void RetryHandoff()
