@@ -62,7 +62,7 @@ New-Item -ItemType Directory -Path (Join-Path $app 'engine') -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $OutputRoot 'engine-dist\EEEngine') | Copy-Item -Destination (Join-Path $app 'engine') -Recurse -Force
 foreach ($folder in @('preview','src','assets')) {
     New-Item -ItemType Directory -Path (Join-Path $app $folder) -Force | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $workspace $folder) -File | Where-Object { $_.Extension -in @('.mjs','.css','.html','.png','.svg','.ico','.webmanifest') } | ForEach-Object {
+    Get-ChildItem -LiteralPath (Join-Path $workspace $folder) -File | Where-Object { $_.Extension -in @('.mjs','.css','.html','.png','.svg','.ico','.webmanifest') -and $_.Name -notlike '*.test.mjs' } | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $app $folder)
     }
 }

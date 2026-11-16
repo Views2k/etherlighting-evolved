@@ -83,7 +83,7 @@ def verify(root, app, node, installer=None):
     for folder in ['preview', 'src', 'assets']:
         for source in (root / folder).iterdir():
             extensions = {'.mjs', '.css', '.html', '.png', '.svg', '.ico', '.webmanifest'}
-            if not source.is_file() or source.suffix not in extensions:
+            if not source.is_file() or source.suffix not in extensions or source.name.endswith('.test.mjs'):
                 continue
             relative = source.relative_to(root)
             packaged = app / relative
