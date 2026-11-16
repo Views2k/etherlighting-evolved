@@ -27,7 +27,7 @@ from .handoff import HandoffIntent
 from .hardware import PRO_XG8
 from .mailbox import Mailbox
 from .ownership import OutputJournal, OutputOwnershipError, device_identity
-from .presets import DeviceSceneStore, SceneStore
+from .presets import DeviceSceneStore, SceneStore, UnusableSceneError
 from .scene_history import SceneHistory
 from .switch import EtherlightSwitch
 from .transport import (
@@ -376,7 +376,14 @@ class SessionManager:
                         await self._recover_retained_output(switch, host, port, transport.host_key_fingerprint)
                 step = "scene"
                 store = self.scenes[True] if simulated else self._device_store(switch)
-                scene = self._load_scene(store)
+                try:
+                    scene = self._load_scene(store)
+                except UnusableSceneError:
+                    # The switch player was built from this file, so only a login without one starts over.
+                    if record:
+                        raise
+                    store.set_aside()
+                    scene = None
                 candidate = PendingSceneChoice(
                     engine, store, host, port, username, password, remember, simulated,
                     transport.lighting_generation, getattr(transport, "host_key_fingerprint", None))
