@@ -25,7 +25,11 @@ function Invoke-Check([string]$Name, [string]$Executable, [string[]]$Arguments) 
     $code = $LASTEXITCODE
     $clock.Stop()
     $steps.Add(@{name=$Name;exit_code=$code;seconds=[Math]::Round($clock.Elapsed.TotalSeconds,2)})
-    if ($code) { throw "$Name failed. See $OutputRoot\$Name.log" }
+    if ($code) {
+        # Show the end of the log so a hosted run's failure can be read without its artifacts.
+        Get-Content -LiteralPath (Join-Path $OutputRoot "$Name.log") -Tail 80 | Write-Output
+        throw "$Name failed. See $OutputRoot\$Name.log"
+    }
     Write-Output "$Name passed."
 }
 Push-Location $root

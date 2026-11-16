@@ -48,12 +48,16 @@ public static class FansPageChecks
         var described = await Until(() => Task.FromResult(Shows("Keeping the CPU at 55 °C")));
         check(described, "the page describes the thermal target it holds"
                          + (described ? "" : $" ({string.Join(" | ", All<TextBlock>(Page()).Where(t => t.IsEffectivelyVisible).Select(t => t.Text).Where(t => t?.Length > 20))})"));
-        var target = All<Slider>(Page()).First(slider => slider.IsEffectivelyVisible);
+        // The page swaps in each mode's slider after the change returns; wait for the one this mode uses.
+        Slider? Visible(double minimum) => All<Slider>(Page()).FirstOrDefault(slider => slider.IsEffectivelyVisible && slider.Minimum == minimum);
+        check(await Until(() => Task.FromResult(Visible(45) is not null)), "Thermal target shows the temperature slider");
+        var target = Visible(45)!;
         target.Value = 61;
         check(await Until(async () => (await Fans()).Int("settings.target_celsius") == 61), "moving the target slider sets the target temperature");
 
         check(await Click("Manual") && await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "Manual holds a fixed fan speed");
-        var speed = All<Slider>(Page()).First(slider => slider.IsEffectivelyVisible);
+        check(await Until(() => Task.FromResult(Visible(30) is not null)), "Manual shows the speed slider");
+        var speed = Visible(30)!;
         speed.Value = 82;
         check(await Until(async () => (await Fans()) is { } fans && fans.Int("settings.manual_percent") == 82
                                        && fans["reading"]?["fans"]?.AsArray().All(fan => fan.Int("percent") == 82) == true),
