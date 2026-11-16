@@ -2581,6 +2581,18 @@ public static class ModelChecks
                 method == "PUT" ? throw failure : Task.FromResult<JsonNode?>(new JsonObject { ["revision"] = "other", ["scene"] = With(scene, "{brightness:20}") })));
             e(ReferenceEquals(error, failure) && SceneTransaction.AcceptedScene(failure) is null);
         });
+        T("request errors: every refusal body becomes an ApiException with the browser's message", e =>
+        {
+            var list = EeApi.FromError(422, true, O("{detail:[{loc:['body','ports'],msg:'x',type:'missing'}]}"));
+            e(list.Message == "The change could not be confirmed. Try again." && list.Code is null && list.Status == 422 && !list.Uncertain, "validation list");
+            var mistyped = EeApi.FromError(409, true, O("{detail:{message:5,code:3}}"));
+            e(mistyped.Message == "The change could not be confirmed. Try again." && mistyped.Code is null && mistyped.Details.Int("code") == 3, "mistyped fields");
+            var text = EeApi.FromError(503, false, O("{detail:'The EE service is unavailable.'}"));
+            e(text.Message == "The EE service is unavailable." && text.Code is null && !text.Uncertain, "message text");
+            var coded = EeApi.FromError(500, true, O("{detail:{message:'Lighting was not confirmed.',code:'output_unconfirmed'}}"));
+            e(coded.Message == "Lighting was not confirmed." && coded.Code == "output_unconfirmed" && coded.Uncertain, "message and code");
+            e(EeApi.FromError(502, true, null).Message == "The change could not be confirmed. Try again.", "no body");
+        });
     }
 
     static T Also<T>(this T value, Action<T> action)
