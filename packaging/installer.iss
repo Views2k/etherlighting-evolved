@@ -9,9 +9,10 @@
   #define AppSourceDir "..\dist\EtherlightingEvolved"
 #endif
 
-; The compiler release that tools/ci-inno.ps1 installs for CI. A local test build may pass /DAnyCompiler.
-#if !Defined(AnyCompiler) && DecodeVer(Ver) != "6.7.4"
-  #error Compile with Inno Setup 6.7.4, the release CI uses, or build with -AllowUnpinned.
+; tools/ci-inno.ps1 installs 6.7.4 for CI. Any 6.7 release is accepted, so a local build with another patch release
+; does not need -AllowUnpinned for the compiler alone. A local test build may pass /DAnyCompiler to accept others.
+#if !Defined(AnyCompiler) && DecodeVer(Ver, 2) != "6.7"
+  #error Compile with Inno Setup 6.7 (CI uses 6.7.4), or build with -AllowUnpinned.
 #endif
 
 #define AppName "Etherlighting Evolved"
