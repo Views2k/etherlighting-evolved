@@ -19,7 +19,7 @@ namespace EtherlightingEvolved.Native.Pages.Settings;
 /// </summary>
 public sealed class ControllerConnection : Border
 {
-    readonly Send request;
+    readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly Func<JsonObject, Task> onChanged;
     readonly TextBlock introduction = UiKit.HelpText("Connect UniFi Network to show controller details for your switch.");
     readonly Button reload = UiKit.Button("Refresh controller", "quiet");
@@ -76,7 +76,7 @@ public sealed class ControllerConnection : Border
     bool? reconnectDraft;
     string siteContextKey = "", localAddress = "", lastKind = "self_hosted", cleanForm;
 
-    public ControllerConnection(Send request, Func<JsonObject, Task> onChanged)
+    public ControllerConnection(Func<string, string, JsonNode?, Task<JsonNode?>> request, Func<JsonObject, Task> onChanged)
     {
         this.request = request;
         this.onChanged = onChanged;
@@ -239,7 +239,7 @@ public sealed class ControllerConnection : Border
             trustPanel.IsVisible = false;
             Connect();
         };
-        reload.Click += (_, _) => Perform(() => request("/api/controller"), "Checking controller status…");
+        reload.Click += (_, _) => Perform(() => request("/api/controller", "GET", null), "Checking controller status…");
         editConnection.Click += (_, _) =>
         {
             if (!active || pending is not null) return;
@@ -250,9 +250,9 @@ public sealed class ControllerConnection : Border
         };
         cancelChange.Click += (_, _) =>
         {
-            if (current.Truthy("pending_site_choice")) Perform(() => request("/api/controller/cancel", "POST"), "Canceling connection change…", "cancel");
+            if (current.Truthy("pending_site_choice")) Perform(() => request("/api/controller/cancel", "POST", null),"Canceling connection change…", "cancel");
         };
-        disconnect.Click += (_, _) => Perform(() => request("/api/controller/disconnect", "POST"), "Disconnecting controller…", "disconnect");
+        disconnect.Click += (_, _) => Perform(() => request("/api/controller/disconnect", "POST", null),"Disconnecting controller…", "disconnect");
         reconnect.IsCheckedChanged += (_, _) =>
         {
             if (programmatic) return;
@@ -261,7 +261,7 @@ public sealed class ControllerConnection : Border
             SetBusy();
         };
         applyPreference.Click += (_, _) => ApplyPreference();
-        Perform(() => request("/api/controller"), "Checking controller status…");
+        Perform(() => request("/api/controller", "GET", null), "Checking controller status…");
     }
 
     void SetText(TextBox box, string text)

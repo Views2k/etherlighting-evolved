@@ -29,7 +29,7 @@ static class Registration
 public sealed class SettingsPage : Page
 {
     const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
-    readonly Send request;
+    readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly Core.Model.OperationGate gate;
     readonly Notice notice = new();
     readonly Border savingLine = new() { Height = 2, VerticalAlignment = VerticalAlignment.Bottom, IsVisible = false, IsHitTestVisible = false };
@@ -58,8 +58,7 @@ public sealed class SettingsPage : Page
 
     public SettingsPage(AppShell shell) : base(shell)
     {
-        var send = Workspace.WorkspaceRequest();
-        request = (path, method, body) => send(path, method, body);
+        request = Workspace.WorkspaceRequest();
         Styles.Add(SettingsKit.PageStyles());
         gate = Core.Model.SecondaryModel.CreateOperationGate(SetBusy, error => Status(error.Message is { Length: > 0 } text ? text : "The change could not be completed. Try again.", true));
 
@@ -98,7 +97,7 @@ public sealed class SettingsPage : Page
         about.Margin = new Thickness(0, 20, 0, 0);
 
         // Remote, Last session and Appearance
-        privateAccess = new Connect.PrivateAccessPanel((path, method, body) => request(path, method, body));
+        privateAccess = new Connect.PrivateAccessPanel(request);
         lastSession = new LastSession(request);
         themeSettings = new ThemeSettings();
         appearance = SettingsKit.Panel(themeSettings, maxWidth: 960);
@@ -208,8 +207,8 @@ public sealed class SettingsPage : Page
     {
         try
         {
-            var sessionTask = request("/api/session");
-            var stateTask = request("/api/state");
+            var sessionTask = request("/api/session", "GET", null);
+            var stateTask = request("/api/state", "GET", null);
             await Task.WhenAll(sessionTask, stateTask);
             var session = await sessionTask;
             var state = await stateTask;
@@ -238,7 +237,7 @@ public sealed class SettingsPage : Page
                     Status("Handing lighting back to UniFi…");
                     try
                     {
-                        if (await Connections.RequestHandoff((path, method, body) => request(path, method, body), () => gate.Active) is not { } result) return;
+                        if (await Connections.RequestHandoff(request, () => gate.Active) is not { } result) return;
                         Status(result.Error ?? "Lighting returned to UniFi.", result.Error is not null);
                         if (result.Session?.Bool("logged_in") == false)
                         {
@@ -259,7 +258,7 @@ public sealed class SettingsPage : Page
                     forget = SettingsKit.ActionButton("Forget saved switch login", () => gate.Run(async () =>
                     {
                         if (!await Confirm("Forget saved switch login?", "Remove the saved SSH login from this PC. The current switch connection stays open.", "Forget login") || !gate.Active) return;
-                        await request("/api/session/forget", "POST");
+                        await request("/api/session/forget", "POST", null);
                         content.Children.Remove(forget!);
                         Status("Saved switch login removed.");
                     }), "quiet");

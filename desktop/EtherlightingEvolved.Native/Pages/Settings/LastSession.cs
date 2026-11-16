@@ -12,12 +12,12 @@ namespace EtherlightingEvolved.Native.Pages.Settings;
 /// </summary>
 public sealed class LastSession : StackPanel
 {
-    readonly Send request;
+    readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly StackPanel content = new();
     readonly Button refresh = UiKit.Button("Refresh session details", "quiet");
     bool active = true, pending;
 
-    public LastSession(Send request)
+    public LastSession(Func<string, string, JsonNode?, Task<JsonNode?>> request)
     {
         this.request = request;
         Children.Add(SettingsKit.H2("Last session"));
@@ -47,7 +47,7 @@ public sealed class LastSession : StackPanel
         refresh.IsEnabled = false;
         try
         {
-            var result = await request("/api/last-session");
+            var result = await request("/api/last-session", "GET", null);
             if (active) Render(result);
         }
         catch (Exception)

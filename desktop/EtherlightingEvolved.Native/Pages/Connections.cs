@@ -5,9 +5,6 @@ using EtherlightingEvolved.Native.Core;
 
 namespace EtherlightingEvolved.Native.Pages;
 
-/// <summary>A request bound to the current switch (the renderers' "request").</summary>
-public delegate Task<JsonNode?> Send(string path, string method = "GET", JsonNode? body = null);
-
 /// <summary>A handoff or connection message with its notice tone ("online", "waiting" or none).</summary>
 public sealed record ConnectionNotice(string Message, bool Error, string Tone);
 
