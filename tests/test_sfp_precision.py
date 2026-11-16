@@ -42,7 +42,7 @@ def test_animated_precision_applies_each_brightness_and_gamma_exactly_once(effec
     sfp_clock[0] = 1.5 if effect == "two_color" else 0.0
     channels = (255 * 0.3 * 0.5, 0.0, 255 * 0.6 * 0.5) if effect == "two_color" else (0.0, 0.0, 255 * 0.6)
     expected = tuple(round(65280 * (channel / 255) ** gamma * (0.5 * 0.4) ** gamma) for channel in channels)
-    output = engine.sfp_outputs()[9]
+    output = engine.sfp_indicators.outputs()[9]
     assert output.precise_rgb == expected
     assert output.level == 100 and output.breath is None
     assert all(type(channel) is int and 0 <= channel <= 65280 for channel in output.precise_rgb)
@@ -55,7 +55,7 @@ def test_twenty_percent_animations_keep_more_than_one_thousand_distinct_channel_
     previews = set()
     for tick in range(24001):
         sfp_clock[0] = tick / 4000
-        output = engine.sfp_outputs()[9]
+        output = engine.sfp_indicators.outputs()[9]
         previews.add(output.color.to_hex())
         for index, value in enumerate(output.precise_rgb):
             channels[index].add(value)
@@ -70,7 +70,7 @@ def test_twenty_percent_animations_keep_more_than_one_thousand_distinct_channel_
 def test_low_intensity_survives_a_black_eight_bit_preview(effect, sfp_clock):
     engine = engine_for_effect(effect, gamma=1, brightness=1, color_brightness=1, secondary_brightness=1)
     sfp_clock[0] = 1.5 if effect == "two_color" else 0.0
-    output = engine.sfp_outputs()[9]
+    output = engine.sfp_indicators.outputs()[9]
     assert output.color == BLACK
     assert max(output.precise_rgb) > 0
     assert output.level == 100
@@ -82,7 +82,7 @@ def test_pulse_preserves_sub_byte_render_values_before_encoding(sfp_clock):
     rendered = engine.sfp[9].render(2.7, 9)
     assert rendered == BLACK
     assert rendered.precise_channels[2] > 0
-    output = engine.sfp_outputs()[9]
+    output = engine.sfp_indicators.outputs()[9]
     amplitude = (1 + math.cos(math.tau * 2.7 / 6)) / 2
     assert output.precise_rgb == (0, 0, round(65280 * 0.01 * amplitude))
 
@@ -95,8 +95,8 @@ def test_unverified_capability_preserves_existing_rgb8_output(effect, sfp_clock)
     for elapsed in (0.0, 0.23, 1.5, 3.0, 5.9):
         sfp_clock[0] = elapsed
         expected = to_output(engine.sfp[9].render(elapsed, 9), 37 * 42 / 100, gamma=engine.gamma)
-        assert engine.sfp_outputs()[9] == expected
-        assert engine.sfp_outputs()[9].precise_rgb is None
+        assert engine.sfp_indicators.outputs()[9] == expected
+        assert engine.sfp_indicators.outputs()[9].precise_rgb is None
 
 
 @pytest.mark.parametrize("mode", ["color", "off", "unmanaged"])
@@ -105,33 +105,33 @@ def test_steady_off_and_unmanaged_keep_their_existing_output_contract(mode, sfp_
     engine.set_sfp(9, {"mode": mode, "brightness": 42})
     sfp_clock[0] = 1.23
     if mode == "unmanaged":
-        assert engine.sfp_outputs() == {}
+        assert engine.sfp_indicators.outputs() == {}
     else:
         expected = to_output(engine.sfp[9].render(1.23, 9), 37 * 42 / 100, gamma=engine.gamma)
-        assert engine.sfp_outputs()[9] == expected
-        assert engine.sfp_outputs()[9].precise_rgb is None
+        assert engine.sfp_indicators.outputs()[9] == expected
+        assert engine.sfp_indicators.outputs()[9].precise_rgb is None
 
 
 @pytest.mark.parametrize("effect", ["pulse", "color_cycle", "two_color"])
 def test_off_does_not_activate_precision_for_a_saved_animation(effect, sfp_clock):
     engine = engine_for_effect(effect)
     engine.set_sfp(9, {"mode": "off"})
-    assert engine.sfp_outputs()[9] == PortOutput.off()
-    assert engine.sfp_outputs()[9].precise_rgb is None
+    assert engine.sfp_indicators.outputs()[9] == PortOutput.off()
+    assert engine.sfp_indicators.outputs()[9].precise_rgb is None
 
 
 @pytest.mark.parametrize("effect", ["pulse", "color_cycle", "two_color"])
 def test_zero_master_brightness_has_exact_zero_precision_components(effect, sfp_clock):
     engine = engine_for_effect(effect, brightness=0)
     sfp_clock[0] = 1.123
-    assert engine.sfp_outputs()[9].precise_rgb == (0, 0, 0)
-    assert engine.sfp_outputs()[9].level == 100
+    assert engine.sfp_indicators.outputs()[9].precise_rgb == (0, 0, 0)
+    assert engine.sfp_indicators.outputs()[9].level == 100
 
 
 def test_releasing_sfp_is_omitted_and_never_joins_the_copper_frame(sfp_clock):
     engine = engine_for_effect("pulse")
     engine.set_sfp(10, {"mode": "color", "effect": "two_color"})
-    engine._sfp_releasing.add(9)
-    assert set(engine.sfp_outputs()) == {10}
-    assert engine.sfp_outputs()[10].precise_rgb is not None
+    engine.sfp_indicators.releasing.add(9)
+    assert set(engine.sfp_indicators.outputs()) == {10}
+    assert engine.sfp_indicators.outputs()[10].precise_rgb is not None
     assert len(engine.compose(t=1)[1]) == 8

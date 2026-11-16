@@ -36,7 +36,7 @@ async def test_production_login_initializes_before_any_color_and_sfp_acknowledgm
         assert transport.operations[0] == ("behavior", "steady")
         sessions.engine.set_sfp(9, {"mode": "color", "color": "blue"})
         await asyncio.wait_for(sessions.engine.wait_for_sfp(9), 2)
-        assert sessions.engine.sfp_state()[0]["control"]["state"] == "active"
+        assert sessions.engine.sfp_indicators.state()[0]["control"]["state"] == "active"
         assert transport.operations.count(("behavior", "steady")) == 1
         assert transport.sfp_modes[9] is True
     finally:

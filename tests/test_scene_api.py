@@ -161,7 +161,7 @@ def test_preserved_scene_reuses_unchanged_phase_and_sfp_intent(scene_engine):
     original = engine.zones[0]
     original.started_at, original.wall_started_at = 13, 17
     engine._t0, engine._animation_origin = 19, 23
-    revisions = dict(engine._sfp_revisions)
+    revisions = dict(engine.sfp_indicators.revisions)
     scene = engine.snapshot()
     scene["zones"][0]["name"] = "Renamed group"
     scene["overrides"] = {"1": {"color": "#123456", "brightness": 50}}
@@ -169,7 +169,7 @@ def test_preserved_scene_reuses_unchanged_phase_and_sfp_intent(scene_engine):
     assert engine.zones[0].effect is original.effect
     assert (engine.zones[0].started_at, engine.zones[0].wall_started_at) == (13, 17)
     assert (engine._t0, engine._animation_origin) == (19, 23)
-    assert engine._sfp_revisions == revisions
+    assert engine.sfp_indicators.revisions == revisions
 
 
 @pytest.mark.anyio
@@ -181,7 +181,7 @@ async def test_atomic_scene_waits_only_for_changed_sfp(scene_client, scene_engin
     waits = []
     async def confirm(port):
         waits.append(port)
-        scene_engine._sfp_acknowledged[port] = scene_engine._sfp_revisions[port]
+        scene_engine.sfp_indicators.acknowledged[port] = scene_engine.sfp_indicators.revisions[port]
     monkeypatch.setattr(scene_engine, "wait_for_sfp", confirm)
     result = await scene_client.put("/api/scene", json={"scene": scene, "expected_revision": current["revision"],
                                                        "preserve_unchanged": True, "confirm_output": True})
@@ -239,7 +239,7 @@ async def test_waiting_scene_response_does_not_adopt_another_clients_revision(sc
     async def confirm(port):
         entered.set()
         await complete.wait()
-        scene_engine._sfp_acknowledged[port] = scene_engine._sfp_revisions[port]
+        scene_engine.sfp_indicators.acknowledged[port] = scene_engine.sfp_indicators.revisions[port]
     monkeypatch.setattr(scene_engine, "wait_for_sfp", confirm)
     first = asyncio.create_task(scene_client.put("/api/scene", json={"scene": first_scene,
         "expected_revision": before["revision"], "preserve_unchanged": True, "confirm_output": True}))
@@ -269,7 +269,7 @@ async def test_sfp_confirmation_cannot_adopt_a_newer_second_port_intent(scene_cl
     waits = []
     async def replaced(port):
         waits.append(port)
-        scene_engine._sfp_acknowledged[port] = scene_engine._sfp_revisions[port]
+        scene_engine.sfp_indicators.acknowledged[port] = scene_engine.sfp_indicators.revisions[port]
         scene_engine.set_sfp(10, {"color": "#abcdef"})
     monkeypatch.setattr(scene_engine, "wait_for_sfp", replaced)
     result = await scene_client.put("/api/scene", json={"scene": scene, "expected_revision": before["revision"],

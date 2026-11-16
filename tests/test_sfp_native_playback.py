@@ -35,9 +35,9 @@ async def setup(*, effect="two_color", period=6, together=True, **options):
 
 
 async def write(engine, switch, **options):
-    outputs = engine.sfp_outputs()
+    outputs = engine.sfp_indicators.outputs()
     await switch.write([PortOutput.off()] * 8, sfp=outputs,
-                       yield_at=engine._sfp_playback.next_deadline(
+                       yield_at=engine.sfp_indicators.playback.next_deadline(
                            switch, engine.budget.value), **options)
     return outputs
 
@@ -58,15 +58,15 @@ def test_supported_duration_and_custom_period_preservation(effect, period, durat
 async def test_native_capability_and_playback_metadata_are_independent_of_current_mode(clock):
     engine, switch, _ = await setup()
     assert (await switch.probe())["sfp_native_gradient"] is True
-    assert engine.sfp_state()[0]["playback"] == {
+    assert engine.sfp_indicators.state()[0]["playback"] == {
         "kind": "native", "periods": [2, 4, 6], "segment_seconds": 3}
     engine.set_sfp(9, {"period": 7.5})
     saved = engine.snapshot()
-    assert engine.sfp_state()[0]["playback"]["kind"] == "custom"
+    assert engine.sfp_indicators.state()[0]["playback"]["kind"] == "custom"
     engine.apply_snapshot(saved)
     assert engine.sfp[9].period == 7.5
     engine.set_sfp(9, {"mode": "off"})
-    assert engine.sfp_state()[0]["playback"]["kind"] == "steady"
+    assert engine.sfp_indicators.state()[0]["playback"]["kind"] == "steady"
     assert switch.sfp_native_gradient
     switch.transport.lighting_generation = object()
     assert not switch.sfp_native_gradient
@@ -75,9 +75,9 @@ async def test_native_capability_and_playback_metadata_are_independent_of_curren
 @pytest.mark.anyio
 async def test_pair_enrollment_barrier_and_keepalive_do_not_restart_segments(clock):
     engine, switch, transport = await setup()
-    baseline = engine.sfp_outputs()
+    baseline = engine.sfp_indicators.outputs()
     assert all(output.gradient is None for output in baseline.values())
-    assert engine.sfp_outputs() == baseline  # Sampling cannot advance unacknowledged targets.
+    assert engine.sfp_indicators.outputs() == baseline  # Sampling cannot advance unacknowledged targets.
     await write(engine, switch)
     transport.events.clear()
     segments = await write(engine, switch)
@@ -94,7 +94,7 @@ async def test_pair_enrollment_barrier_and_keepalive_do_not_restart_segments(clo
         assert not any(event[0] in ("behavior", "sfp_pwm") for event in transport.events)
         transport.events.clear()
     clock.now = first.finishes_at - sfp_preparation_lead(engine.budget.value) + .001
-    assert engine.sfp_outputs() != segments  # The next target may be prepared, but cannot be sent early.
+    assert engine.sfp_indicators.outputs() != segments  # The next target may be prepared, but cannot be sent early.
     attempts = []
 
     async def record(event):
@@ -124,7 +124,7 @@ async def test_native_display_is_encoded_rgb16_interpolation_with_one_gamma(cloc
     clock.now = record.started_at + 1.5
     expected = [(a + b) / 2 for a, b in zip(record.start_rgb, record.output.precise_rgb, strict=True)]
     assert switch.sfp_rgb16(9) == pytest.approx(expected)
-    state = engine.sfp_state()[0]
+    state = engine.sfp_indicators.state()[0]
     assert state["display_rgb"] == pytest.approx([255 * (value / 65280) ** (1 / 2.2) for value in expected])
     assert state["native_transition"]["elapsed"] == 1.5
 
@@ -149,7 +149,7 @@ async def test_read_during_pending_ack_retains_last_confirmed_native_color(clock
     try:
         assert switch.sfp_status(9)["state"] == "pending"
         assert switch.sfp_rgb16(9) == before
-        assert any(engine.sfp_state()[0]["display_rgb"])
+        assert any(engine.sfp_indicators.state()[0]["display_rgb"])
     finally:
         proceed.set()
         await task
@@ -204,7 +204,7 @@ async def test_follow_sampling_waits_for_segment_and_does_not_double_brightness(
     assert first[9].gradient == "gradient_1s"
     engine.set_override(4, "blue", brightness=81)
     engine.compose(t=0.1)
-    assert engine.sfp_outputs() == first
+    assert engine.sfp_indicators.outputs() == first
     clock.now = max(switch.sfp_transition(port).finishes_at for port in (9, 10))
     second = await write(engine, switch)
     assert second[9].precise_rgb == to_output(Color.parse("blue"), 81, gamma=2.2, precise=True).precise_rgb
@@ -216,7 +216,7 @@ async def test_release_clears_transitions_only_after_black_and_status_ack(clock)
     engine, switch, transport = await setup()
     await write(engine, switch)
     await write(engine, switch)
-    await switch.write(frame(native_ports=(1, 8)), sfp=engine.sfp_outputs())
+    await switch.write(frame(native_ports=(1, 8)), sfp=engine.sfp_indicators.outputs())
     active = dict(switch._native_active)
     switch.forget()
     assert set(switch._sfp_transitions) == {9, 10}
@@ -233,7 +233,7 @@ async def test_release_clears_transitions_only_after_black_and_status_ack(clock)
 async def test_failed_segment_never_replays_and_cleanup_is_guarded(clock, fault):
     engine, switch, transport = await setup()
     await write(engine, switch)
-    outputs = engine.sfp_outputs()
+    outputs = engine.sfp_indicators.outputs()
     transport.events.clear()
     failure = {"select": ("behavior", "gradient_3s"),
                "first": ("sfp_pwm", 9, outputs[9].precise_rgb),
@@ -290,7 +290,7 @@ async def test_normal_output_halt_keeps_reserved_selector_cleanup(clock):
 async def test_invalid_segment_rejected_before_any_write(clock, change):
     engine, switch, transport = await setup()
     await write(engine, switch)
-    output = engine.sfp_outputs()[9]
+    output = engine.sfp_indicators.outputs()[9]
     transport.events.clear()
     with pytest.raises((ValueError, TransportError)):
         await switch.write([PortOutput.off()] * 8, sfp={9: replace(output, **change)})
@@ -301,7 +301,7 @@ async def test_invalid_segment_rejected_before_any_write(clock, change):
 async def test_gradients_cannot_target_copper_or_survive_revoked_capability(clock):
     engine, switch, transport = await setup()
     await write(engine, switch)
-    output = engine.sfp_outputs()[9]
+    output = engine.sfp_indicators.outputs()[9]
     transport.events.clear()
     with pytest.raises(ValueError):
         await switch.write([output] * 8)
@@ -454,8 +454,8 @@ async def test_constant_follow_finishes_before_retiring_to_steady(clock):
     ends = {port: switch.sfp_transition(port).finishes_at for port in (9, 10)}
     clock.now = min(ends.values()) - sfp_preparation_lead(engine.budget.value) + .001
     transport.events.clear()
-    assert engine.sfp_outputs() == segments
-    assert engine._sfp_playback.next_deadline(switch, engine.budget.value) == max(ends.values())
+    assert engine.sfp_indicators.outputs() == segments
+    assert engine.sfp_indicators.playback.next_deadline(switch, engine.budget.value) == max(ends.values())
     await write(engine, switch)
     assert not any(event[0] in ("sfp_pwm", "behavior") for event in transport.events)
     assert set(switch._sfp_transitions) == {9, 10}
@@ -463,7 +463,7 @@ async def test_constant_follow_finishes_before_retiring_to_steady(clock):
     settled = await write(engine, switch)
     assert all(output.gradient is None for output in settled.values())
     assert not switch._sfp_transitions
-    assert engine._sfp_playback.next_deadline(switch, engine.budget.value) is None
+    assert engine.sfp_indicators.playback.next_deadline(switch, engine.budget.value) is None
 
 
 @pytest.mark.anyio

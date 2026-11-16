@@ -60,10 +60,10 @@ async def test_stopping_sfp_animation_restores_configured_frame_cadence(monkeypa
     switch, _ = await ready(SfpTransport())
     engine = Engine(switch, rules=[], fps=10)
     engine.set_sfp(9, {"mode": "color", "effect": "pulse"})
-    assert engine._sfp_animating()
+    assert engine.sfp_indicators.animating()
     for changes in ({"effect": "steady"}, {"effect": "pulse", "mode": "off"}, {"mode": "unmanaged"}):
         engine.set_sfp(9, changes)
-        assert not engine._sfp_animating()
+        assert not engine.sfp_indicators.animating()
     engine.set_sfp(9, {"mode": "color", "effect": "pulse"})
     engine.mode = "released"
-    assert not engine._sfp_animating()
+    assert not engine.sfp_indicators.animating()

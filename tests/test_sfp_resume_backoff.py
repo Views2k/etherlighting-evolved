@@ -44,7 +44,8 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
                 "sfp_status": switch.sfp_status(9), "sfp_pending": 9 in switch._sfp_pending,
                 "sfp_uncertain": 9 in switch._sfp_uncertain,
                 "owned_generation_matches": switch._sfp_owned.get(9) is switch._sfp_generation,
-                "revision": engine._sfp_revisions[9], "acknowledged_revision": engine._sfp_acknowledged[9],
+                "revision": engine.sfp_indicators.revisions[9],
+                "acknowledged_revision": engine.sfp_indicators.acknowledged[9],
                 "requested_mode": switch.transport.sfp_modes.get(9),
                 "last_led": switch.transport.leds.get(9),
                 "stopped_frame": stopped_frame.is_set() if stopped_frame is not None else None,
@@ -106,7 +107,7 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
                 assert cleanup_calls == 1, json.dumps(evidence, indent=2)
                 assert response.status_code == 409, json.dumps(evidence, indent=2)
                 assert switch.sfp_status(9)["state"] == "uncertain"
-                assert engine._sfp_acknowledged[9] != engine._sfp_revisions[9]
+                assert engine.sfp_indicators.acknowledged[9] != engine.sfp_indicators.revisions[9]
             else:
                 assert response.status_code == 200, json.dumps(evidence, indent=2)
                 state = response.json()["sfp"][0]
@@ -166,7 +167,7 @@ def test_release_during_sfp_acquisition_confirms_handoff_before_resuming(config,
         assert switch.sfp_status(9)["state"] == "idle"
         assert 9 not in switch._sfp_owned
         assert not engine._output_uncertain()
-        assert engine._sfp_acknowledged[9] != engine._sfp_revisions[9]
+        assert engine.sfp_indicators.acknowledged[9] != engine.sfp_indicators.revisions[9]
         monkeypatch.setattr(switch, "_rgb_write", original_rgb)
         monkeypatch.setattr(switch.transport, "write_sfp_mode", original_mode)
         assert client.post("/api/resume").status_code == 200

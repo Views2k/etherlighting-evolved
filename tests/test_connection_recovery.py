@@ -131,7 +131,7 @@ async def test_handoff_recovers_only_owned_output_and_closes_without_resuming(tm
     switch, transport = await interrupted(tmp_path)
     engine = Engine(switch, rules=[], transition=0)
     engine._native_release_pending = engine._native_blocked = True
-    engine._sfp_release_pending = True
+    engine.sfp_indicators.release_pending = True
     await engine.stop()
     assert engine.mode == 'released' and not engine.connected
     assert switch.output_lease.closed
