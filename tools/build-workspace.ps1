@@ -5,7 +5,7 @@ param(
     [string]$DotnetExe = 'dotnet',
     [string]$OutputRoot,
     [switch]$SkipInstaller,
-    [switch]$ReleaseCandidate
+    [switch]$AllowUnpinned
 )
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path $PSScriptRoot -Parent
@@ -23,8 +23,17 @@ if (-not $SkipInstaller) {
 }
 & $PythonExe -c "import PyInstaller, fastapi, uvicorn, asyncssh, PIL"
 if ($LASTEXITCODE) { throw 'A build dependency is missing. No dependencies were downloaded.' }
-$version = & $PythonExe -c "import runpy,sys; print(runpy.run_path(sys.argv[1])['__version__'])" (Join-Path $backend 'src\etherlighting_evolved\__init__.py')
-if ($LASTEXITCODE -or $version -notmatch '^\d+\.\d+\.\d+$') { throw 'The application version could not be read.' }
+# A package is reproducible only from a committed tree and the tool versions CI uses. -AllowUnpinned accepts other
+# tools and uncommitted changes for a local test build; package-verification.json still records the tree state.
+if (-not $AllowUnpinned) {
+    $changes = & git -C $workspace status --porcelain --untracked-files=all
+    if ($LASTEXITCODE) { throw 'The source tree state could not be read.' }
+    if ($changes) { throw 'Commit or remove the changes in the source tree, or pass -AllowUnpinned for a local test build.' }
+    & $PythonExe (Join-Path $PSScriptRoot 'check-toolchain.py') $node
+    if ($LASTEXITCODE) { throw 'Use the pinned build tools, or pass -AllowUnpinned for a local test build.' }
+}
+$version = & $PythonExe -c "import pathlib,runpy,sys; print(runpy.run_path(sys.argv[1])['check_versions'](pathlib.Path(sys.argv[2])))" (Join-Path $PSScriptRoot 'check-repository.py') $workspace
+if ($LASTEXITCODE -or $version -notmatch '^\d+\.\d+\.\d+$') { throw 'The application version values could not be read or do not agree.' }
 if (-not $OutputRoot) { $OutputRoot = Join-Path $workspace "outputs\releases\$version" }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 if (Test-Path -LiteralPath $OutputRoot) {
@@ -44,8 +53,6 @@ $native = Join-Path $backend 'desktop\EtherlightingEvolved.Native\EtherlightingE
 if (-not (Test-Path -LiteralPath (Join-Path (Split-Path $native -Parent) 'obj\project.assets.json') -PathType Leaf)) {
     throw 'Restore the desktop packages first (see desktop/README.md). No packages were downloaded.'
 }
-$nativeVersion = ([xml](Get-Content -LiteralPath $native -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-if ($nativeVersion -ne $version) { throw 'The desktop program version differs from the application version.' }
 $env:AVALONIA_TELEMETRY_OPTOUT = '1'
 & $DotnetExe publish $native -c Release -r win-x64 --no-restore -o $app *> (Join-Path $OutputRoot 'desktop-build.log')
 if ($LASTEXITCODE) { throw 'Desktop build failed. See desktop-build.log.' }
@@ -68,19 +75,15 @@ Copy-Item -LiteralPath $nodeLicense -Destination (Join-Path $app 'licenses\Node-
 if ($LASTEXITCODE) { throw 'Dependency notice collection failed.' }
 & $node -p 'process.versions.node' | Set-Content -LiteralPath (Join-Path $OutputRoot 'node-version.txt')
 if ($LASTEXITCODE) { throw 'The Node.js version could not be read.' }
-if (-not $ReleaseCandidate) {
-    & $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') --app $app --check-contents
-    if ($LASTEXITCODE) { throw 'Package content check failed.' }
-}
 if (-not $SkipInstaller) {
-    & $compiler /Q "/DAppVersion=$version" "/DAppSourceDir=$app" "/O$dist" (Join-Path $backend 'packaging\installer.iss') *> (Join-Path $OutputRoot 'installer-build.log')
+    $compilerOptions = @('/Q', "/DAppVersion=$version", "/DAppSourceDir=$app", "/O$dist")
+    if ($AllowUnpinned) { $compilerOptions += '/DAnyCompiler' }
+    & $compiler @compilerOptions (Join-Path $backend 'packaging\installer.iss') *> (Join-Path $OutputRoot 'installer-build.log')
     if ($LASTEXITCODE) { throw 'Installer compilation failed. See installer-build.log.' }
 }
-if ($ReleaseCandidate) {
-    $verificationArgs = @('--app', $app, '--node', $node, '--output', (Join-Path $OutputRoot 'package-verification.json'))
-    if (-not $SkipInstaller) { $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe")) }
-    & $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') @verificationArgs *> (Join-Path $OutputRoot 'package-verification.log')
-    if ($LASTEXITCODE) { throw 'Package verification failed. See package-verification.log.' }
-}
+$verificationArgs = @('--app', $app, '--node', $node, '--output', (Join-Path $OutputRoot 'package-verification.json'))
+if (-not $SkipInstaller) { $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe")) }
+& $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') @verificationArgs *> (Join-Path $OutputRoot 'package-verification.log')
+if ($LASTEXITCODE) { throw 'Package verification failed. See package-verification.log.' }
 if ($SkipInstaller) { Write-Output (Join-Path $app 'EtherlightingEvolved.exe') }
 else { Write-Output (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe") }

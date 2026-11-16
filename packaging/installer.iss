@@ -9,6 +9,11 @@
   #define AppSourceDir "..\dist\EtherlightingEvolved"
 #endif
 
+; The compiler release that tools/ci-inno.ps1 installs for CI. A local test build may pass /DAnyCompiler.
+#if !Defined(AnyCompiler) && DecodeVer(Ver) != "6.7.4"
+  #error Compile with Inno Setup 6.7.4, the release CI uses, or build with -AllowUnpinned.
+#endif
+
 #define AppName "Etherlighting Evolved"
 #define AppExe "EtherlightingEvolved.exe"
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
