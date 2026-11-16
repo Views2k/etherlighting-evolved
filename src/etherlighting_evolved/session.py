@@ -151,7 +151,6 @@ class SessionManager:
             "handoff_state": self._handoff.state,
             "switch_playback": self._playback_status if self._playback.data else None,
             "offline_lighting_error": self._offline_error,
-            "can_save_to_switch": bool(engine and getattr(engine.switch.transport, "desktop_output", None)),
             "handed_off": self._handoff.state == "complete" and engine is None and not self._owned_switches,
         }
 
@@ -639,15 +638,6 @@ class SessionManager:
         if not playback.supported(switch):
             raise ValueError("The switch firmware needs playback verification.")
 
-    async def save_to_switch(self) -> dict:
-        """Compatibility with older clients. Saving does not change the workspace."""
-        async with self._lock:
-            engine = self.engine
-            if not engine or not getattr(engine.switch.transport, "desktop_output", None):
-                raise self._fail("playback_unavailable", "Connect the saved switch to apply lighting.", 409)
-            await self.sync_offline_lighting(engine)
-            return self.info()
-
     def _reserve_player_output(self, switch, owner):
         transport = switch.transport
         switch.output_lease = self.output_journal.player_lease(transport.host, transport.port,
@@ -762,63 +752,6 @@ class SessionManager:
             if self._offline_error:
                 self._offline_error = None
                 self._notify()
-
-    async def playback_effects(self, change=None):
-        """Edit the verified player's group effects without acquiring desktop output."""
-        async with self._lock:
-            record = self._playback.data
-            if self.engine is not None and change is not None:
-                raise self._fail("workspace_active", "Use Apply changes in the Lighting workspace.", 409)
-            if self.handoff_pending or not record or record.get("state") != "last_playing":
-                raise self._fail("playback_unavailable", "Check switch playback before editing effects.", 409)
-            try:
-                switch = self._playback_switch(record["device"])
-                try:
-                    await self._open_player(switch, record["device"])
-                    return await self._read_or_edit_effects(switch, record, change)
-                finally:
-                    await switch.close()
-            except (OSError, TransportError, ValueError, KeyError, CredentialStoreError) as exc:
-                raise self._fail("playback_edit_failed", "Could not confirm the switch scene. "
-                                 "Reopen the editor to check its current settings.", 409) from exc
-
-    async def _read_or_edit_effects(self, switch, record, change):
-        transport, owner = switch.transport, record["owner"]
-        if await playback.status(transport, owner) != "playing":
-            raise ValueError("player is not running")
-        current = await playback.edit_revision(transport, owner)
-        store = self._device_store(switch)
-        pending = record.get("pending_edit")
-        if pending:
-            self._reconcile_effect(store, pending, current)
-            record = {k: v for k, v in record.items() if k != "pending_edit"}
-            record["applied_edit"] = current
-            self._playback.save(record)
-        if current != record.get("applied_edit", "original"):
-            raise ValueError("switch scene changed")
-        snapshot = store.load()
-        if not snapshot:
-            raise ValueError("missing scene")
-        revision = hashlib.sha256((owner + current).encode("ascii")).hexdigest()
-        if change is None:
-            return {"revision": revision, "zones": snapshot["zones"]}
-        if change.expected_revision != revision:
-            raise self._fail("scene_changed", "The effect changed. Reopen the editor before applying.", 409)
-        # Construct a model for validation and compilation, without starting its output loop.
-        engine = Engine(switch, gamma=self.config.engine.gamma, max_commands=self.config.engine.max_commands)
-        engine.apply_snapshot(snapshot)
-        engine.set_effect(change.id, change.params, change.zone, clear_overrides=False)
-        config, palette = playback.compile_scene(engine)
-        content = f"{len(palette.splitlines())}\n{config}{palette}"
-        digest = hashlib.sha256(content.encode("ascii")).hexdigest()
-        updated = engine.snapshot()
-        self._playback.save({**record, "pending_edit": {"from": current, "to": digest, "scene": updated}})
-        await playback.edit_scene(transport, owner, content, current)
-        if await playback.edit_revision(transport, owner) != digest:
-            raise ValueError("update unconfirmed")
-        store.save(updated)
-        self._playback.save({**record, "applied_edit": digest})
-        return {"revision": hashlib.sha256((owner + digest).encode("ascii")).hexdigest(), "zones": updated["zones"]}
 
     @staticmethod
     def _reconcile_effect(store, pending, current):
@@ -1073,22 +1006,6 @@ class SessionManager:
                                key_file=target["key_file"], remember=None, automatic=True)
         except LoginError as exc:
             log.warning("automatic login to %s failed: %s", target["host"], exc.message)
-
-    async def check_playback(self):
-        async with self._lock:
-            record = self._playback.data
-            if record and record.get("state") not in {"handoff", "unreadable"}:
-                try:
-                    switch = self._playback_switch(record["device"])
-                    try:
-                        await self._open_player(switch, record["device"])
-                        self._playback_status = await playback.status(switch.transport, record["owner"])
-                    finally:
-                        await switch.close()
-                except (OSError, TransportError, ValueError, CredentialStoreError):
-                    self._playback_status = "unreachable"
-            self._notify()
-            return self.info()
 
     def forget_host_key(self, host: str, port: int = 22) -> bool:
         if self._playback.data:

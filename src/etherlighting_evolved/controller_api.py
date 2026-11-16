@@ -291,10 +291,6 @@ class ControllerIntegration:
         async def status():
             return self.status()
 
-        @router.get("/controller/diagnostics")
-        async def diagnostics():
-            return self.manager.diagnostics(self.switch_host())
-
         @router.post("/controller/connect")
         async def connect(body: ControllerLogin):
             try:

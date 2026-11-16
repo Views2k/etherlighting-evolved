@@ -121,41 +121,6 @@ def test_offline_sensor_effects_read_their_live_input(tmp_path, effect):
 
 
 @pytest.mark.anyio
-async def test_edit_without_desktop_writer_and_recover_lost_reply(config, monkeypatch):
-    manager = SessionManager(config)
-    transport = SimpleNamespace(host_key_fingerprint=KEY, direct_rgb=True)
-    switch = EtherlightSwitch(transport, num_ports=8)
-    switch.hardware_profile = PRO_XG8
-    monkeypatch.setattr(type(switch), "native_breathing", property(lambda self: True))
-    monkeypatch.setattr(type(switch), "sfp_precise", property(lambda self: True))
-    store = manager._device_store(switch)
-    store.save(Engine(switch, rules=[]).snapshot())
-    record = {"state": "last_playing", "device": IDENTITY, "owner": "a"*48}
-    manager._playback.save(record)
-    monkeypatch.setattr(player, "status", AsyncMock(return_value="playing"))
-    revision = AsyncMock(return_value="original")
-    monkeypatch.setattr(player, "edit_revision", revision)
-    original = await manager._read_or_edit_effects(switch, record, None)
-    change = SimpleNamespace(expected_revision="stale", zone="all", id="rainbow", params={})
-    with pytest.raises(LoginError, match="changed"):
-        await manager._read_or_edit_effects(switch, record, change)
-
-    async def lost_reply(*args):
-        revision.return_value = manager._playback.data["pending_edit"]["to"]
-        raise TransportError("lost reply")
-
-    change.expected_revision = original["revision"]
-    monkeypatch.setattr(player, "edit_scene", lost_reply)
-    with pytest.raises(TransportError):
-        await manager._read_or_edit_effects(switch, record, change)
-    assert store.load()["zones"][0]["effect"]["id"] == "static"
-    recovered = await manager._read_or_edit_effects(switch, manager._playback.data, None)
-    assert manager.engine is None and recovered["zones"][0]["effect"]["id"] == "rainbow"
-    assert "pending_edit" not in manager._playback.data
-    assert store.load()["zones"] == recovered["zones"]
-
-
-@pytest.mark.anyio
 async def test_exit_reconnect_and_offline_handoff(config: Config, monkeypatch):
     manager = SessionManager(config)
     owner = "a" * 48
@@ -299,8 +264,9 @@ async def test_normal_editor_reopens_and_commits_to_existing_switch_scene(config
 
     send = AsyncMock(side_effect=accept)
     monkeypatch.setattr(player, "edit_scene", send)
-    assert (await manager.save_to_switch())["logged_in"]
     await manager.sync_offline_lighting(engine)
+    await manager.sync_offline_lighting(engine)
+    assert manager.info()["logged_in"]
     send.assert_awaited_once()
     assert manager._playback.data["applied_edit"] == remote.return_value
     switch.output_lease.finish()

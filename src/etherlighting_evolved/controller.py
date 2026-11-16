@@ -476,106 +476,6 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
     return metadata
 
 
-def port_diagnostics(switch: dict, clients: list[dict], *, observed_at: float) -> list[dict]:
-    """Describe topology matches without retaining client identifiers or names."""
-    target_mac = _mac(switch.get("mac"))
-    if target_mac is None:
-        return []
-    port_rows = {_port(row.get("port_idx")): row for row in _rows(switch.get("port_table"))}
-    port_rows.pop(None, None)
-    labels = {_port(row.get("port_idx")): _name(row.get("name"))
-              for row in _rows(switch.get("port_overrides"))}
-    grouped: dict[int, dict[str, dict]] = {}
-    for client in clients:
-        port, mac = _port(client.get("sw_port")), _mac(client.get("mac"))
-        if port in port_rows and mac and _mac(client.get("sw_mac")) == target_mac:
-            grouped.setdefault(port, {})[mac] = client
-
-    def number(value):
-        return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
-                and 0 <= value <= 1e15 else None)
-
-    def age(value):
-        stamp = number(value)
-        return max(0, round(observed_at - stamp)) if stamp is not None else None
-
-    def flag(record, key):
-        value = record.get(key)
-        return value if isinstance(value, bool) else None
-
-    flag_fields = ("is_wired", "wired", "is_wireless", "is_downstream", "is_direct", "direct",
-                   "is_virtual", "virtual", "is_uplink")
-    collection_fields = ("mac_table", "sta", "sta_table", "station_table", "clients", "client_table",
-                         "connected_client", "connected_clients")
-
-    def shape(value):
-        if isinstance(value, list):
-            return {"type": "list", "count": len(value),
-                    "object_count": sum(isinstance(item, dict) for item in value)}
-        kind = ("object" if isinstance(value, dict) else "boolean" if isinstance(value, bool)
-                else "string" if isinstance(value, str) else "number" if isinstance(value, (int, float))
-                else "null" if value is None else "other")
-        return {"type": kind}
-
-    known_fields = (*flag_fields,
-                    "sw_depth", "sw_port", "sw_mac", "last_uplink_mac", "last_uplink_name",
-                    "uplink_mac", "parent_mac", "parent_id", "uplink_device_id", "connection_type",
-                    "connection_state", "hostname_source", "last_seen", "_last_seen_by_usw", "uptime")
-    result = []
-    for port, row in sorted(port_rows.items()):
-        records = list(grouped.get(port, {}).values())[:64]
-
-        def mac_matches(value, candidates=records):
-            mac = _mac(value)
-            return [index for index, client in enumerate(candidates) if mac and mac == _mac(client.get("mac"))]
-
-        def name_matches(value, candidates=records):
-            name = _name(value)
-            return [index for index, client in enumerate(candidates) if name and any(
-                name.casefold() == candidate.casefold() for key in ("name", "hostname")
-                if (candidate := _name(client.get(key))) is not None)]
-
-        neighbors = [entry for entry in _rows(switch.get("lldp_table"))
-                     if _port(entry.get("local_port_idx")) == port]
-        neighbors.extend(_rows(row.get("lldp_table")))
-        result.append({
-            "port": port,
-            "port_table_row_indexes": [index for index, entry in enumerate(switch["port_table"])
-                                       if isinstance(entry, dict) and _port(entry.get("port_idx")) == port],
-            "port_collection_shapes": {key: shape(row[key]) for key in collection_fields if key in row},
-            "switch_collection_shapes": {key: shape(switch[key]) for key in collection_fields if key in switch},
-            "port_label_present": _name(row.get("name")) is not None,
-            "configured_label_present": labels.get(port) is not None,
-            "port_label_matches": name_matches(row.get("name")),
-            "configured_label_matches": name_matches(labels.get(port)),
-            "candidate_count": len(grouped.get(port, {})),
-            "candidates_truncated": len(grouped.get(port, {})) > len(records),
-            "mac_table_candidates": sorted({index for entry in _rows(row.get("mac_table"))
-                                             for index in mac_matches(entry.get("mac"))}),
-            "peer_identity_fields": [{"field": key, "candidates": mac_matches(row[key])}
-                                     for key in ("client_mac", "peer_mac", "connected_mac", "mac") if key in row],
-            "lldp": [{"chassis_candidates": mac_matches(entry.get("chassis_id")),
-                      "name_fields": [{"field": key, "candidates": name_matches(entry[key])}
-                                      for key in ("system_name", "sys_name", "name") if key in entry]}
-                     for entry in neighbors[:16]],
-            "candidates": [{
-                "index": index,
-                "named": _name(client.get("name")) is not None,
-                "hostname_present": _name(client.get("hostname")) is not None,
-                "included_by_mapping": client.get("is_wired") is True and client.get("is_downstream") is not True,
-                "flags": {key: flag(client, key) for key in flag_fields if key in client},
-                "sw_depth": number(client.get("sw_depth")),
-                "last_seen_age_seconds": age(client.get("last_seen")),
-                "switch_last_seen_age_seconds": age(client.get("_last_seen_by_usw")),
-                "uptime_seconds": number(client.get("uptime")),
-                "last_uplink_matches_switch": (_mac(client.get("last_uplink_mac")) == target_mac
-                                               if _mac(client.get("last_uplink_mac")) else None),
-                "topology_fields": [key for key in known_fields if key in client],
-            } for index, client in enumerate(records)],
-        })
-    return result
-
-
 class ControllerManager:
     def __init__(self, *, client_factory=ControllerClient, clock=time.monotonic) -> None:
         self._factory, self._clock = client_factory, clock
@@ -586,7 +486,6 @@ class ControllerManager:
         self._sites: list[dict] = []
         self._site: str | None = None
         self._ports: dict[int, dict] = {}
-        self._diagnostic_ports: list[dict] = []
         self._switch_host: str | None = None
         self._switch_name: str | None = None
         self._last_success: float | None = None
@@ -623,11 +522,6 @@ class ControllerManager:
                 "pending_site_choice": pending_choice,
                 "updated_at": self._updated_at, "stale": stale or bool(self._error), "error": self._error,
                 "mapped_ports": len(self._ports) if not stale and not self._error else 0}
-
-    def diagnostics(self, switch_host: str | None) -> dict:
-        available = self.status()["connected"] and switch_host == self._switch_host
-        return {"available": bool(available), "updated_at": self._updated_at if available else None,
-                "ports": self._diagnostic_ports if available else []}
 
     async def discover_consoles(self, api_key: str) -> dict:
         from .controller_official import ConsoleClient
@@ -702,7 +596,7 @@ class ControllerManager:
                                  and previous.password == password and previous.pin == pin)
                 client = (previous if same_identity else self._factory(origin, username, password, pin, kind=kind))
             before = (self._client, self._site, self._switch_host, self._switch_name, self._ports,
-                      self._sites, self._last_success, self._updated_at, self._error, self._diagnostic_ports)
+                      self._sites, self._last_success, self._updated_at, self._error)
             if self._pending is not None and self._pending not in (client, self._client):
                 self._pending.clear()
             if self._pending is not client:
@@ -735,7 +629,7 @@ class ControllerManager:
                 self._pending_sites = []
                 self._sites, self._site = sites, site
                 self._switch_host = switch_host
-                (self._ports, self._diagnostic_ports, self._switch_name,
+                (self._ports, self._switch_name,
                  self._last_success, self._updated_at, self._error) = topology
                 if before[0] is not None and before[0] is not client:
                     before[0].clear()
@@ -743,7 +637,7 @@ class ControllerManager:
             except ControllerError as exc:
                 self._pending = client
                 (self._client, self._site, self._switch_host, self._switch_name, self._ports,
-                 self._sites, self._last_success, self._updated_at, self._error, self._diagnostic_ports) = before
+                 self._sites, self._last_success, self._updated_at, self._error) = before
                 if (self._client is None or self._client is client
                         and (site == before[1] or not client.authenticated)):
                     self._error = exc.detail()
@@ -756,32 +650,29 @@ class ControllerManager:
                     await self._refresh(switch_host)
                 except ControllerError as exc:
                     self._ports = {}
-                    self._diagnostic_ports = []
                     self._error = exc.detail()
             return self.status()
 
     async def _refresh(self, switch_host: str | None) -> None:
         if switch_host != self._switch_host:
             self._ports = {}
-            self._diagnostic_ports = []
             self._switch_name = None
         self._switch_host = switch_host
-        (self._ports, self._diagnostic_ports, self._switch_name,
+        (self._ports, self._switch_name,
          self._last_success, self._updated_at, self._error) = await self._read_topology(
              self._client, self._site, switch_host)
 
     async def _read_topology(self, client, site, switch_host):
         if not switch_host or switch_host.lower() in {"demo", "sim", "simulator"}:
-            return ({}, [], None, None, None,
+            return ({}, None, None, None,
                     {"code": "switch_required", "message": "Connect your switch to match controller devices."})
         if getattr(client, "auth_method", "password") == "api_key":
             ports, name = await asyncio.to_thread(client.topology, site, switch_host)
-            return ports, [], name, self._clock(), datetime.now(UTC).isoformat(), None
+            return ports, name, self._clock(), datetime.now(UTC).isoformat(), None
         devices = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/device"))
         clients = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/sta"))
         switch = await asyncio.to_thread(match_switch, devices, switch_host)
         return (port_metadata(switch, devices, clients),
-                port_diagnostics(switch, clients, observed_at=time.time()),
                 _name(switch.get("name")), self._clock(), datetime.now(UTC).isoformat(), None)
 
     def enrich_ports(self, ports: list[dict], switch_host: str | None) -> list[dict]:
@@ -799,7 +690,6 @@ class ControllerManager:
             self._pending_sites = []
             self._site = self._switch_host = self._switch_name = None
             self._sites, self._ports = [], {}
-            self._diagnostic_ports = []
             self._last_success = self._updated_at = self._error = None
             return self.status()
 

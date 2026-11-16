@@ -62,13 +62,6 @@ class EffectRequest(BaseModel):
     clear_overrides: bool = False
 
 
-class PlaybackEffectRequest(BaseModel):
-    zone: str = Field(min_length=1, max_length=128)
-    id: str = Field(min_length=1, max_length=128)
-    params: dict[str, Any] = Field(default_factory=dict)
-    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
-
-
 class ParamsRequest(BaseModel):
     params: dict[str, Any]
 
@@ -129,12 +122,6 @@ class ProfileChange(BaseModel):
     action: str = "replace"
     name: str | None = None
     disable_schedules: bool = False
-
-
-class PresetAction(BaseModel):
-    name: str
-    action: str
-    target: str | None = None
 
 
 class SimLink(BaseModel):
@@ -401,34 +388,6 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             return await sessions.restore_saved(resume=resume)
         except LoginError as exc:
             return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
-
-    @api.post("/session/switch-playback")
-    async def save_switch_playback():
-        require_workspace()
-        try:
-            return await sessions.save_to_switch()
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
-
-    @api.post("/session/switch-playback/check")
-    async def check_switch_playback():
-        require_workspace()
-        return await sessions.check_playback()
-
-    async def playback_effect_response(body=None):
-        require_workspace()
-        try:
-            return await sessions.playback_effects(body)
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
-
-    @api.get("/session/switch-playback/effects")
-    async def playback_effects():
-        return await playback_effect_response()
-
-    @api.put("/session/switch-playback/effects")
-    async def edit_playback_effect(body: PlaybackEffectRequest):
-        return await playback_effect_response(body)
 
     @api.post("/session/handoff")
     async def handoff_to_unifi():
@@ -825,18 +784,6 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @api.post("/presets/{name}/rename")
     async def rename_preset(name: str, body: PresetSave):
         return transfer_preset(presets.rename, name, body.name)
-
-    @api.post("/presets/action")
-    async def preset_action(body: PresetAction):
-        if body.action == "apply":
-            return await apply_preset(body.name)
-        if body.action == "delete":
-            return await delete_preset(body.name)
-        if body.action in {"rename", "duplicate"} and body.target is not None:
-            operation = presets.rename if body.action == "rename" else presets.duplicate
-            return transfer_preset(operation, body.name, body.target)
-        raise HTTPException(400, detail={"code": "invalid", "message": "Choose a profile action and provide "
-                                        "a new name when renaming or duplicating."})
 
     # Schedules
 
