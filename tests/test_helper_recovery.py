@@ -1,8 +1,5 @@
-import os
 import shlex
-import shutil
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,10 +11,7 @@ TAG = 'ee_' + 'a' * 32
 
 
 @pytest.mark.parametrize('condition', ['missing_proc', 'unreadable_cmdline', 'no_owned_helpers'])
-def test_process_inventory_must_be_readable_before_confirming_absence(tmp_path, condition):
-    shell = shutil.which('sh') or 'C:/Program Files/Git/bin/bash.exe'
-    if not Path(shell).is_file():
-        pytest.skip('A local POSIX shell is required for the cleanup script fixture')
+def test_process_inventory_must_be_readable_before_confirming_absence(tmp_path, condition, posix_shell):
     proc = tmp_path / 'proc'
     if condition != 'missing_proc':
         for pid in ['self', '42']:
@@ -28,8 +22,8 @@ def test_process_inventory_must_be_readable_before_confirming_absence(tmp_path, 
     command = cleanup_command([TAG]).replace('/proc/', shlex.quote(proc.as_posix()) + '/')
     if condition == 'unreadable_cmdline':
         command = 'tr() { return 1; }\n' + command
-    result = subprocess.run([shell], input=command, text=True, capture_output=True,
-                            timeout=5, env={**os.environ, 'MSYS_NO_PATHCONV': '1'})
+    result = subprocess.run([posix_shell.path], input=command, text=True, capture_output=True,
+                            timeout=5, env={**posix_shell.env, 'MSYS_NO_PATHCONV': '1'})
     assert (result.returncode == 0) == (condition == 'no_owned_helpers')
     assert (CONFIRMED in result.stdout) == (condition == 'no_owned_helpers')
 

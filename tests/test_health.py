@@ -1,7 +1,4 @@
-import os
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -85,13 +82,7 @@ def test_actual_sensor_labels_and_units_are_preserved_without_role_inference():
     assert all("role" not in sensor for sensor in temperatures)
 
 
-def test_hwmon_collector_reads_device_channels_once_and_respects_class_fault(tmp_path):
-    shell = shutil.which("sh")
-    if os.name == "nt":
-        git_shell = Path(os.environ["PROGRAMFILES"]) / "Git/bin/sh.exe"
-        shell = str(git_shell) if git_shell.is_file() else shell
-    if not shell:
-        pytest.skip("Shell unavailable for the sysfs fixture")
+def test_hwmon_collector_reads_device_channels_once_and_respects_class_fault(tmp_path, posix_shell):
     hwmon = tmp_path / "hwmon/hwmon0"
     device = hwmon / "device"
     device.mkdir(parents=True)
@@ -102,8 +93,8 @@ def test_hwmon_collector_reads_device_channels_once_and_respects_class_fault(tmp
     (hwmon / "temp4_input").write_text("99000\n", newline="\n")
     (hwmon / "temp4_fault").write_text("1\n", newline="\n")
     command = HEALTH_COMMAND.replace("/sys/class/", "./").replace("/proc/", "./")
-    output = subprocess.run([shell, "-c", command], cwd=tmp_path, check=True,
-                            capture_output=True, text=True, timeout=10).stdout
+    output = subprocess.run([posix_shell.path, "-c", command], cwd=tmp_path, check=True,
+                            capture_output=True, text=True, timeout=10, env=posix_shell.env).stdout
     sensors = parse_health(output)["temperatures"]
     assert [(item["label"], item["celsius"]) for item in sensors] == [
         ("adt7475 / Sensor 1", 71.75), ("adt7475 / Sensor 2", 66.75), ("adt7475 / Sensor 3", 66.5),

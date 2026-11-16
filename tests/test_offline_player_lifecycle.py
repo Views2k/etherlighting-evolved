@@ -1,6 +1,5 @@
 """Exercise the shipped player loop with scriptable uptime and an isolated LED sink."""
 
-import os
 import shutil
 import subprocess
 import time
@@ -19,11 +18,7 @@ def eventually(predicate, timeout=12):
         time.sleep(0.05)
 
 
-def test_close_lost_session_and_expired_lease_resume_without_desktop(tmp_path):
-    shell = (Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Git/bin/bash.exe"
-             if os.name == "nt" else Path(shutil.which("sh") or "/bin/sh"))
-    if not shell.exists():
-        pytest.skip("POSIX shell unavailable")
+def test_close_lost_session_and_expired_lease_resume_without_desktop(tmp_path, posix_shell):
     runtime = Path(device_playback.__file__).with_name("resident")
     (tmp_path / "player.sh").write_text((runtime / "player.sh").read_text().replace("/proc/", "./proc/"),
                                         encoding="ascii", newline="\n")
@@ -39,8 +34,8 @@ def test_close_lost_session_and_expired_lease_resume_without_desktop(tmp_path):
     led = tmp_path / "ubus"
     led.write_text("#!/bin/sh\necho frame >> led.log\necho '{\"set\":\"ok\"}'\n", encoding="ascii", newline="\n")
     led.chmod(0o755)
-    process = subprocess.Popen([str(shell), "-c", 'export PATH="$PWD:$PATH"; exec sh player.sh'], cwd=tmp_path,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([posix_shell.path, "-c", 'export PATH="$PWD:$PATH"; exec sh player.sh'], cwd=tmp_path,
+                               env=posix_shell.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     output = tmp_path / "led.log"
     ack = tmp_path / "desktop.ack"
     try:
