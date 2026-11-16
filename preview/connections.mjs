@@ -1,17 +1,11 @@
 import {confirmAction} from './confirmation.mjs';
 import {controllerConnectionStatus} from './workspace-session.mjs';
+import {field, node} from './dom.mjs';
 
 export function showConnectionStatus(element, {label, tone}) {
   if (element.textContent !== label) element.textContent = label;
   for (const name of ['online', 'waiting', 'is-disconnected', 'error']) element.classList.toggle(name, name === tone);
 }
-
-const node = (tag, className = '', text) => {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-};
 
 const messages = {
   auth_failed: 'The switch rejected the login. Check your SSH username and password.',
@@ -197,18 +191,11 @@ export function controllerConnectionProblem(values, current = {}) {
   return null;
 }
 
-function input(name, type = 'text', autocomplete = 'off') {
+function namedInput(name, type = 'text', autocomplete = 'off') {
   const control = node('input');
   control.name = name; control.type = type; control.autocomplete = autocomplete;
   control.spellcheck = false; control.autocapitalize = 'none';
   return control;
-}
-
-function field(label, control, help) {
-  const wrapper = node('label', 'field');
-  wrapper.append(node('span', '', label), control);
-  if (help) wrapper.append(node('small', '', help));
-  return wrapper;
 }
 
 function button(text, className = '') {
@@ -307,13 +294,13 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const setup=node('div','connection-setup'),setupHelp=node('p','help-text','Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.');
   const setupActions=node('div','connection-actions'),setupLink=node('a','button'),signIn=button('Sign in to Tailscale','primary');
   setupLink.target='_blank';setupLink.rel='noopener noreferrer';setupActions.append(setupLink,signIn);setup.append(setupHelp,setupActions);setup.hidden=true;
-  const toggle=input('private_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Use Tailscale'));
+  const toggle=namedInput('private_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Use Tailscale'));
   const audience=node('select');audience.name='private_audience';
   for(const [value,text] of [['owner','Only my Tailscale account'],['accounts','Any Tailscale account that can reach this computer']]){const option=node('option','',text);option.value=value;audience.append(option);}
   const audienceField=field('Who can open EE',audience,'Tailscale decides which accounts can reach this computer. Devices without an account stay blocked.');
   const readOnly=node('p','help-text','Change this setting in EE on the host computer.');readOnly.hidden=true;
   const apply=button('Apply setting','primary'),actions=node('div','connection-actions');actions.append(apply);
-  const advanced=node('details','connection-options'),port=input('private_https_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
+  const advanced=node('details','connection-options'),port=namedInput('private_https_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
   const resetPort=button('Reset port','quiet');resetPort.hidden=true;
   const portHelp=node('p','help-text','Use a free HTTPS port between 1024 and 65535. Turn off private access before changing it.');
   advanced.append(node('summary','','Connection options'),field('Private HTTPS port',port),resetPort,portHelp);
@@ -523,17 +510,17 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const lifecycle = new AbortController();
   host.replaceChildren();
   const panel = node('section', 'connection-panel panel');
-  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo.png'; logo.alt = '';
+  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo-256.png'; logo.alt = '';
   const heading=node('h1','','Connect your switch');
   const intro=node('p','help-text','Enter the switch’s SSH login to open its lighting workspace.');
   panel.append(logo,heading,intro);
   const [message, status] = notice();
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
-  const address = input('host'); address.required = true; address.maxLength = 253;
-  const username = input('username', 'text', 'username'); username.required = true; username.maxLength = 128;
-  const password = input('password', 'password', 'current-password'); password.required = true;
-  const port = input('port', 'number'); port.value = '22'; port.min = '1'; port.max = '65535'; port.step = '1'; port.required = true;
-  const remember = input('remember', 'checkbox');
+  const address = namedInput('host'); address.required = true; address.maxLength = 253;
+  const username = namedInput('username', 'text', 'username'); username.required = true; username.maxLength = 128;
+  const password = namedInput('password', 'password', 'current-password'); password.required = true;
+  const port = namedInput('port', 'number'); port.value = '22'; port.min = '1'; port.max = '65535'; port.step = '1'; port.required = true;
+  const remember = namedInput('remember', 'checkbox');
   const rememberLabel = node('label', 'check'); rememberLabel.append(remember, node('span', '', 'Save login on this PC'));
   const options = node('details', 'connection-options'); options.append(node('summary', '', 'Connection options'), field('SSH port', port));
   const submit = button('Connect to switch', 'primary'); submit.type = 'submit';
@@ -694,7 +681,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const capabilityHint = node('p', 'help-text'); capabilityHint.hidden = true;
   const [message, status] = notice();
   const reconnectSection = node('section', 'connection-reconnect automation-section'); reconnectSection.hidden = true;
-  const reconnect = input('auto_reconnect', 'checkbox');
+  const reconnect = namedInput('auto_reconnect', 'checkbox');
   const reconnectLabel = node('label', 'check-row'); reconnectLabel.append(reconnect, node('span', '', 'Reconnect controller automatically'));
   const reconnectHelp = node('p', 'help-text', 'Save this controller login securely on this PC.');
   reconnectHelp.id = `controller-reconnect-help-${crypto.randomUUID()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
@@ -713,19 +700,19 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const kindField = field('Controller type', kind); kindField.append(kindHelp);
   const auth = node('select'); auth.name = 'auth_method';
   const authHelp = node('small'), authField = field('Sign-in method', auth); authField.append(authHelp);
-  const address = input('url', 'url'); address.required = true; address.maxLength = 2048; address.placeholder = 'https://controller:8443';
+  const address = namedInput('url', 'url'); address.required = true; address.maxLength = 2048; address.placeholder = 'https://controller:8443';
   const addressField = field('Controller address', address);
-  const username = input('username', 'text', 'username'); username.maxLength = 128;
-  const password = input('password', 'password', 'current-password');
+  const username = namedInput('username', 'text', 'username'); username.maxLength = 128;
+  const password = namedInput('password', 'password', 'current-password');
   const usernameField = field('Username', username), passwordRow = passwordField('Controller password', password);
-  const apiKey = input('api_key', 'password'); apiKey.maxLength = 4096;
+  const apiKey = namedInput('api_key', 'password'); apiKey.maxLength = 4096;
   const apiKeyField = passwordField('API key', apiKey), keyHelp = node('small'); apiKeyField.append(keyHelp);
   const consoleId = node('select'); consoleId.name = 'console_id';
   consoleId.id = `controller-console-${crypto.randomUUID()}`;
   const consoleField = node('div', 'field'), consoleLabel = node('label', '', 'Console'); consoleLabel.htmlFor = consoleId.id;consoleField.append(consoleLabel,consoleId);
   const findConsoles = button('Find consoles', 'quiet'), consoleHelp = node('small', '', 'Enter an API key, then find and choose your console.');
   consoleField.append(findConsoles, consoleHelp);
-  const verification = input('verification_code', 'text', 'one-time-code');
+  const verification = namedInput('verification_code', 'text', 'one-time-code');
   verification.inputMode = 'numeric'; verification.pattern = '[0-9]{6,8}'; verification.maxLength = 8;
   const twoFactor = node('details', 'connection-options');
   twoFactor.append(node('summary', '', 'Two-factor authentication'), field('Verification code', verification, 'Enter your account’s current verification code.'));

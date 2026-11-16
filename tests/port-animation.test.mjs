@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
-import {THEMES,DEFAULT_THEME} from './theme-catalog.mjs';
-import {ColorFrames, smoothColor, portInk, createPortAnimator, rgbCss} from './port-animation.mjs';
+import {THEMES,DEFAULT_THEME} from '../preview/theme-catalog.mjs';
+import {ColorFrames, smoothColor, portInk, createPortAnimator, rgbCss} from '../preview/port-animation.mjs';
 
 test('uneven network arrivals render an even fade between confirmed samples', () => {
   const frames = new ColorFrames(120);
@@ -90,7 +90,7 @@ test('cadence evidence expires after interruption and stale output holds exactly
 });
 
 test('neutral port labels retain 4.5 contrast in every theme through lighting colors and selection', async () => {
-  const [css, palettes] = await Promise.all(['style.css','themes.css'].map(name => readFile(new URL('./'+name, import.meta.url), 'utf8')));
+  const [css, palettes] = await Promise.all(['style.css','themes.css'].map(name => readFile(new URL('../preview/'+name, import.meta.url), 'utf8')));
   const channels = hex => {assert.match(hex,/^#[\da-f]{6}(?:[\da-f]{2})?$/i);return [1,3,5].map(offset=>parseInt(hex.slice(offset,offset+2),16));};
   const declarations = selector => {
     const escaped=selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -362,7 +362,7 @@ function timedAnimatorEnvironment() {
 }
 
 test('steady lighting stops repainting until a different frame arrives', async () => {
-  const {PAINT_INTERVAL, SETTLE_TIME} = await import('./port-animation.mjs');
+  const {PAINT_INTERVAL, SETTLE_TIME} = await import('../preview/port-animation.mjs');
   const mock = timedAnimatorEnvironment(), writes = [];
   const element = {isConnected: true, style: {setProperty: (key, value) => { if (key === '--port-color') writes.push(value); }}};
   const animator = createPortAnimator(() => element, mock.environment);
@@ -384,7 +384,7 @@ test('steady lighting stops repainting until a different frame arrives', async (
 });
 
 test('moving lighting paints at most thirty times a second on a fast display', async () => {
-  const {PAINT_INTERVAL} = await import('./port-animation.mjs');
+  const {PAINT_INTERVAL} = await import('../preview/port-animation.mjs');
   const mock = timedAnimatorEnvironment();
   let paints = 0;
   const element = {isConnected: true, style: {setProperty: key => { if (key === '--port-color') paints++; }}};

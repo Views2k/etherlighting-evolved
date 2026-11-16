@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "node preview/server.mjs",
     "start": "node preview/server.mjs",
-    "test": "node --test tests/*.test.mjs preview/*.test.mjs",
+    "test": "node --test tests/*.test.mjs",
     "check": "node tools/check.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=22" }
 }

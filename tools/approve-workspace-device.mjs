@@ -6,10 +6,21 @@ import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {pathToFileURL} from 'node:url';
 import {canonicalTailnetAddress, matchesApprovedNode, MAX_APPROVED_DEVICES, parseApprovedDevices} from '../preview/approved-device.mjs';
-import {runInstalledTailscale} from '../preview/tailscale-cli.mjs';
+import {createTailscaleRunner} from '../preview/tailscale-cli.mjs';
 
 class ApprovalError extends Error {}
 function fail(message) { throw new ApprovalError(message); }
+
+// Full status lists every peer, which outgrows the gateway's 64 KB output limit on a tailnet of a few dozen devices.
+const runTailscale = createTailscaleRunner({maxBuffer: 4 * 1024 * 1024});
+
+async function readStatus(run) {
+  try { return JSON.parse(await run(['status', '--json'])); }
+  catch (error) {
+    if (error.code === 'tailscale_output_too_large') fail('Tailscale returned more device data than EE can read.');
+    throw error;
+  }
+}
 
 function dnsName(input) {
   if (typeof input !== 'string' || input.length > 254) return '';
@@ -61,7 +72,7 @@ function selectPeer(status, request) {
 }
 
 async function makeApproval(directory, request, run) {
-  const status = JSON.parse(await run(['status', '--json']));
+  const status = await readStatus(run);
   const hostStableID = approvedHost(status, await readRecord(path.join(directory, 'private-access.json')));
   const peer = selectPeer(status, request);
   if (peer.ID === hostStableID || peer.Expired === true || peer.InNetworkMap === false
@@ -120,13 +131,13 @@ async function saveDevices(directory, file, hostStableID, devices) {
   } catch (error) { await unlink(temporary); throw error; }
 }
 
-export async function manageApproval(action, directory, request, run = runInstalledTailscale) {
+export async function manageApproval(action, directory, request, run = runTailscale) {
   if (!['approve', 'revoke', 'status'].includes(action)) fail('Choose approve, status, or revoke.');
   const file = path.join(directory, 'approved-device.json');
   const approval = action === 'approve' ? await makeApproval(directory, request, run) : null;
   let selected = approval?.device.deviceStableID;
   if (!approval && request && !request.all) {
-    selected = request.deviceStableID ?? selectPeer(JSON.parse(await run(['status', '--json'])), request).ID;
+    selected = request.deviceStableID ?? selectPeer(await readStatus(run), request).ID;
     if (typeof selected !== 'string' || !/^[!-~]{1,256}$/.test(selected)) fail('Enter a valid device identity.');
   }
   if (action === 'revoke' && !selected && !request?.all) fail('Select the device to revoke, or explicitly choose --all.');

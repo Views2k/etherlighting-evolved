@@ -45,6 +45,23 @@ test('mutations and upgrades require Origin and foreign origins cannot read',()=
     assert.equal(gate.authorize(request({Origin:supplied})).ok,false);
 });
 
+test('requests from another site are refused unless they navigate to a workspace page',()=>{
+  for(const site of ['same-origin','none'])assert.equal(gate.authorize(request({'Sec-Fetch-Site':site,'Sec-Fetch-Mode':'cors'})).ok,true);
+  for(const site of ['cross-site','same-site'])
+    assert.equal(gate.authorize(request({'Sec-Fetch-Site':site,'Sec-Fetch-Mode':'navigate'},{url:'/'})).ok,true);
+  for(const [changes,extra] of [
+    [{'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'no-cors'},{}],
+    [{'Sec-Fetch-Site':'same-site','Sec-Fetch-Mode':'no-cors'},{}],
+    [{'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate'},{}],
+    [{'Sec-Fetch-Site':'cross-site'},{url:'/'}],
+    [{'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'no-cors'},{url:'/preview/app.mjs'}],
+    [{'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate',Origin:origin},{method:'POST',url:'/'}],
+  ])assert.equal(gate.authorize(request(changes,extra)).ok,false,JSON.stringify([changes,extra]));
+  assert.equal(gate.authorize(request({'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'websocket',Origin:origin},{url:'/api/ws'}),{websocket:true}).ok,false);
+  const duplicate=request({'Sec-Fetch-Site':'same-origin'});duplicate.rawHeaders.push('Sec-Fetch-Site','same-origin');
+  assert.equal(gate.authorize(duplicate).ok,false);
+});
+
 test('Tailscale IPv4 and IPv6 ranges are accepted without accepting nearby addresses',()=>{
   for(const address of ['100.64.0.1','100.127.255.254','fd7a:115c:a1e0::1'])
     assert.equal(gate.authorize(request({'X-Forwarded-For':address})).ok,true);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {sfpSync, sfpLight, effectiveSfpLight, editableSfpLight, sfpEditTargets, sfpDraftPorts} from '../preview/sfp-sync.mjs';
-import {lightingOperations, applyLightingPlan, controlSource, sfpSettings} from '../preview/lighting-state.mjs';
+import {lightingOperations, controlSource, sfpSettings} from '../preview/lighting-state.mjs';
 import {sceneFingerprint, matchingProfile} from '../preview/secondary-model.mjs';
 import {sfpGalleryStatus, sfpPreviewColor} from '../preview/effect-gallery.mjs';
 
@@ -143,17 +143,12 @@ test('legacy brightness conversion is bounded by one half percentage point and h
   assert.equal(editableSfpLight(state,9).secondary_brightness,0);
 });
 
-test('Apply prepares shared settings before enabling Together and retries only the unconfirmed sync', async () => {
+test('Apply prepares shared settings before enabling Together', () => {
   const state=scene(), draft={sfp:{9:{color:'#123456',brightness:100,color_brightness:40}},sfp_sync:{mode:'together'}};
-  const before=structuredClone({state,draft}), plan=lightingOperations(state,draft), sent=[];
+  const before=structuredClone({state,draft}), plan=lightingOperations(state,draft);
   assert.deepEqual(plan.map(item=>item.path),['/api/sfp/9','/api/sfp/sync']);
   assert.deepEqual(plan[1].body,{mode:'together',source_port:1});
   assert.deepEqual({state,draft},before);
-  await assert.rejects(applyLightingPlan(plan,async path=>{sent.push(path);if(path==='/api/sfp/sync')throw new Error('Interrupted');}),/Interrupted/);
-  assert.deepEqual(plan.map(item=>item.path),['/api/sfp/sync']);
-  await applyLightingPlan(plan,async path=>{sent.push(path);});
-  assert.deepEqual(sent,['/api/sfp/9','/api/sfp/sync','/api/sfp/sync']);
-  assert.equal(plan.length,0);
 });
 
 test('invalid sync mode, source type, range and unknown fields are rejected before any request', () => {

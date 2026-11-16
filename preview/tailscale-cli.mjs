@@ -21,18 +21,20 @@ function outputAction(value) {
   return null;
 }
 
-export function createTailscaleRunner({platform=process.platform,env=process.env,execute=execFile}={}) {
+export function createTailscaleRunner({platform=process.platform,env=process.env,execute=execFile,maxBuffer=65536}={}) {
   const executable=platform==='win32'?path.join(env.ProgramFiles||'C:/Program Files','Tailscale','tailscale.exe')
     :platform==='darwin'?'/Applications/Tailscale.app/Contents/MacOS/Tailscale':'/usr/bin/tailscale';
   return args=>new Promise((resolve,reject)=>execute(executable,args,
-    {windowsHide:true,timeout:10000,maxBuffer:65536,encoding:'utf8'},(error,stdout='',stderr='')=>{
+    {windowsHide:true,timeout:10000,maxBuffer,encoding:'utf8'},(error,stdout='',stderr='')=>{
       // Status exits nonzero while signed out, but still returns the state JSON.
       if(args[0]==='status') {
         try {const status=JSON.parse(stdout);if(status&&typeof status.BackendState==='string'){resolve(stdout);return;}}catch{}
       }
       if(!error){resolve(stdout);return;}
       const failure=new Error('Tailscale could not complete this action.');
-      failure.code=error.code==='ENOENT'?'tailscale_not_installed':error.code==='EACCES'||/access denied|permission denied/i.test(stderr)?'tailscale_permission_required':'tailscale_unavailable';
+      failure.code=error.code==='ENOENT'?'tailscale_not_installed'
+        :error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'tailscale_output_too_large'
+        :error.code==='EACCES'||/access denied|permission denied/i.test(stderr)?'tailscale_permission_required':'tailscale_unavailable';
       failure.actionUrl=outputAction(`${stdout}\n${stderr}`);
       reject(failure);
     }));

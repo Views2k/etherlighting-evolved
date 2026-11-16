@@ -13,34 +13,13 @@ import {switchConnectionStatus} from './workspace-session.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {receiveScheduleClock,scheduleClockLabel} from './schedule-clock.mjs';
 import {openColorPicker} from './color-picker.mjs';
+import {field, input, node, select} from './dom.mjs';
 
-const node = (tag, className = '', text) => {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = String(text);
-  return element;
-};
 const copy = value => structuredClone(value);
 const portName = (port, sfp) => sfp.includes(port) ? `SFP ${port}` : `Port ${port}`;
 const operatorNames = {is:'is', is_not:'is not', in:'is any of', not_in:'is none of', gt:'is above', ge:'is at least', lt:'is below', le:'is at most', eq:'equals', ne:'does not equal', between:'is between'};
 const styleNames = {solid:'Solid color', pulse:'Gentle pulse', blink:'Blink', flash:'Flash', effect:'Use port effect'};
 
-function field(label, control) {
-  const wrapper = node('label', 'field');
-  wrapper.append(node('span', '', label), control);
-  return wrapper;
-}
-function input(value = '', type = 'text') {
-  const element = node('input'); element.type = type; element.value = value; return element;
-}
-function select(options, value) {
-  const element = node('select');
-  for (const [key, label] of options) {
-    const option = node('option', '', label); option.value = key; element.append(option);
-  }
-  element.value = value ?? options[0]?.[0] ?? '';
-  return element;
-}
 function check(label, checked = false) {
   const wrapper = node('label', 'check'); const control = input('', 'checkbox'); control.checked = checked;
   wrapper.append(control, node('span', '', label)); return {wrapper, control};
@@ -753,9 +732,12 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       healthDetails.append(term,node('dd','',reading));
     }
   };
-  const about = node('section','settings-about panel');
-  about.append(node('h2','','Etherlighting Evolved'),node('p','muted','Open-source UniFi Etherlighting controller.'),node('p','muted','Unofficial community project. Not affiliated with Ubiquiti.'));
+  const about = node('section','settings-about panel'), disclaimer = node('p','muted','Unofficial community project. Not affiliated with Ubiquiti.');
+  about.append(node('h2','','Etherlighting Evolved'),node('p','muted','Open-source UniFi Etherlighting controller.'),disclaimer);
   if (onHelp) about.append(button('Open help',onHelp,'quiet'));
+  // The service's disclaimer adds the risk of driving undocumented switch interfaces; the short line stays if the
+  // service does not answer.
+  request('/api/about').then(info => { if (gate.active) disclaimer.textContent = info.disclaimer; }, () => {});
   let controllerCleanup, switchState;
   const privateHost=node('div','private-access-settings'),lastSessionHost=node('div','last-session-settings');
   const lastSessionCleanup=mountLastSession(lastSessionHost,{request});

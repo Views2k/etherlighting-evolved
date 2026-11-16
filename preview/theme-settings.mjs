@@ -1,12 +1,6 @@
 import {THEMES,DEFAULT_THEME} from './theme-catalog.mjs';
 import {getTheme,setTheme,subscribeTheme} from './theme.mjs';
-
-const node=(tag,className='',text)=>{
-  const element=document.createElement(tag);
-  if(className)element.className=className;
-  if(text!==undefined)element.textContent=text;
-  return element;
-};
+import {node} from './dom.mjs';
 
 export function mountThemeSettings(host){
   host.classList.add('theme-settings');

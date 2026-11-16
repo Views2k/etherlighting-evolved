@@ -50,14 +50,6 @@ export function sfpNativePeriod(effect, period) {
   return nativePeriods[effect]?.includes(period) ?? false;
 }
 
-export function sfpPeriodOptions(effect, currentPeriod) {
-  const options=(nativePeriods[effect] || []).map(value=>({value,label:`${value} s`}));
-  if(Number.isFinite(currentPeriod)&&currentPeriod>=2&&currentPeriod<=30&&!sfpNativePeriod(effect,currentPeriod)) {
-    options.push({value:currentPeriod,label:`Custom ${currentPeriod} s`});
-  }
-  return options;
-}
-
 export function sfpDurationRange(effect, period, native = true) {
   const stops = native ? nativePeriods[effect] : null;
   const current = Number.isFinite(period) ? period : 6;

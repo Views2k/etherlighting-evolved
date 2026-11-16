@@ -1,7 +1,7 @@
 import {linkStatus,portLabel,portPower,isUplink} from './port-map.mjs';
 import {controlSource} from './lighting-state.mjs';
+import {node} from './dom.mjs';
 const portsOf=state=>[...(state.ports||[]),...(state.sfp||[])];
-const node=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el;};
 export function findPorts(state,query){
   const words=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   return portsOf(state).filter(port=>{

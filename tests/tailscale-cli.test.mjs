@@ -36,3 +36,15 @@ test('missing executable and permission failures produce distinct actionable cod
     await assert.rejects(run(['status','--json']),error=>error.code===expected);
   }
 });
+
+test('output beyond the buffer has its own code and callers can raise the limit',async()=>{
+  const sizes=[],stdout=JSON.stringify({BackendState:'Running',Peer:{fixture:{DNSName:'x'.repeat(70000)}}});
+  const execute=(_exe,_args,options,done)=>{
+    sizes.push(options.maxBuffer);
+    if(stdout.length>options.maxBuffer)done(Object.assign(new Error('sensitive'),{code:'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'}),stdout.slice(0,options.maxBuffer),'');
+    else done(null,stdout,'');
+  };
+  await assert.rejects(createTailscaleRunner({execute})(['status','--json']),error=>error.code==='tailscale_output_too_large'&&!error.message.includes('sensitive'));
+  assert.equal(await createTailscaleRunner({execute,maxBuffer:4*1024*1024})(['status','--json']),stdout);
+  assert.deepEqual(sizes,[65536,4194304]);
+});

@@ -101,3 +101,11 @@ test('old approval survives migration and a new peer cannot reuse its address', 
   assert.equal(saved.version, 2);
   assert.equal(saved.devices.length, 2);
 });
+
+test('a tailnet status too large to read gives its own message', async t => {
+  const f = await fixture(t);
+  const run = async () => { throw Object.assign(new Error('Tailscale could not complete this action.'), {code: 'tailscale_output_too_large'}); };
+  for (const action of ['approve', 'status', 'revoke']) {
+    await assert.rejects(manageApproval(action, f.directory, {dnsName: f.peer.DNSName}, run), /more device data than EE can read/);
+  }
+});
