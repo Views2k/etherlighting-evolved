@@ -84,7 +84,9 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
       res.end(JSON.stringify({live}));return;
     }
     if (req.url.startsWith('/api/')) {
-      if(Number(req.headers['content-length'])>MAX_BODY_BYTES){res.writeHead(413,{'Content-Type':'application/json',Connection:'close'});res.end(JSON.stringify({detail:'The request is too large.'}));return;}
+      // The answer does not ask to close the connection, so on a kept-alive connection Node reads and discards the rest
+      // of the body. Closing a socket that still has unread data makes Windows reset it before the client reads the 413.
+      if(Number(req.headers['content-length'])>MAX_BODY_BYTES){res.writeHead(413,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The request is too large.'}));return;}
       const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`}; delete headers.origin;
       const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});
       upstream.on('error',()=>{if(!res.headersSent)res.writeHead(503,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The preview service is unavailable.'}));});

@@ -25,9 +25,9 @@ async function gateway(t){
   return {port,backend,backendPort,received};
 }
 
-function request(port,path,{method='GET',headers={},body}={}){
+function request(port,path,{method='GET',headers={},body,agent=false}={}){
   return new Promise((resolve,reject)=>{
-    const req=http.request({host:'127.0.0.1',port,path,method,agent:false,headers:{host,...headers}},response=>{
+    const req=http.request({host:'127.0.0.1',port,path,method,agent,headers:{host,...headers}},response=>{
       let text='';response.setEncoding('utf8');response.on('data',data=>text+=data);
       response.on('end',()=>resolve({status:response.statusCode,headers:response.headers,text}));
     });
@@ -79,8 +79,12 @@ test('API calls from another site are refused while links from other sites still
 
 test('request bodies over 1 MiB stop at the gateway',async t=>{
   const f=await gateway(t);
-  const declared=await request(f.port,'/api/rules',{method:'PUT',headers:{'content-length':String(1048577)}});
-  assert.equal(declared.status,413);assert.equal(declared.headers.connection,'close');assert.equal(f.received.length,0);
+  // Browsers and the desktop client keep connections alive. A client that asks to close the connection can see a
+  // reset instead of the 413 when it sends a large body, because Node closes the socket as soon as it answers.
+  const agent=new http.Agent({keepAlive:true});t.after(()=>agent.destroy());
+  for(const options of [{headers:{'content-length':String(1048577)}},{agent,body:Buffer.alloc(8*1048576,'a')}])
+    assert.equal((await request(f.port,'/api/rules',{method:'PUT',...options})).status,413);
+  assert.equal(f.received.length,0);
   assert.equal((await request(f.port,'/api/rules',{method:'PUT',body:Buffer.alloc(1048576,'a')})).status,200);
   assert.equal(f.received[0].bytes,1048576);
   const streamed=await new Promise(resolve=>{
