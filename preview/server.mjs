@@ -177,6 +177,13 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   return {server,privateRetry,shutDown,readmit,stop,engineExited,closePrivate};
 }
 
+// The desktop app holds the key and requests its own links. A source run has no other way to give a browser access.
+export function startupLines({port,desktopHost,admin}){
+  const lines=[`Browser preview: http://127.0.0.1:${port}`];
+  if(desktopHost!=='1')lines.push(`Administration link (works once): http://127.0.0.1:${port}/?${ADMIN_CODE_PARAM}=${admin.issueCode(Infinity)}`);
+  return lines;
+}
+
 export async function startWorkspace() {
   const runtime=resolveRuntimeConfig();
   const {root,port,live,directory}=runtime;
@@ -225,9 +232,7 @@ export async function startWorkspace() {
   }});
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,workspace.stop);
   server.listen(port,'127.0.0.1',()=>{
-    console.log(`Browser preview: http://127.0.0.1:${port}`);
-    // The desktop app holds the key and requests its own links. A source run has no other way to give a browser access.
-    if(process.env.EE_DESKTOP_HOST!=='1')console.log(`Administration link (works once): http://127.0.0.1:${port}/?${ADMIN_CODE_PARAM}=${admin.issueCode(Infinity)}`);
+    for(const line of startupLines({port,desktopHost:process.env.EE_DESKTOP_HOST,admin}))console.log(line);
     if(live)void privateAccess.initialize().catch(()=>{}).then(()=>workspace.privateRetry.observe());
   });
 }

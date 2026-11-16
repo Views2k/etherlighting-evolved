@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createWorkspaceServer} from '../preview/server.mjs';
+import {createWorkspaceServer,startupLines} from '../preview/server.mjs';
 import {ADMIN_MESSAGES,createAdminAccess} from '../preview/admin-access.mjs';
 import {ROUTE_ACCESS} from '../preview/remote-routes.mjs';
 
@@ -9,7 +9,7 @@ const KEY='a'.repeat(64),keyed={'x-ee-admin-key':KEY};
 const managerStatus={available:true,enabled:true,ready:true,url:'https://fixture.fixture-tailnet.ts.net:8444',error:null,
   setup_action:'approve',action_url:'https://login.tailscale.com/a/fixture',audience:'owner',https_port:8444,can_change_port:true};
 
-function fixture({live=true,route={route:'removed',https_port:8444}}={}){
+function fixture({live=true,route={route:'removed',https_port:8444},admin=createAdminAccess({key:KEY,port:4180})}={}){
   let finishClose,failClose,active,closes=0;
   const calls=[],retries=[],configured=[],exits=[],events=[];
   const child={exitCode:null,stdin:{writableEnded:false,end:line=>calls.push(`engine ${line.trim()}`)}};
@@ -18,7 +18,7 @@ function fixture({live=true,route={route:'removed',https_port:8444}}={}){
     privateAccess:{status:()=>({...managerStatus}),initialize:async()=>calls.push('refresh'),login:async()=>calls.push('login'),
       close:async()=>calls.push('private closed'),shutdown:async()=>{calls.push('private shutdown');return route;},
       configure:async(...args)=>{configured.push(JSON.stringify(args));calls.push('configure');}},
-    admin:createAdminAccess({key:KEY,port:4180}),
+    admin,
     closeWorkspace:()=>{closes++;return new Promise((resolve,reject)=>{finishClose=resolve;failClose=reject;});},
     keepAvailable:options=>{active=options.active;return {observe:()=>retries.push('observe'),stop:()=>retries.push('stop')};},
     exit:code=>exits.push(code)});
@@ -212,6 +212,23 @@ test('a browser trades a code for the cookies once, and only on a navigation wit
   const browser={cookie:cookies[0].split(';')[0]};
   assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}',browser)).status,200);
   assert.equal(JSON.parse((await f.request('/api/private-access','GET',undefined,browser)).body).admin_required,false);
+});
+
+test('a source run prints an administration link that works once, even a day later',async()=>{
+  let time=0;
+  const admin=createAdminAccess({key:KEY,port:4180,now:()=>time}),f=fixture({admin});
+  const [preview,printed,...rest]=startupLines({port:4180,desktopHost:undefined,admin});
+  assert.equal(preview,'Browser preview: http://127.0.0.1:4180');assert.deepEqual(rest,[]);
+  assert.match(printed,/^Administration link \(works once\): http:\/\/127\.0\.0\.1:4180\/\?admin_code=[0-9a-f]{64}$/);
+  time+=86400000;
+  const url=new URL(printed.slice(printed.indexOf('http://'))),opened=await f.request(url.pathname+url.search,'GET',undefined,{});
+  assert.equal(opened.status,303);assert.equal(opened.headers['Set-Cookie'].length,2);
+  assert.equal((await f.request(url.pathname+url.search,'GET',undefined,{})).headers['Set-Cookie'],undefined);
+});
+
+test('a gateway started by the desktop app prints only the preview address and issues no code',()=>{
+  const admin={issueCode:()=>assert.fail('The desktop app requests its own administration links.')};
+  assert.deepEqual(startupLines({port:4180,desktopHost:'1',admin}),['Browser preview: http://127.0.0.1:4180']);
 });
 
 test('a repeated code redeems nothing, and each code still works on its own afterward',async()=>{
