@@ -162,6 +162,13 @@ class SimPoe(BaseModel):
     pd_class: int | None = Field(default=None, ge=0, le=8, alias="class")
 
 
+class FanChange(BaseModel):
+    mode: str | None = None
+    curve: str | None = None
+    manual_percent: int | None = None
+    target_celsius: int | None = None
+
+
 class HostKeyForget(BaseModel):
     host: str
     port: int = 22
@@ -634,6 +641,25 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         e = engine()
         apply(e.clear_override, port)
         return e.state()
+
+    # Fans
+
+    @api.get("/fans")
+    async def fans():
+        e = engine()
+        return e.fans.to_dict() if e.fans is not None else None
+
+    @api.put("/fans")
+    async def change_fans(body: FanChange):
+        e = engine()
+        change = body.model_dump(exclude_none=True)
+        try:
+            await e.update_fans(change)
+        except TransportError as exc:
+            raise HTTPException(409, detail={"code": "fans_unconfirmed", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail={"code": "invalid", "message": str(exc)}) from exc
+        return e.fans.to_dict()
 
     # Global controls
 

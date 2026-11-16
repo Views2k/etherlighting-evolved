@@ -87,6 +87,12 @@ public sealed class HelpPage : Page
                 "Select a saved profile to review it, then choose Apply profile. The Applied label identifies a profile matching the current setup.",
                 "Replace with applied setup updates the selected saved profile after confirmation. Rename and Duplicate organize profiles without changing your lighting.",
             ]),
+            ("Control the switch fans", [
+                "Open Fans to see the CPU, SFP and port chip temperatures and the speed of both fans. The readings refresh every 5 seconds.",
+                "Switch control leaves the fans to the switch’s own controller. Curve sets the fan speed from the CPU temperature: Low is the quietest and Max the coolest. Manual runs both fans at the speed you choose. Thermal target runs the fans as slowly as possible while keeping the CPU at or below the temperature you choose.",
+                "Every mode speeds the fans up near the switch’s temperature limits. If a sensor cannot be read or EE’s fan control stops, the switch’s own controller takes over.",
+                "Fan control runs on the switch and continues while EE is closed. After a switch restart the switch controls the fans until EE connects again and restores your choice.",
+            ]),
             ("Choose an app theme", [
                 "Open Settings, choose Appearance, then select a dark or light theme. The change appears immediately and is saved on this device.",
             ]),

@@ -853,6 +853,58 @@ available to API clients and applies immediately.
   direct SSH socket path, with fresh CPU and response-time evidence. The shell fallback stays capped at 30.
   `stats.command_budget` reports the current effective ceiling. An explicitly configured value of 30 remains 30.
 
+## Fans
+
+Fan control is available on the USW-Pro-XG-8-PoE. The chosen mode runs on the switch from RAM
+(`/tmp/ee-fan-control-v1`), so it continues while EE is closed. The engine checks it every 5 seconds and starts it
+again after a switch restart. The default mode, `switch`, leaves the fans to the switch's own controller and writes
+nothing to the switch.
+
+### `GET /api/fans`
+
+```json
+{
+  "supported": true,
+  "unsupported_reason": null,
+  "settings": {"mode": "curve", "curve": "medium", "manual_percent": 60, "target_celsius": 55},
+  "reading": {
+    "cpu_celsius": 62.3, "board_celsius": 56.0, "sfp_celsius": 57.8, "port_celsius": 80.1,
+    "fans": [{"rpm": 3020, "percent": 55}, {"rpm": 3050, "percent": 55}],
+    "daemon": "paused", "controller": "running", "script_current": true,
+    "reason": "curve", "config": "curve 45 30 60 50 70 75 80 100", "duty": 55
+  },
+  "error": null,
+  "curves": {"low": {"name": "Low", "points": [[55, 30], [70, 40], [80, 60], [90, 100]]}, "...": {}},
+  "limits": {"manual_percent": [30, 100], "target_celsius": [45, 85]}
+}
+```
+
+- `reading` is `null` until the first sample. `port_celsius` is the hottest port chip. `daemon` is the switch's own
+  fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`.
+- `reason` names what set the speed in the last step: the mode, `guard` when a sensor near the switch's limit raised
+  the speed (CPU 85-95 °C, SFP 65-75 °C, port chips 100-110 °C), or `fault` when a sensor could not be read and
+  the fans ran at 100%. After six failed reads EE's control stops and the switch's controller resumes.
+
+### `PUT /api/fans`
+
+Any of `{"mode": "switch" | "curve" | "manual" | "target", "curve": "low" | "medium" | "high" | "max",
+"manual_percent": 30-100, "target_celsius": 45-85}`. Missing fields keep their saved values. The response is the
+`GET /api/fans` object after the switch confirms the change. An invalid value returns `400 invalid`; a change the
+switch does not confirm returns `409 fans_unconfirmed` and keeps the previous settings. A model without fan control
+returns `400 invalid` with the reason.
+
+- `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
+  most 2% per 5-second step.
+- `manual` runs both fans at `manual_percent`.
+- `target` adjusts the speed to keep the CPU at or below `target_celsius` with the lowest fan speed. A new target
+  starts at the speed estimated to hold it, from the CPU reading and the average speed of the last couple of
+  minutes, and corrects from there without running the fans far above that speed.
+- A new mode or setting takes effect within about a second and starts at its own speed; it does not ease from the
+  previous mode's speed.
+
+The same object is `fans` in `GET /api/state` and WebSocket state messages, and arrives every 5 seconds as a
+`fans` WebSocket message.
+
 ## Presets
 
 A preset stores zones, rules, brightness and manual colors.
@@ -1095,6 +1147,7 @@ Messages from the server:
 | `session` | `{"type": "session", "session": {...}}` on connect, and on every login, logout or connection change |
 | `state` | `{"type": "state", "state": {...}}` on connect, and after every change from any client |
 | `frame` | `{"type": "frame", "mode": "running", "connected": true, "ports": [...]}` every frame (about 10 per second) |
+| `fans` | `{"type": "fans", "fans": {...}}` every 5 seconds and after a fan change; see [Fans](#fans) |
 | `ack` | `{"type": "ack", "id": 7}` when a message with an `id` has been applied |
 | `pong` | Reply to `ping` |
 | `error` | `{"type": "error", "id": 7, "code": "invalid", "message": "..."}` |
@@ -1117,8 +1170,8 @@ Messages to the server (add an `id` to any of them to get an `ack` or `error` ba
 
 `zone` is optional; without it the first zone is used. `clear_port` without a port clears all ports. Mutation
 messages apply immediately; the browser sends lighting changes only after Apply. Actual switch writes follow
-the configured output settings and adaptive command budget. If a client reads slowly, it gets the newest state
-and frame and skips older ones; acks and errors are never dropped.
+the configured output settings and adaptive command budget. If a client reads slowly, it gets the newest state,
+frame and fan reading and skips older ones; acks and errors are never dropped.
 
 ## Simulator controls
 

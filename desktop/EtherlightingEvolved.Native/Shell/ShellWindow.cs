@@ -46,7 +46,19 @@ public sealed class ShellWindow : Window
             e.Handled = true;
             await shell.MoveHistory(button == PointerUpdateKind.XButton1Pressed ? -1 : 1);
         };
+        // A rack window is used by touch, often through a stream that turns each tap into a mouse click and leaves
+        // the pointer where it tapped, so a tooltip would open there and stay. Rack-sized windows show no tooltips.
+        // This follows the window size only; pointer input does no extra work.
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property != ClientSizeProperty) return;
+            var tips = ClientSize.Height >= RackHeight;
+            if (ToolTip.GetServiceEnabled(this) != tips) ToolTip.SetServiceEnabled(this, tips);
+        };
     }
+
+    /// <summary>Windows shorter than this are treated as rack windows.</summary>
+    public const double RackHeight = 520;
 
     public AppShell Shell { get; }
 

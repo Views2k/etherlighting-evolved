@@ -9,12 +9,12 @@ from collections import deque
 class Mailbox:
     """Messages waiting to be sent to one client.
 
-    Only the newest frame and the newest state are kept: a new one replaces an unsent one of the same kind, so a
+    Only the newest frame, state and fan reading are kept: a new one replaces an unsent one of the same kind, so a
     slow client skips old frames instead of falling further behind. Other messages (acks, errors, session
     changes) are kept in order and sent first.
     """
 
-    LATEST_ONLY = ("state", "frame")
+    LATEST_ONLY = ("state", "frame", "fans")
 
     def __init__(self, limit: int = 256) -> None:
         self._messages: deque[dict] = deque(maxlen=limit)

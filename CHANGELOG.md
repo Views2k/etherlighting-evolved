@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- Fans controls the two fans of a USW-Pro-XG-8-PoE. Choose Switch control to leave the fans to the switch, one of four curves (Low, Medium, High and Max) that set the fan speed from the CPU temperature, Manual for one fixed speed on both fans, or Thermal target to run the fans as slowly as possible while keeping the CPU at a chosen temperature. The page shows the CPU, SFP and port chip temperatures and both fan speeds.
+- In every fan mode the fans speed up when the CPU passes 85 °C, the SFP sensor passes 65 °C or a port chip passes 100 °C. If EE's fan control stops or a sensor cannot be read, the switch's own fan controller takes over again.
+- Fan control runs on the switch and continues while EE is closed. A switch restart returns the fans to the switch's own control; EE restores the chosen mode when it connects again.
+- A fan change takes effect within about a second and goes straight to the new mode's speed. Thermal target starts at the speed estimated to hold the target instead of running the fans up to full speed first. Choosing Manual starts at the fans' current speed.
+- In a rack window such as 1280 × 400, Fans fills the screen with large readings and controls, including − and + buttons beside the slider.
+- Rack-sized windows show no tooltips. A tap streamed as a mouse click leaves the pointer where it tapped, which kept a tooltip on screen.
+- In narrow windows the title bar leaves out the app name so every page button fits.
+
 ## 0.5.0
 
 - The desktop window uses less processor time while lighting moves: the page background and the port sockets are drawn once and reused, port colors are painted 20 times a second, and the uplink chart redraws only when it has moved a pixel.

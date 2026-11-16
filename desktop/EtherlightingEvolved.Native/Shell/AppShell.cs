@@ -22,8 +22,8 @@ namespace EtherlightingEvolved.Native.Shell;
 /// </summary>
 public sealed class AppShell : UserControl
 {
-    public static readonly string[] PageNames = ["Lighting", "Effects", "Automation", "Profiles", "Settings", "Help"];
-    static readonly (string Name, string Icon)[] Navigation = [("Lighting", "grid"), ("Effects", "wave"), ("Automation", "activity"), ("Profiles", "layers")];
+    public static readonly string[] PageNames = ["Lighting", "Effects", "Automation", "Profiles", "Fans", "Settings", "Help"];
+    static readonly (string Name, string Icon)[] Navigation = [("Lighting", "grid"), ("Effects", "wave"), ("Automation", "activity"), ("Profiles", "layers"), ("Fans", "wind")];
 
     readonly Dictionary<string, Button> pageButtons = new(StringComparer.Ordinal);
     readonly Border view = new() { ClipToBounds = true };
@@ -66,6 +66,7 @@ public sealed class AppShell : UserControl
         Workspace.Refreshed += OnRefreshed;
         Workspace.StateMessage += OnStateMessage;
         Workspace.Frame += OnFrame;
+        Workspace.FansChanged += () => { if (!Hidden && PageName == "Fans") current?.Frame(); };
         Workspace.SessionMessage += AcceptSession;
         Workspace.StreamLost += () =>
         {
@@ -143,7 +144,8 @@ public sealed class AppShell : UserControl
         lights.PointerExited += (_, _) => { foreach (var light in lightButtons) light.ShowGlyph = false; };
         var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, VerticalAlignment = VerticalAlignment.Center };
         brand.Children.Add(lights);
-        brand.Children.Add(new TextBlock { Text = "Etherlighting Evolved", FontSize = 14, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.15, VerticalAlignment = VerticalAlignment.Center }.Bind(TextBlock.ForegroundProperty, "text"));
+        var brandName = new TextBlock { Text = "Etherlighting Evolved", FontSize = 14, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.15, VerticalAlignment = VerticalAlignment.Center }.Bind(TextBlock.ForegroundProperty, "text");
+        brand.Children.Add(brandName);
 
         var nav = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         foreach (var (name, icon) in Navigation)
@@ -175,6 +177,8 @@ public sealed class AppShell : UserControl
         Grid.SetColumn(actions, 2);
         bar.Children.Add(actions);
         titlebar.Child = bar;
+        // In narrow windows the page buttons need the room the name takes; the logo still identifies the app.
+        bar.SizeChanged += (_, e) => brandName.IsVisible = e.NewSize.Width >= 1060;
         // Dragging the bar's background moves the window; double-clicking it maximizes or restores.
         bar.PointerPressed += (_, e) =>
         {
