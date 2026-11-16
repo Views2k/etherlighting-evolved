@@ -19,8 +19,8 @@ def digest(path):
 
 
 def check_contents(app):
-    private = {'private-access.json', 'approved-device.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
-               'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
+    private = {'private-access.json', 'approved-device.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json',
+               'handoff.md', 'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
                'known_switches.json', 'port_led_fw.bin'}
     for item in app.rglob('*'):
         if item.name.lower() in private:

@@ -1,8 +1,8 @@
 """Read effect metadata from the backend without importing or executing it."""
 import ast
 import json
-import sys
 import re
+import sys
 from pathlib import Path
 
 source, destination = map(Path, sys.argv[1:3])
@@ -17,7 +17,8 @@ base_tree = ast.parse(source.with_name("base.py").read_text(encoding="utf-8-sig"
 
 def read_param(call):
     values = [ast.literal_eval(arg) for arg in call.args]
-    param = dict(zip(("key", "label", "type", "default"), values))
+    # Parameters may leave out the default, so there can be fewer values than names.
+    param = dict(zip(("key", "label", "type", "default"), values, strict=False))
     for kw in call.keywords:
         try:
             param[kw.arg] = ast.literal_eval(kw.value)
@@ -70,8 +71,14 @@ for cls in [node for effect_tree in trees for node in effect_tree.body]:
                                        "step": 1.0, "unit": "%", "dims": param["key"]})
             item["params"].append(dict(transition))
         catalog.append(item)
-serialized = json.dumps(catalog, indent=2)
-for source_word, target_word in (("colour", "color"), ("centre", "center"), ("behaviour", "behavior"), ("grey", "gray")):
-    serialized = re.sub(source_word, lambda match: target_word.capitalize() if match.group()[0].isupper() else target_word, serialized, flags=re.IGNORECASE)
-destination.write_text("export const CATALOG = " + serialized + ";\n", encoding="utf-8")
+AMERICAN = {"colour": "color", "centre": "center", "behaviour": "behavior", "grey": "gray"}
+
+
+def american(match):
+    word = AMERICAN[match.group().lower()]
+    return word.capitalize() if match.group()[0].isupper() else word
+
+
+serialized = re.sub("|".join(AMERICAN), american, json.dumps(catalog, indent=2), flags=re.IGNORECASE)
+destination.write_text("export const CATALOG = " + serialized + ";\n", encoding="utf-8", newline="\n")
 print(f"Extracted {len(catalog)} effect definitions.")
