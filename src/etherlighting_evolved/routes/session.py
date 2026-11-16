@@ -9,9 +9,10 @@ from .context import ApiContext, await_output
 
 
 class LoginRequest(BaseModel):
-    host: str = Field(description='Switch IP or hostname. "demo" logs in to the built-in simulator.')
-    username: str = ""
-    password: str = ""
+    host: str = Field(max_length=253, description='Switch IP or hostname. "demo" logs in to the built-in simulator.')
+    username: str = Field(default="", max_length=256)
+    password: str = Field(default="", max_length=4096, repr=False)
+    # SessionManager.connect checks the range, so a bad port gets its own error code.
     port: int = 22
     remember: bool = False
 
@@ -23,7 +24,7 @@ class SceneChoiceRequest(BaseModel):
 
 
 class HostKeyForget(BaseModel):
-    host: str
+    host: str = Field(max_length=253)
     port: int = 22
 
 

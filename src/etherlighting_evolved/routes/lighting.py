@@ -24,7 +24,8 @@ class ParamsRequest(BaseModel):
 
 
 class ZonesRequest(BaseModel):
-    zones: list[dict[str, Any]]
+    # Every zone needs a port of its own, and scenes allow ports 1 to 64.
+    zones: list[dict[str, Any]] = Field(max_length=64)
 
 
 class SceneRestore(BaseModel):

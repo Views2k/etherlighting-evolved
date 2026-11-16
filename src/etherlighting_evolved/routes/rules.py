@@ -10,18 +10,21 @@ from pydantic import BaseModel, Field
 
 from .context import ApiContext, apply, scene_envelope
 
+# Every rule is evaluated for every port on every frame.
+MAX_RULES = 256
+
 
 class RulesRequest(BaseModel):
-    rules: list[dict[str, Any]]
+    rules: list[dict[str, Any]] = Field(max_length=MAX_RULES)
 
 
 class OrderRequest(BaseModel):
-    ids: list[str]
+    ids: list[str] = Field(max_length=MAX_RULES)
 
 
 class RuleTest(BaseModel):
     port: int = Field(ge=1, le=256)
-    rules: list[dict[str, Any]] = Field(max_length=256)
+    rules: list[dict[str, Any]] = Field(max_length=MAX_RULES)
     at: str | None = None
 
 
@@ -53,6 +56,8 @@ def attach(api: APIRouter, ctx: ApiContext) -> None:
     @api.post("/rules", status_code=201)
     async def add_rule(rule: dict[str, Any] = Body(...)):
         e = engine()
+        if len(e.rules) >= MAX_RULES:
+            raise HTTPException(400, detail={"code": "invalid", "message": f"Use at most {MAX_RULES} rules."})
         position = rule.pop("position", None)
         return apply(e.add_rule, rule, position=None if position is None else apply(int, position)).to_dict()
 

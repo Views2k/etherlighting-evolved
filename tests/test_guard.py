@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from etherlighting_evolved.api import create_app
-from etherlighting_evolved.guard import hostname
+from etherlighting_evolved.guard import MAX_BODY, hostname
 
 LOCAL = "http://127.0.0.1:8787"
 
@@ -63,6 +63,35 @@ def test_configured_origins_are_allowed(config):
     with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
         c.post("/api/session/login", json={"host": "demo"}, headers={"Origin": "http://localhost:5173"})
         assert c.get("/api/session").json()["logged_in"]
+
+
+def test_api_requests_a_browser_marks_as_cross_site_are_refused(client):
+    for site in ("cross-site", "same-site"):
+        refused = client.get("/api/profiles", headers={"Sec-Fetch-Site": site})
+        assert refused.status_code == 403 and refused.json()["detail"]["code"] == "forbidden"
+    for site in ("same-origin", "none"):
+        assert client.get("/api/profiles", headers={"Sec-Fetch-Site": site}).status_code == 200
+    assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
+
+
+def test_cross_site_requests_from_configured_origins_are_allowed(config):
+    config.api.cors_origins = ["http://localhost:5173"]
+    with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
+        headers = {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "same-site"}
+        assert c.get("/api/session", headers=headers).status_code == 200
+        assert c.get("/api/session", headers={"Sec-Fetch-Site": "same-site"}).status_code == 403
+
+
+def test_request_bodies_over_the_limit_are_refused(client):
+    large = b'{"value": 5, "padding": "' + b"x" * MAX_BODY + b'"}'
+    refused = client.put("/api/brightness", content=large, headers={"Content-Type": "application/json"})
+    assert refused.status_code == 413 and refused.json()["detail"]["code"] == "too_large"
+    chunked = client.put("/api/brightness", content=iter([large[:1000], large[1000:]]),
+                         headers={"Content-Type": "application/json"})
+    assert chunked.status_code == 413
+    accepted = client.put("/api/brightness", content=iter([b'{"value": ', b"30}"]),
+                          headers={"Content-Type": "application/json"})
+    assert accepted.status_code == 200 and accepted.json()["brightness"] == 30
 
 
 def test_wildcard_origins_require_a_token(config):

@@ -46,6 +46,17 @@ def test_a_fan_setting_that_cannot_be_saved_reports_fans_not_saved(demo, config,
     assert engine.fans.settings.mode == "manual"
 
 
+def test_login_fields_and_request_lists_have_size_limits(demo):
+    refused = demo.post("/api/session/login", json={"host": "h" * 254, "username": "fixture"})
+    assert refused.status_code == 422 and refused.json()["detail"]["code"] == "invalid_credentials"
+    assert demo.put("/api/zones", json={"zones": [{}] * 65}).status_code == 422
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    assert demo.put("/api/rules", json={"rules": rules}).status_code == 422
+    assert demo.put("/api/rules", json={"rules": rules[:256]}).status_code == 200
+    refused = demo.post("/api/rules", json=rules[256])
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "invalid"
+
+
 def test_about_says_unofficial(client):
     about = client.get("/api/about").json()
     assert about["name"] == "Etherlighting Evolved" and about["short_name"] == "EE"

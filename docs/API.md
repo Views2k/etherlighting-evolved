@@ -92,7 +92,9 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 400 | `invalid` | Invalid request; the message gives the reason |
 | 401 | `auth_failed` | Wrong SSH username or password |
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
+| 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
+| 413 | `too_large` | The request body is larger than 1 MiB |
 | 409 | `not_logged_in` | Not logged in to a switch |
 | 409 | `host_key_changed` | The switch's SSH host key doesn't match the saved one |
 | 409 | `not_simulated` | Simulator controls require a demo login |
@@ -107,6 +109,14 @@ call `POST /api/session/forget-host-key` with `{"host": "...", "port": 22}` and 
 
 If the server has an API token, send `Authorization: Bearer <token>` with every request. The browser UI uses
 authenticated REST polling for these connections so the token stays out of URLs and access logs.
+
+Browser requests to `/api/` that carry `Sec-Fetch-Site: cross-site` or `same-site` are refused with 403 unless their
+`Origin` is the server itself or is listed in `cors_origins`; requests without that header, such as those from
+scripts and the desktop app, are not affected. Request bodies are limited to 1 MiB. `PUT /api/zones` accepts at most
+64 zones, and `PUT /api/rules`, `PUT /api/rules/order` and `POST /api/rules/test` at most 256 rules; longer lists
+return 422. `POST /api/rules` returns `400 invalid` when 256 rules already exist. In `POST /api/session/login`, a
+`host` longer than 253 characters, a `username` longer than 256 or a `password` longer than 4096 returns
+`422 invalid_credentials`.
 
 ## Session
 
