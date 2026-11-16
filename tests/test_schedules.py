@@ -32,6 +32,7 @@ def test_bad_schedules(bad):
 class FakeEngine:
     def __init__(self):
         self.calls = []
+        self._sfp_revisions = {}
 
     def apply_snapshot(self, scene):
         self.calls.append(("scene", scene))
@@ -48,7 +49,8 @@ class FakeSessions:
         return "demo"
 
 
-def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
+@pytest.mark.anyio
+async def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
     presets = PresetStore(tmp_path / "presets.json")
     presets.save("Evening", {"version": 2, "zones": []})
     store = ScheduleStore(tmp_path / "schedules.json")
@@ -59,8 +61,8 @@ def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
     sessions = FakeSessions()
     scheduler = Scheduler(store, presets, sessions)
 
-    assert len(scheduler.tick(WEDNESDAY_1900)) == 1
-    assert scheduler.tick(WEDNESDAY_1900.replace(second=50)) == []
+    assert len(await scheduler.tick_confirmed(WEDNESDAY_1900)) == 1
+    assert await scheduler.tick_confirmed(WEDNESDAY_1900.replace(second=50)) == []
     assert sessions.engine.calls == [("scene", {"version": 2, "zones": []})]
     missing = next(item for item in scheduler.list() if item["name"] == "Missing")
     assert missing["profile_missing"] and not missing["enabled"]
@@ -104,7 +106,8 @@ def test_schedules_from_a_newer_release_are_refused_and_never_overwritten(tmp_pa
     assert path.read_bytes() == content
 
 
-def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
+@pytest.mark.anyio
+async def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
     store = ScheduleStore(tmp_path / "schedules.json")
     for binding in (None, "a" * 64, "b" * 64, "demo"):
         store.add({"at": "19:00", "action": {"type": "brightness", "value": 40},
@@ -112,7 +115,7 @@ def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
     sessions = FakeSessions()
     sessions.schedule_identity = lambda: "a" * 64
     scheduler = Scheduler(store, PresetStore(tmp_path / "presets.json"), sessions)
-    assert len(scheduler.tick(WEDNESDAY_1900)) == 1
+    assert len(await scheduler.tick_confirmed(WEDNESDAY_1900)) == 1
     assert sessions.engine.calls == [("brightness", 40)]
     assert [row["needs_device_confirmation"] for row in scheduler.list()] == [True, False, True, True]
     assert all(row["next_run"] is None for row in scheduler.list() if row["needs_device_confirmation"])
