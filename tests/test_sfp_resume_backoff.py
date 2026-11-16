@@ -38,7 +38,7 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
 
         def capture(event):
             trace.append({
-                "event": event, "budget": engine.command_budget, "mode": engine.mode,
+                "event": event, "budget": engine.budget.value, "mode": engine.mode,
                 "connected": engine.connected, "native_blocked": engine._native_blocked,
                 "native_uncertain": switch.native_uncertain,
                 "sfp_status": switch.sfp_status(9), "sfp_pending": 9 in switch._sfp_pending,
@@ -57,7 +57,7 @@ def test_sfp_resume_survives_budget_backoff_after_acknowledged_acquisition_step(
             if phase == backoff_after and not injected:
                 injected = True
                 stopped_frame = engine._output_halt
-                engine._adjust_throttle(0.0)
+                engine.budget.adjust(0.0)
                 capture("CPU backoff")
 
         async def rgb(port, color, level):

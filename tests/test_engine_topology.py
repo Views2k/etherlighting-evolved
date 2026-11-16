@@ -51,7 +51,7 @@ def test_detected_layout_drives_scene_state_and_rendering(copper, optical):
     assert len(engine.compose()[0]) == copper
     assert [port["port"] for port in engine.state()["sfp"]] == list(optical)
     assert engine.state()["hardware_profile"] == {"key": "fixture"}
-    assert engine.command_budget > 0
+    assert engine.budget.value > 0
     restored = engine_for_layout(copper, optical)
     restored.apply_snapshot(scene)
     assert restored.snapshot() == scene

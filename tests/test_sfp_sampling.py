@@ -17,9 +17,9 @@ async def test_sfp_sampling_uses_available_headroom_without_accelerating_copper(
     switch, transport = await ready(SfpTransport())
     engine = Engine(switch, rules=[], transition=0, fps=25)
     engine.connected = True
-    engine._command_budget = 200
+    engine.budget.set(200)
     # Hold already-earned headroom to isolate scheduling from the independently tested CPU governor.
-    monkeypatch.setattr(engine, "_refresh_budget", lambda: None)
+    monkeypatch.setattr(engine.budget, "refresh", lambda: None)
     for port in (9, 10):
         engine.set_sfp(port, {"mode": "color", "effect": effect, "color": "blue", "period": 6.1})
     start = clock.now

@@ -36,7 +36,7 @@ def active_state(engine, transport):
         "sfp_acknowledged": dict(engine._sfp_acknowledged),
         "sfp_release": set(engine._sfp_release_ports),
         "origin": engine._animation_origin,
-        "animation_time": engine._animation_time,
+        "animation_time": engine.budget.animation_time,
         "commands": transport.command_count,
         "leds": deepcopy(transport.leds),
     }

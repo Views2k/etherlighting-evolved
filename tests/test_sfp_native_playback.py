@@ -38,7 +38,7 @@ async def write(engine, switch, **options):
     outputs = engine.sfp_outputs()
     await switch.write([PortOutput.off()] * 8, sfp=outputs,
                        yield_at=engine._sfp_playback.next_deadline(
-                           switch, engine.command_budget), **options)
+                           switch, engine.budget.value), **options)
     return outputs
 
 
@@ -93,7 +93,7 @@ async def test_pair_enrollment_barrier_and_keepalive_do_not_restart_segments(clo
         assert await write(engine, switch, force=True) == segments
         assert not any(event[0] in ("behavior", "sfp_pwm") for event in transport.events)
         transport.events.clear()
-    clock.now = first.finishes_at - sfp_preparation_lead(engine.command_budget) + .001
+    clock.now = first.finishes_at - sfp_preparation_lead(engine.budget.value) + .001
     assert engine.sfp_outputs() != segments  # The next target may be prepared, but cannot be sent early.
     attempts = []
 
@@ -315,8 +315,8 @@ async def test_gradients_cannot_target_copper_or_survive_revoked_capability(cloc
 async def test_render_loop_keeps_pair_barriers_under_changing_copper_load(clock, monkeypatch):
     engine, switch, transport = await setup(effect="color_cycle", period=6)
     engine.set_effect("rainbow", {"speed": 1})
-    engine._command_budget = 30
-    monkeypatch.setattr(engine, "_refresh_budget", lambda: None)
+    engine.budget.set(30)
+    monkeypatch.setattr(engine.budget, "refresh", lambda: None)
     start = clock.now
     events, segments = [], []
     original = engine.compose
@@ -362,7 +362,7 @@ async def test_preselected_wait_honors_changes_and_restores_selector(clock, monk
     await write(engine, switch)
     await write(engine, switch)
     old = dict(switch._sfp_transitions)
-    clock.now = old[9].finishes_at - sfp_preparation_lead(engine.command_budget) + .001
+    clock.now = old[9].finishes_at - sfp_preparation_lead(engine.budget.value) + .001
     selected = False
     original_wait = timing.wait
     original_stop = engine._output_halt
@@ -425,7 +425,7 @@ async def test_pair_skew_recovers_after_one_slow_ack_without_early_retarget(cloc
     transport.hook = record
     for _step in range(5):
         records = [switch.sfp_transition(port) for port in (9, 10)]
-        clock.now = min(record.finishes_at for record in records) - sfp_preparation_lead(engine.command_budget)
+        clock.now = min(record.finishes_at for record in records) - sfp_preparation_lead(engine.budget.value)
         # The skew guard can defer preparation until the pair's corrected scheduling window.
         for _ in range(30):
             prior_ids = [record.output.transition_id for record in records]
@@ -452,10 +452,10 @@ async def test_constant_follow_finishes_before_retiring_to_steady(clock):
     await write(engine, switch)
     segments = await write(engine, switch)
     ends = {port: switch.sfp_transition(port).finishes_at for port in (9, 10)}
-    clock.now = min(ends.values()) - sfp_preparation_lead(engine.command_budget) + .001
+    clock.now = min(ends.values()) - sfp_preparation_lead(engine.budget.value) + .001
     transport.events.clear()
     assert engine.sfp_outputs() == segments
-    assert engine._sfp_playback.next_deadline(switch, engine.command_budget) == max(ends.values())
+    assert engine._sfp_playback.next_deadline(switch, engine.budget.value) == max(ends.values())
     await write(engine, switch)
     assert not any(event[0] in ("sfp_pwm", "behavior") for event in transport.events)
     assert set(switch._sfp_transitions) == {9, 10}
@@ -463,14 +463,14 @@ async def test_constant_follow_finishes_before_retiring_to_steady(clock):
     settled = await write(engine, switch)
     assert all(output.gradient is None for output in settled.values())
     assert not switch._sfp_transitions
-    assert engine._sfp_playback.next_deadline(switch, engine.command_budget) is None
+    assert engine._sfp_playback.next_deadline(switch, engine.budget.value) is None
 
 
 @pytest.mark.anyio
 async def test_slow_pair_ack_does_not_starve_copper_before_corrected_preparation(clock, monkeypatch):
     engine, switch, transport = await setup(effect="color_cycle")
-    engine._command_budget = 30
-    monkeypatch.setattr(engine, "_refresh_budget", lambda: None)
+    engine.budget.set(30)
+    monkeypatch.setattr(engine.budget, "refresh", lambda: None)
     start = clock.now
     old_compose = engine.compose
     old_wait = timing.wait

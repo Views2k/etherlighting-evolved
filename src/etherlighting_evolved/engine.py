@@ -9,10 +9,9 @@ Each frame is built in this order, and each step can override the one before it:
 
 Only ports that changed visibly are sent to the switch, plus a full refresh every `keepalive` seconds, because the
 switch's own Etherlighting service keeps reapplying its colors. A change made through the API wakes the render
-loop immediately instead of waiting for the next frame.
+loop immediately instead of waiting for the next frame. Every write stays within the adaptive command budget
+(command_budget.py).
 
-Output starts at a conservative rate. The persistent color channel can increase its rate when recent CPU,
-acknowledgment latency, and demand support it; shell output stays at thirty commands per second or less.
 Colors are gamma corrected, and a port whose zone, rule or effect changes crossfades to its new color.
 """
 
@@ -33,6 +32,7 @@ from typing import Any
 from . import timing
 from .bandwidth import UplinkBandwidth
 from .color import BLACK, Color
+from .command_budget import CommandBudget
 from .effects import create_effect
 from .effects.base import Effect, RenderContext
 from .fans import POLL_INTERVAL
@@ -142,11 +142,6 @@ def _slug(name: str, taken: set[str]) -> str:
 class Engine:
     MAX_INSTANT_RATE = 30.0
     SFP_FRAME_RATE = 50.0
-    MAX_COMMANDS = 200.0
-    INITIAL_COMMANDS = 30.0
-    BUSY_IDLE = 0.50
-    CALM_IDLE = 0.75
-    TELEMETRY_AGE = 3.0
     MAX_RECONNECT_ATTEMPTS = 5
 
     def __init__(
@@ -168,8 +163,8 @@ class Engine:
         self.num_ports = switch.num_ports
         self._profile_model = switch.hardware_profile.key if switch.hardware_profile else None
         self._output_sfp_ports = tuple(switch.sfp_ports)
-        self.fps = bounded_number(fps, 1, 30, "frame rate")
-        self.max_commands = bounded_number(max_commands, 5, self.MAX_COMMANDS, "command limit")
+        fps = bounded_number(fps, 1, 30, "frame rate")
+        max_commands = bounded_number(max_commands, 5, CommandBudget.MAX_COMMANDS, "command limit")
         self.transition = bounded_number(transition, 0, 5, "transition")
         self.gamma = bounded_number(gamma, 1, 3, "gamma")
         self.link_poll = bounded_number(link_poll, 0.5, 3600, "status interval")
@@ -179,14 +174,9 @@ class Engine:
         self._reconnect_blocked = False
         self._loop_failed = False
         self._recovering = False
-        self._command_budget = min(self.max_commands, self.INITIAL_COMMANDS)
-        self._cpu_updated_at: float | None = None
-        self._healthy_cpu_samples = 0
-        self._budget_changed_at = timing.monotonic()
-        self._animation_updated_at = timing.monotonic()
-        self._animation_time = self._animation_updated_at
-        self._animation_origin = self._animation_time
-        self._last_write_seconds = 0.0
+        self.budget = CommandBudget(switch, num_ports=self.num_ports, fps=fps, max_commands=max_commands,
+                                    on_reduced=self._budget_reduced)
+        self._animation_origin = self.budget.animation_time
         self.cpu_idle: float | None = None
         self.cpu_load: float | None = None
         self._switch_health: dict | None = None
@@ -199,7 +189,7 @@ class Engine:
         self.zones: list[Zone] = []
         if everything:
             base = create_effect(effect, self.num_ports, effect_params)
-            self.zones.append(Zone("all", "All ports", everything, base, self._animation_time))
+            self.zones.append(Zone("all", "All ports", everything, base, self.budget.animation_time))
         specs = DEFAULT_RULES if rules is None else rules
         self.rules: list[Rule] = self._parse_rules(specs)
         self.overrides: dict[int, Override] = {}
@@ -250,7 +240,6 @@ class Engine:
         self._shown: list[tuple[Color, float]] = [(BLACK, 0.0)] * self.num_ports
         self._keys: list[tuple | None] = [None] * self.num_ports
         self._fades: dict[int, tuple[Color, float, float]] = {}
-        self._sent: list[tuple[float, int]] = []  # (time, commands) for the last few seconds
 
         self._meter = TrafficMeter()
         self._bandwidth = UplinkBandwidth(self._telemetry_ports(), poll_interval=self.link_poll)
@@ -596,7 +585,7 @@ class Engine:
         Ports left out of every zone stay dark unless a rule or override lights them."""
         zones = self._build_zones(specs)
         self._validate_native_zones(zones, require_capability=self.connected)
-        self._start_zones(zones, self._animation_clock(), keep_running=True)
+        self._start_zones(zones, self.budget.animation_clock(), keep_running=True)
         self._revise_sfp_outputs(self._replace_zones(zones))
         self._sync_sfp_rules()
         if clear_overrides:
@@ -618,7 +607,7 @@ class Engine:
                    for item in self.zones]
         self._validate_native_zones(planned, require_capability=True)
         target.effect = effect
-        target.started_at = self._animation_clock()
+        target.started_at = self.budget.animation_clock()
         target.wall_started_at = timing.monotonic()
         self._revise_sfp_outputs(self._sfp_zones.keys() & target.ports)
         if clear_overrides:
@@ -643,7 +632,7 @@ class Engine:
                 effect.update({"pace": candidate.p["pace"]})
             planned.append(Zone(item.id, item.name, item.ports, effect))
         self._validate_native_zones(planned, require_capability=True)
-        clock = self._animation_clock()
+        clock = self.budget.animation_clock()
         before = target.effect.params_json()
         effect_time = (timing.monotonic() - target.wall_started_at
                        if target.effect.category in {"time", "data"} else clock - target.started_at)
@@ -881,11 +870,11 @@ class Engine:
             signature, anchors, duration, follow = native[self._sfp_leader]
             outputs.update(self._sfp_playback.plan(
                 tuple(self.switch.sfp_ports), signature, anchors, duration, self.switch,
-                follow=follow, command_budget=self.command_budget))
+                follow=follow, command_budget=self.budget.value))
         else:
             for port, (signature, anchors, duration, follow) in native.items():
                 outputs.update(self._sfp_playback.plan((port,), signature, anchors, duration,
-                                                       self.switch, follow=follow, command_budget=self.command_budget))
+                                                       self.switch, follow=follow, command_budget=self.budget.value))
         return outputs
 
     def _sfp_native_spec(self, port: int) -> tuple | None:
@@ -1083,11 +1072,19 @@ class Engine:
         if self.mode == "running" and any(self._sfp_acknowledged[port] != expected[port] for port in expected):
             raise TransportError("Lighting settings were saved, but SFP output is still pending.")
 
+    @property
+    def fps(self) -> float:
+        return self.budget.fps
+
+    @property
+    def max_commands(self) -> float:
+        return self.budget.max_commands
+
     def set_fps(self, value: Any) -> None:
         fps = bounded_number(value, 1, 30, "frame rate")
-        self._animation_clock()
-        self.fps = fps
-        self._refresh_budget()
+        self.budget.animation_clock()
+        self.budget.fps = fps
+        self.budget.refresh()
         self._changed()
 
     def set_output(self, *, gamma: Any = None, transition: Any = None, max_commands: Any = None) -> None:
@@ -1096,13 +1093,13 @@ class Engine:
             "gamma": self.gamma if gamma is None else bounded_number(gamma, 1, 3, "gamma"),
             "transition": self.transition if transition is None else bounded_number(transition, 0, 5, "transition"),
             "max_commands": self.max_commands if max_commands is None else
-                bounded_number(max_commands, 5, self.MAX_COMMANDS, "command limit"),
+                bounded_number(max_commands, 5, CommandBudget.MAX_COMMANDS, "command limit"),
         }
-        self._animation_clock()
+        self.budget.animation_clock()
         if self.gamma != values["gamma"]:
             self._invalidate_sfp_intent()
-        self.gamma, self.transition, self.max_commands = values.values()
-        self._refresh_budget()
+        self.gamma, self.transition, self.budget.max_commands = values.values()
+        self.budget.refresh()
         self.switch.forget()
         self._changed()
 
@@ -1350,7 +1347,7 @@ class Engine:
     def apply_snapshot(self, scene: dict, *, preserve_unchanged: bool = False) -> set[int]:
         """Load a scene. Everything is validated before anything changes."""
         zones, rules, overrides, brightness, sfp, sfp_sync = self._prepare_snapshot(scene)
-        clock = self._animation_clock()
+        clock = self.budget.animation_clock()
         previous_sfp_output = {port: self._sfp_requires_output(port) for port in self.sfp}
         previous_revisions = dict(self._sfp_revisions)
         affected_sfp = set(self.sfp)
@@ -1451,12 +1448,12 @@ class Engine:
         return {
             "frames": self.frames,
             "commands": self.commands,
-            "commands_per_second": round(self.command_rate(), 1),
-            "command_budget": round(self.command_budget, 1),
+            "commands_per_second": round(self.budget.sent_rate(), 1),
+            "command_budget": round(self.budget.value, 1),
             "direct_rgb": self.switch.transport.direct_rgb,
             "ack_p95_ms": None if ack["p95"] is None else round(ack["p95"] * 1000, 3),
-            "cpu_sample_age_ms": None if self._cpu_updated_at is None else
-                round(max(0.0, now - self._cpu_updated_at) * 1000, 1),
+            "cpu_sample_age_ms": None if self.budget.cpu_updated_at is None else
+                round(max(0.0, now - self.budget.cpu_updated_at) * 1000, 1),
             "switch_cpu_idle": None if self.cpu_idle is None else round(self.cpu_idle, 2),
             "switch_load": self.cpu_load,
             "switch_health": self._switch_health,
@@ -1527,22 +1524,11 @@ class Engine:
 
     # Rendering
 
-    def _animation_clock(self) -> float:
-        """Keep motion sampled consistently when the command budget or CPU load slows full frames."""
-        tick = timing.monotonic()
-        full_frame_rate = min(self.fps, self.command_budget / max(1, self.num_ports))
-        if self._last_write_seconds > 0:
-            full_frame_rate = min(full_frame_rate, 1 / self._last_write_seconds)
-        scale = min(1.0, full_frame_rate / 3.75)
-        self._animation_time += max(0.0, tick - self._animation_updated_at) * scale
-        self._animation_updated_at = tick
-        return self._animation_time
-
     def compose(self, t: float | None = None, now: datetime | None = None,
                 clock: float | None = None) -> tuple[list[Color], list[PortOutput]]:
         tick = timing.monotonic()
         explicit_time = t
-        animation_tick = self._animation_clock() if explicit_time is None else 0.0
+        animation_tick = self.budget.animation_clock() if explicit_time is None else 0.0
         t = tick - self._t0 if t is None else t
         now = now or datetime.now()
         colors = [BLACK] * self.num_ports
@@ -1658,84 +1644,11 @@ class Engine:
         self._shown[i] = (color, brightness)
         return color, brightness
 
-    def command_rate(self, window: float = 5.0) -> float:
-        cutoff = timing.monotonic() - window
-        self._sent = [(at, n) for at, n in self._sent if at >= cutoff]
-        return sum(n for _, n in self._sent) / window
-
-    def _budget_ceiling(self) -> float:
-        transport_limit = self.MAX_COMMANDS if self.switch.transport.direct_rgb else self.INITIAL_COMMANDS
-        active_ports = self.num_ports or len(self.switch.sfp_ports) or 1
-        return min(self.max_commands, transport_limit, active_ports * self.fps)
-
-    @property
-    def command_budget(self) -> float:
-        return min(self._command_budget, self._budget_ceiling())
-
-    def _set_command_budget(self, value: float) -> None:
-        value = max(min(5.0, self._budget_ceiling()), min(value, self._budget_ceiling()))
-        if value == self._command_budget:
-            return
-        before = self._command_budget
-        self._animation_clock()
-        self._command_budget = value
-        self._budget_changed_at = timing.monotonic()
-        self._healthy_cpu_samples = 0
-        if value < before and self.mode == "running":
+    def _budget_reduced(self) -> None:
+        if self.mode == "running":
             self._output_halt.set()
             self._output_halt = asyncio.Event()
             self._dirty.set()
-
-    def _refresh_budget(self) -> None:
-        """Expire ramp evidence and reduce pressure without waiting for another CPU poll."""
-        now = timing.monotonic()
-        ack = self.switch.ack_latency(now)
-        fresh_cpu = self._cpu_updated_at is not None and 0 <= now - self._cpu_updated_at <= self.TELEMETRY_AGE
-        fresh_ack = ack["last_at"] is not None and 0 <= now - ack["last_at"] <= self.TELEMETRY_AGE
-        if not fresh_cpu or (self.switch.transport.direct_rgb and not fresh_ack):
-            self._healthy_cpu_samples = 0
-            self._set_command_budget(min(self.command_budget, self.INITIAL_COMMANDS))
-        else:
-            self._set_command_budget(self.command_budget)
-        if (self.switch.transport.direct_rgb and fresh_ack and ack["p95"] is not None
-                and ack["p95"] > 1 / self.command_budget):
-            self._set_command_budget(self.command_budget / 2)
-
-    def _current_command_budget(self) -> float:
-        self._refresh_budget()
-        return self.command_budget
-
-    def _adjust_throttle(self, idle: float | None) -> None:
-        """Increase direct output only with fresh headroom, fast acknowledgments, and actual demand."""
-        now = timing.monotonic()
-        if idle is None or not math.isfinite(idle) or not 0 <= idle <= 1:
-            self._cpu_updated_at = None
-            self._refresh_budget()
-            return
-        if self._cpu_updated_at is None or not 0 <= now - self._cpu_updated_at <= self.TELEMETRY_AGE:
-            self._healthy_cpu_samples = 0
-            self._set_command_budget(min(self.command_budget, self.INITIAL_COMMANDS))
-        self._cpu_updated_at = now
-        self._refresh_budget()
-        if idle < self.BUSY_IDLE:
-            self._healthy_cpu_samples = 0
-            self._set_command_budget(self.command_budget / 2)
-            return
-        if idle < self.CALM_IDLE:
-            self._healthy_cpu_samples = 0
-            return
-        self._healthy_cpu_samples += 1
-        if self._healthy_cpu_samples < 3 or now - self._budget_changed_at < 2:
-            return
-        proposed = min(self.command_budget + 15, self._budget_ceiling())
-        if self.switch.transport.direct_rgb:
-            ack = self.switch.ack_latency(now)
-            demand = sum(n for at, n in self._sent if 0 <= now - at <= self.TELEMETRY_AGE) / self.TELEMETRY_AGE
-            if (ack["count"] < min(16, max(3, int(self.command_budget * 2))) or ack["p95"] is None
-                    or ack["p95"] > 0.5 / proposed or demand < self.command_budget * 0.75):
-                self._healthy_cpu_samples = 0
-                return
-        self._set_command_budget(proposed)
 
     def _lost(self, exc: Exception) -> None:
         if self.connected:
@@ -1757,11 +1670,9 @@ class Engine:
             self._output_halt = asyncio.Event()
         self.switch.revoke_precision()
         self.error = str(exc)
-        self._cpu_updated_at = None
         self._switch_health = None
         self._health_updated_at = None
-        self._healthy_cpu_samples = 0
-        self._set_command_budget(min(self.INITIAL_COMMANDS, self._budget_ceiling()))
+        self.budget.reset()
         self.switch.reset_timing()
         self.switch.forget()
         for port in self.switch.sfp_ports:
@@ -1856,7 +1767,7 @@ class Engine:
             started = timing.monotonic()
             last_started = started
             next_tick = started + 1.0 / frame_rate
-            self._refresh_budget()
+            self.budget.refresh()
 
             if not self._native_blocked and not self._output_uncertain():
                 for port in tuple(self._sfp_release_ports):
@@ -1881,11 +1792,11 @@ class Engine:
                     sfp_revisions = {port: self._sfp_revisions[port] for port in sfp}
                     self._sfp_engaged |= bool(sfp)
                     sent = await self.switch.write(self.last_outputs,
-                                                   max_commands=self.command_budget,
+                                                   max_commands=self.budget.value,
                                                    stop=self._output_halt,
-                                                   budget_getter=self._current_command_budget,
+                                                   budget_getter=self.budget.current,
                                                    yield_at=self._sfp_playback.next_deadline(
-                                                       self.switch, self.command_budget),
+                                                       self.switch, self.budget.value),
                                                    **({"sfp": sfp} if sfp else {}))
                     self.commands += sent
                     self.frames += 1
@@ -1899,17 +1810,14 @@ class Engine:
                 finally:
                     attempted = self.switch.stats.attempted_commands - before
                     if attempted and copper_due:
-                        self._last_write_seconds = timing.monotonic() - started
+                        self.budget.last_write_seconds = timing.monotonic() - started
                     self._write_idle.set()
             elif (self.mode == "released" and (self._native_release_pending or self._sfp_release_pending)
                   and not self._native_blocked and not self._output_uncertain()):
                 with contextlib.suppress(TransportError):
                     await self.wait_for_output_idle()
             if attempted:
-                finished = timing.monotonic()
-                self._sent = [(at, n) for at, n in self._sent if finished - at <= 5]
-                self._sent.append((finished, attempted))
-                self._refresh_budget()
+                self.budget.record_sent(attempted)
             if self._subscribers:
                 self._publish(self.frame_message())
 
@@ -2005,9 +1913,9 @@ class Engine:
                 if cpu is not None:
                     self.cpu_idle = cpu["idle"] if cpu["idle"] is not None else self.cpu_idle
                     self.cpu_load = cpu["load"]
-                    self._adjust_throttle(cpu["idle"])
+                    self.budget.adjust(cpu["idle"])
                 else:
-                    self._adjust_throttle(None)
+                    self.budget.adjust(None)
                 if changed:
                     self._dirty.set()  # a cable was pulled: show it now, not on the next frame
             except PortSampleUnavailable:

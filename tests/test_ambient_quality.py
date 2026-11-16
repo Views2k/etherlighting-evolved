@@ -1,9 +1,8 @@
 import json
-from types import SimpleNamespace
 
 import pytest
 
-from etherlighting_evolved import engine as engine_module
+from etherlighting_evolved import timing
 from etherlighting_evolved.color import Color
 from etherlighting_evolved.effects import EFFECTS, create_effect
 from etherlighting_evolved.effects.base import RenderContext
@@ -130,12 +129,12 @@ def test_new_effect_scene_round_trip_preserves_colors_randomization_and_speed(ef
 @pytest.mark.parametrize("params", [{"speed": 1.1}, {"color_transition": 3.0}])
 def test_data_effect_edits_use_its_render_clock_when_transport_slows_animation(monkeypatch, params):
     clock = [100.0]
-    monkeypatch.setattr(engine_module, "timing", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(timing, "monotonic", lambda: clock[0])
     engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)), rules=[], transition=0,
                     max_commands=15, effect="traffic_trails", effect_params={"random_idle_color": True})
     clock[0] += 13.271
     before = engine.compose()[0]
-    assert engine._animation_time - engine.zone().started_at < clock[0] - engine.zone().wall_started_at
+    assert engine.budget.animation_time - engine.zone().started_at < clock[0] - engine.zone().wall_started_at
     engine.update_params(params)
     assert channel_delta(before, engine.compose()[0]) <= 1
 
