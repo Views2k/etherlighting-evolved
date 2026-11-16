@@ -1,12 +1,14 @@
 # Etherlighting Evolved desktop
 
-The desktop workspace uses Avalonia 11.3 and .NET 10. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
+The desktop workspace uses Avalonia 11.3 and .NET 10. Lighting, Effects, Automation, Profiles, Fans, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
 
 ## Run the app
 
 The Windows installer includes the desktop app, gateway and lighting engine. Start Etherlighting Evolved from the Start menu, then connect to your switch or choose the demo. Closing the window hides it in the notification area. Use the tray menu to open it again or quit.
 
-For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime. Start an EE workspace service on the same computer, or connect to an existing one using its private HTTPS workspace address. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, or an HTTP origin on this computer, without account details, a path or a query. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
+Fans controls the fans of a USW-Pro-XG-8-PoE. Fan control runs on the switch and keeps running after you quit EE; **Switch control** returns the fans to the switch's own controller. The uninstaller does not connect to the switch, so before you uninstall, connect to each switch EE controls and choose **Handoff to UniFi** in Settings. The [README](../README.md#what-ee-changes-on-the-switch) lists what EE leaves on the switch.
+
+For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime, but no workspace service, and only the Windows app connects to a switch. Connect to the workspace of a Windows computer that runs EE through its private HTTPS workspace address, or to a simulator started from a source checkout on the same computer. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, or an HTTP origin on this computer, without account details, a path or a query. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
 
 On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
 
@@ -49,11 +51,12 @@ The menu entry runs `EtherlightingEvolved` by name. Make sure `$HOME/.local/bin`
 
 ## Build and test
 
-Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
+Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md); set `EE_PREVIEW_PYTHON` to use a Python other than the checkout's `.venv`. Run the following from the repository root. The restore downloads the locked packages into `outputs/nuget-packages`, as `desktop/NuGet.Config` sets, and restores the app project too.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
+dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --configfile desktop/NuGet.Config --locked-mode
 dotnet build desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj -c Release --no-restore
 dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
 ```
@@ -66,9 +69,21 @@ The check program renders windows off screen. Its service checks use a simulator
 dotnet run --project desktop/EtherlightingEvolved.Native -c Release --no-build -- --demo
 ```
 
+### Program options
+
+| Option | Effect |
+| --- | --- |
+| `--url <address>` | Opens the workspace at this address instead of starting the bundled service or using the saved address |
+| `--demo` | Opens the demo with its own data, beside an installed copy |
+| `--background` | Starts in the notification area without showing the window; Start with Windows uses it |
+| `--quit` | Asks a running copy to quit; the installer uses it |
+| `--shot <folder> --page <name>` | Renders one page in a window off screen, saves `shot.png` in the folder and exits. `--theme <id>` and `--size <width>x<height>` (default 1440x900) set the look. The run keeps its data in the folder. |
+| `EE_WORKSPACE_URL` | Environment variable with the same effect as `--url`, used when `--url` is not given |
+| `EE_GPU_RENDERING=1` | Environment variable that selects GPU composition on Windows instead of the default software rendering, for comparison |
+
 ## Package
 
-Use `packaging/build.ps1` for the Windows installer with the gateway and engine. Use `desktop/publish.ps1` to create standalone clients for selected runtime identifiers. Both scripts use restored packages and an empty output directory. The macOS ZIP includes the application bundle. The Linux tarball includes a desktop entry and icon alongside the executable.
+Use `packaging/build.ps1` for the Windows installer with the gateway and engine. Use `desktop/publish.ps1` to create standalone clients for selected runtime identifiers: `win-x64`, `win-arm64`, `osx-arm64`, `osx-x64`, `linux-x64` and `linux-arm64`. Without `-Runtime` it builds `win-x64`, `osx-arm64`, `osx-x64` and `linux-x64`, and without `-OutputRoot` it writes to `outputs/native`. Both scripts use restored packages and an empty output directory. The macOS ZIP includes the application bundle. The Linux tarball includes a desktop entry and icon alongside the executable. Releases include the macOS and Linux clients for x64 and arm64.
 
 [WINDOWS POWERSHELL]
 
@@ -78,4 +93,4 @@ Use `packaging/build.ps1` for the Windows installer with the gateway and engine.
 
 Build the macOS bundles on a Mac, where the script signs them; Apple Silicon does not open unsigned programs. On Windows or Linux the script refuses macOS runtimes unless `-AllowUnsignedMac` is given, and each bundle built that way needs `codesign --force --deep --sign - EtherlightingEvolved.app` on a Mac before it opens.
 
-Follow the [repository workflow](../docs/WORKFLOW.md) for review, checks and release approval.
+Follow the [repository workflow](../docs/WORKFLOW.md) for branches, checks and releases.
