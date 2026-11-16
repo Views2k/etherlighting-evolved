@@ -16,7 +16,7 @@ jobs:
   quality:
     name: Verify EE
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -69,19 +69,38 @@ jobs:
             outputs/verification/browser/result.json
             outputs/verification/browser/*.png
       - name: Prepare pinned installer compiler
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: .\tools\ci-inno.ps1
-      - name: Build verified main installer
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      - name: Build and verify the installer
         run: |
-          & .\packaging\build.ps1 -PythonExe @(Get-Command python -CommandType Application)[0].Source -NodeExe @(Get-Command node -CommandType Application)[0].Source -CompilerExe $env:EE_CI_COMPILER -ReleaseCandidate -OutputRoot '.\outputs\candidate'
+          & .\packaging\build.ps1 -PythonExe @(Get-Command python -CommandType Application)[0].Source -NodeExe @(Get-Command node -CommandType Application)[0].Source -CompilerExe $env:EE_CI_COMPILER -OutputRoot '.\outputs\candidate'
       - name: Verify the packaged simulator
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           $browser = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'
           node .\tools\smoke-workspace.mjs --root .\outputs\candidate\dist\EtherlightingEvolved --browser $browser --output .\outputs\candidate\packaged-smoke --port 4198
+      - name: Install, verify and uninstall the package
+        run: |
+          $setup = @(Get-ChildItem -Path '.\outputs\candidate\dist' -Filter 'EtherlightingEvolved-Setup-*.exe')
+          if ($setup.Count -ne 1) { throw 'Expected one installer.' }
+          $target = Join-Path $env:RUNNER_TEMP 'ee-install'
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $log = Join-Path $PWD 'outputs\candidate\setup.log'
+          $install = Start-Process -FilePath $setup[0].FullName -PassThru -Wait -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=$target", '/TASKS=autostart', "/LOG=$log")
+          if ($install.ExitCode) { throw "Setup exited with code $($install.ExitCode)." }
+          if ($null -eq (Get-ItemProperty -LiteralPath $runKey).'Etherlighting Evolved') { throw 'Setup did not add the sign-in start entry.' }
+          python tools/verify-package.py --app $target --node @(Get-Command node -CommandType Application)[0].Source --output outputs/candidate/installed-verification.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $uninstall = Start-Process -FilePath (Join-Path $target 'unins000.exe') -PassThru -Wait -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $PWD 'outputs\candidate\uninstall.log')")
+          if ($uninstall.ExitCode) { throw "The uninstaller exited with code $($uninstall.ExitCode)." }
+          # The uninstaller hands over to a copy of itself in a temporary folder and returns at once.
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Test-Path -LiteralPath $target) -or $null -ne (Get-ItemProperty -LiteralPath $runKey).'Etherlighting Evolved') {
+            if ((Get-Date) -gt $deadline) { throw 'Uninstalling left the app folder or its sign-in start entry.' }
+            Start-Sleep -Seconds 1
+          }
       - name: Keep candidate diagnostics
-        if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: package-checks-${{ github.sha }}
@@ -90,6 +109,7 @@ jobs:
           path: |
             outputs/candidate/*.log
             outputs/candidate/package-verification.json
+            outputs/candidate/installed-verification.json
             outputs/candidate/packaged-smoke/result.json
             outputs/candidate/packaged-smoke/*.png
       - name: Keep the verified installer
