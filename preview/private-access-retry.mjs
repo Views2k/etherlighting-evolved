@@ -1,6 +1,7 @@
 // The gateway checks private access once when it starts. After a restart or sign-in, Tailscale can still be starting
 // at that moment. These states clear without any change in EE, so an enabled setting is checked again on a schedule
-// instead of staying off until someone refreshes it by hand. A retry only repeats the read-only startup check.
+// instead of staying off until someone refreshes it by hand. A retry repeats the startup check. When private access is
+// on and its port has no Serve configuration, that check adds EE's own route; it never changes other Serve configuration.
 export const RETRY_CODES=Object.freeze(['tailscale_not_running','tailscale_unavailable','tailscale_signin_required',
   'private_access_route_unavailable','private_access_listener_failed']);
 export const RETRY_DELAYS=Object.freeze([5000,10000,20000,40000,60000,120000,300000]);

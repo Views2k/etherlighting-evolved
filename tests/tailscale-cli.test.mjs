@@ -7,7 +7,21 @@ test('installed CLI uses an absolute executable, argument array and bounded hidd
   const run=createTailscaleRunner({platform:'win32',env:{ProgramFiles:'C:/Program Files'},execute:(...args)=>{actual=args;args.at(-1)(null,'{}','');}});
   assert.equal(await run(['status','--json']),'{}');assert.match(actual[0],/Program Files[\\/]Tailscale[\\/]tailscale.exe$/);
   assert.deepEqual(actual[1],['status','--json']);assert.equal(actual[2].windowsHide,true);assert.equal(actual[2].timeout,10000);
-  assert.equal(actual[2].shell,undefined);
+  assert.equal(actual[2].shell,undefined);assert.equal('signal' in actual[2],false);
+});
+
+test('a caller signal reaches the CLI process and an aborted call fails without output',async()=>{
+  let options,calls=0;
+  const controller=new AbortController();
+  const run=createTailscaleRunner({execute:(_exe,_args,given,done)=>{calls++;options=given;done(null,'ok','');}});
+  assert.equal(await run(['serve','status','--json'],{signal:controller.signal}),'ok');
+  assert.equal(options.signal,controller.signal);
+  controller.abort();
+  await assert.rejects(run(['serve','status','--json'],{signal:controller.signal}),error=>error.code==='tailscale_unavailable'&&error.actionUrl===null);
+  assert.equal(calls,1);
+  const aborted=createTailscaleRunner({execute:(_exe,_args,_options,done)=>done(Object.assign(new Error('sensitive abort'),{code:'ABORT_ERR',name:'AbortError'}),'','')});
+  await assert.rejects(aborted(['serve','status','--json'],{signal:new AbortController().signal}),
+    error=>error.code==='tailscale_unavailable'&&!error.message.includes('sensitive'));
 });
 
 test('signed-out status survives a nonzero CLI exit and no raw errors escape',async()=>{

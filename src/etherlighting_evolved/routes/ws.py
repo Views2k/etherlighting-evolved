@@ -15,10 +15,18 @@ from .context import ApiContext, token_matches
 
 log = logging.getLogger(__name__)
 
+# Every WebSocket command is reachable from devices that use private access, because the private gateway forwards
+# /api/ws without reading its frames. A command that must stay on the host computer needs a REST route instead.
+# tests/test_remote_routes.py pins this set.
+WS_COMMANDS = frozenset({"ping", "set_port", "set_ports", "clear_port", "set_effect", "set_params",
+                         "update_rule", "set_brightness", "release", "resume"})
+
 
 def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
     """The quick, high-frequency controls. Everything else goes through REST."""
     kind = msg.get("type")
+    if not isinstance(kind, str) or kind not in WS_COMMANDS:
+        raise ValueError(f"unknown message type {kind!r}")
     if kind == "ping":
         return {"type": "pong", "id": msg.get("id")}
     if kind == "set_port":
@@ -42,8 +50,6 @@ def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
         engine.release()
     elif kind == "resume":
         engine.resume()
-    else:
-        raise ValueError(f"unknown message type {kind!r}")
     return {"type": "ack", "id": msg["id"]} if msg.get("id") is not None else None
 
 

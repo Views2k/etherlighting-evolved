@@ -66,6 +66,15 @@ test('diagnostics rotate to one bounded backup and unsupported events are ignore
   assert.equal(f.entries().at(-1).exit_code,99);
 });
 
+test('an unconfirmed Tailscale route removal is a log line that leaves the last session alone',context=>{
+  const f=fixture(context);
+  assert.equal(f.log.record('private_route_cleanup_unconfirmed',{https_port:8444,url:'https://private.example.invalid'}),true);
+  const [entry]=f.entries();
+  assert.deepEqual(Object.keys(entry).sort(),['build','event','time']);assert.equal(entry.event,'private_route_cleanup_unconfirmed');
+  assert.deepEqual(readdirSync(f.directory),['service-diagnostics.log']);
+  assert.deepEqual(f.log.summary(),{available:true,last_session:null});
+});
+
 test('an unavailable log destination does not break lifecycle cleanup',()=>{
   const log=createServiceDiagnostics(path.join(tmpdir(),'missing-ee-diagnostics',String(Date.now())));
   assert.equal(log.record('workspace_closed'),false);

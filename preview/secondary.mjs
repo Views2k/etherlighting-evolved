@@ -8,7 +8,7 @@ import {createOperationGate, matchingProfile, sceneFingerprint, profileNameError
 import {effectById} from './effect-renderer.mjs';
 import {createProfilePreviews, profileLayoutNotice} from './profile-preview.mjs';
 import {lightingPorts} from './port-topology.mjs';
-import {requestHandoff, renderControllerConnection, renderPrivateAccess, showConnectionStatus} from './connections.mjs';
+import {remoteCanRestore, requestHandoff, renderControllerConnection, renderPrivateAccess, showConnectionStatus} from './connections.mjs';
 import {switchConnectionStatus} from './workspace-session.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {receiveScheduleClock,scheduleClockLabel} from './schedule-clock.mjs';
@@ -707,7 +707,9 @@ export async function renderProfiles(host, {request, state, onChange, getState =
 
 export {renderProfiles as renderScenes};
 
-export async function renderSettings(host, {request, onHelp, onSessionChange, onCloseWorkspace, onChange}) {
+// remote: Settings is open on a device that uses private access, which cannot forget the saved switch login or set up
+// UniFi Network.
+export async function renderSettings(host, {request, onHelp, onSessionChange, onCloseWorkspace, onChange, remote = false}) {
   const {header,notice,status} = frame(host,'Settings','Connections, appearance, and application details.');
   const gate = operationGate(host,status), content = node('div','settings-content panel'), controllerHost = node('div','controller-settings');
   const lifecycle = new AbortController();
@@ -769,7 +771,8 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   const reload = () => gate.run(async () => {
     try {
       const [session, state, capabilities] = await Promise.all([request('/api/session'),request('/api/state'),request('/api/private-access').catch(()=>({can_close_workspace:false}))]); if (!gate.active) return;
-      health.hidden = Boolean(session.simulated); sectionButtons[1].hidden = sectionButtons[2].hidden = Boolean(session.simulated); updateHealth(state);
+      health.hidden = Boolean(session.simulated); sectionButtons[1].hidden = Boolean(session.simulated);
+      sectionButtons[2].hidden = Boolean(session.simulated) || remote; controllerHost.hidden = remote; updateHealth(state);
       content.replaceChildren();
       switchState = node('p','connection-state');
       showConnectionStatus(switchState,switchConnectionStatus(session));
@@ -779,7 +782,8 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
         if(session.offline_lighting_error) content.append(node('p','help-text',session.offline_lighting_error));
         const handoff=button('Handoff to UniFi',()=>gate.run(async()=>{
           const unsaved=controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges();
-          const message='Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.'+(unsaved?' Unapplied connection changes will be discarded.':'');
+          const message='Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.'+(unsaved?' Unapplied connection changes will be discarded.':'')
+            +(remote&&!remoteCanRestore(session)?' The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.':'');
           if(!await confirmAction(host,'Handoff to UniFi?',message,'Handoff to UniFi',lifecycle.signal)||!gate.active)return;
           handoff.textContent='Handing off…';status('Handing lighting back to UniFi…');
           try{
@@ -789,7 +793,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
           }finally{if(gate.active)handoff.textContent='Handoff to UniFi';}
         }));
         content.append(node('p','help-text','Return lighting control to UniFi and keep your EE setup for next time.'),handoff);
-        if (session.has_saved_login) content.append(button('Forget saved switch login',()=>gate.run(async()=>{
+        if (session.has_saved_login && !remote) content.append(button('Forget saved switch login',()=>gate.run(async()=>{
           if (!await confirmAction(host,'Forget saved switch login?','Remove the saved SSH login from this PC. The current switch connection stays open.','Forget login',lifecycle.signal)||!gate.active) return;
           await request('/api/session/forget','POST');
           content.querySelector('[data-forget-login]')?.remove();
@@ -797,7 +801,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
         }),'quiet'));
         const forget = [...content.querySelectorAll('button')].find(item=>item.textContent==='Forget saved switch login');
         if (forget) forget.dataset.forgetLogin = 'true';
-        if(!controllerCleanup)controllerCleanup=renderControllerConnection(controllerHost,{request,onChanged:()=>onChange?.()});
+        if(!controllerCleanup&&!remote)controllerCleanup=renderControllerConnection(controllerHost,{request,onChanged:()=>onChange?.()});
       }
       const details = node('dl','settings-details');
       for (const [label,value] of [['Lighting',state.mode === 'released' ? 'Controlled by UniFi' : 'Controlled by EE'],['Ethernet ports',lightingPorts(state).copper.length],['SFP lights',lightingPorts(state).sfp.length]]) details.append(node('dt','muted',label),node('dd','',value));
@@ -805,6 +809,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       if (onCloseWorkspace && capabilities.can_close_workspace === true) content.append(button('Close web session',()=>gate.run(async()=>{
         if(await confirmAction(host,'Close web session?','This releases the switch connection and closes the web service. Your saved setup is preserved.','Close web session',lifecycle.signal)&&gate.active)await onCloseWorkspace();
       }),'quiet'));
+      else if (onCloseWorkspace && capabilities.admin_required === true) content.append(node('p','help-text','To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.'));
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();

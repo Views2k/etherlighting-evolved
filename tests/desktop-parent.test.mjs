@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {EventEmitter, once} from 'node:events';
-import {watchDesktopParent, whenWorkspaceGone} from '../preview/parent-lifetime.mjs';
+import {finishAfter, watchDesktopParent, whenWorkspaceGone} from '../preview/parent-lifetime.mjs';
 import {connectionLabel,switchConnectionStatus} from '../preview/workspace-session.mjs';
 
 test('parent EOF requests one graceful close without killing children', async()=>{
@@ -33,6 +33,20 @@ test('an exhausted gateway exits only when both its desktop and engine have gone
     }
     assert.equal(exits,1);
   }
+});
+
+test('a last step finishes once when it settles or when its time is up',async()=>{
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  for(const step of [async()=>{},async()=>{throw new Error('unconfirmed');}]){
+    let finished=0;
+    finishAfter(step,10000,()=>finished++,()=>{});
+    await settle();assert.equal(finished,1);
+  }
+  let finished=0,timer,release;
+  finishAfter(()=>new Promise(resolve=>{release=resolve;}),10000,()=>finished++,(fn,delay)=>{assert.equal(delay,10000);timer=fn;});
+  await settle();assert.equal(finished,0);
+  timer();assert.equal(finished,1);
+  release();await settle();assert.equal(finished,1);
 });
 
 test('an unconfirmed close can retry rather than pretending output stopped',async()=>{

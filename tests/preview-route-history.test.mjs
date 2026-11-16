@@ -86,7 +86,7 @@ const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8'
 const navigateSource=source.slice(source.indexOf('async function navigate(target,'),source.indexOf('function renderStudio()'));
 function app(b,confirmDraft,{pendingPlan=null}={}){
   const no=()=>{},rendered=[];
-  const context={workspaceReady:true,navigationVersion:0,page:'Profiles',routeHistory:b.routes,
+  const context={workspaceReady:true,navigationVersion:0,page:'Profiles',routeHistory:b.routes,workspaceOptions:{live:false},
     secondaryCleanup:Object.assign(()=>{},{canLeave:async()=>true}),pendingPlan,operation:Promise.resolve(),
     confirmDraft,activeColorPopover:undefined,portAnimator:{stop:no},portGlow:null,uplinkBandwidth:null,saveUiState:no,
     document:{title:'',querySelector:()=>null,querySelectorAll:()=>[]},view:{querySelector:()=>null,classList:{remove:no,add:no},offsetWidth:1,innerHTML:''},
@@ -170,6 +170,14 @@ test('accepted secondary-page discard can leave an incomplete new rule',async()=
   context.view.querySelector=selector=>selector==='input:invalid'?{focus(){focused++;}}:null;
   await context.navigate('Lighting');
   assert.equal(context.page,'Lighting');assert.deepEqual(rendered,['Lighting']);assert.equal(focused,0);
+});
+
+test('pages opened through private access are told that they are remote',async()=>{
+  const b=populated(),{context}=app(b,async()=>true),received=[];
+  Object.assign(context,{workspaceOptions:{live:true,remote:true},renderSettings:async(_host,options)=>{received.push(options.remote);return ()=>{};}});
+  await context.navigate('Settings');
+  context.workspaceOptions={live:true,remote:false};await context.navigate('Help');await context.navigate('Settings');
+  assert.deepEqual(received,[true,false]);
 });
 
 test('invalid lighting color still blocks navigation and preserves the draft',async()=>{

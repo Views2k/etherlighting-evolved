@@ -94,6 +94,9 @@ public sealed class AppShell : UserControl
     // Desktop-only clients can choose the EE host. The bundled local workspace manages its own service.
     public Func<Uri, Task>? OpenWorkspaceAddress { get; init; }
 
+    /// <summary>Opens this workspace in the default browser with administration access. Set only for the service this program started on Windows.</summary>
+    public Func<Task>? OpenInBrowser { get; init; }
+
     internal async Task ChooseWorkspaceAddress()
     {
         if (OpenWorkspaceAddress is null || current is not null && !await current.CanLeave()) return;

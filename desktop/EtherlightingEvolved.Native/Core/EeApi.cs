@@ -25,11 +25,19 @@ public sealed class ApiException(string message, string? code, int status, bool 
 /// </summary>
 public sealed class EeApi : IDisposable
 {
+    // The gateway answers these itself. The key goes only to them, so no engine route or redirect can receive it.
+    static readonly HashSet<string> AdminPaths = new(StringComparer.Ordinal)
+    {
+        "/api/private-access", "/api/private-access/refresh", "/api/private-access/login", "/api/workspace/close", "/api/workspace/admin-link",
+    };
     readonly HttpClient http;
+    readonly string? adminKey;
 
-    public EeApi(Uri baseUri)
+    /// <param name="adminKey">The administration key of a gateway this program started; null for any other workspace.</param>
+    public EeApi(Uri baseUri, string? adminKey = null)
     {
         BaseUri = baseUri;
+        this.adminKey = adminKey;
         http = new HttpClient(WorkspaceTransport.CreateHandler(baseUri, DecompressionMethods.All))
         {
             BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(30),
@@ -58,6 +66,7 @@ public sealed class EeApi : IDisposable
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
         if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         if (workspace is not null) request.Headers.Add("X-EE-Workspace", workspace);
+        if (adminKey is not null && AdminPaths.Contains(path)) request.Headers.Add("X-EE-Admin-Key", adminKey);
         HttpResponseMessage response;
         try { response = await http.SendAsync(request, token).ConfigureAwait(false); }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException && !token.IsCancellationRequested)

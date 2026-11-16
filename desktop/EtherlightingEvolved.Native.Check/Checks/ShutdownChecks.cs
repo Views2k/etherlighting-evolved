@@ -6,13 +6,16 @@ namespace EtherlightingEvolved.Native.Check.Checks;
 
 internal static class ShutdownChecks
 {
-    // A loopback fixture with its own child. It records each request and leaves the recovery journal alone. When its
-    // input closes it exits cleanly only if told to, standing in for the gateway's own cleanup after a desktop exit.
+    // A loopback fixture with its own child. It records each request, noting whether it carried the administration
+    // key it was started with, and leaves the recovery journal alone. When its input closes it exits cleanly only if
+    // told to, standing in for the gateway's own cleanup after a desktop exit.
     const string Gateway = """
         import http from 'node:http';
         import fs from 'node:fs';
         import {spawn} from 'node:child_process';
         const port = Number(process.env.EE_PREVIEW_PORT);
+        const key = process.env.EE_ADMIN_KEY ?? '';
+        fs.writeFileSync('key', key);
         const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore', windowsHide:true});
         fs.writeFileSync('child.pid', String(worker.pid));
         process.stdin.on('end', () => { if (fs.existsSync('exit-on-input-close')) { worker.kill(); process.exit(0); } });
@@ -20,7 +23,7 @@ internal static class ShutdownChecks
         const server = http.createServer(async (req, res) => {
           const reply = (code, body) => {res.writeHead(code); res.end(JSON.stringify(body));};
           if (req.url === '/api/workspace') return reply(200, {live:false});
-          fs.appendFileSync('requests', req.method+' '+req.url+'\n');
+          fs.appendFileSync('requests', req.method+' '+req.url+(key && req.headers['x-ee-admin-key'] === key ? ' key' : ' no-key')+'\n');
           if (req.method !== 'POST' || req.url !== '/api/workspace/close') return reply(404, {});
           while (!fs.existsSync('reply')) await new Promise(resolve => setTimeout(resolve, 10));
           if (fs.readFileSync('reply','utf8') === 'refused') return reply(409, {closed:false});
@@ -44,6 +47,7 @@ internal static class ShutdownChecks
     public static async Task Run(string output, Action<bool, string> check)
     {
         await UnexpectedExit(output, check);
+        var keys = new List<string>();
         foreach (var scenario in new[] { "confirmed", "refused-then-cleaned", "refused-unfinished" })
         {
             var refused = scenario != "confirmed";
@@ -60,6 +64,10 @@ internal static class ShutdownChecks
             try
             {
                 await host.StartAsync(CancellationToken.None);
+                var key = await File.ReadAllTextAsync(Path.Combine(directory, "key"));
+                keys.Add(key);
+                check(key == host.AdminKey && key.Length == 64 && key.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'),
+                    $"{scenario}: the service receives this launch's administration key");
                 using var child = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "child.pid"))));
                 var tray = host.StopAsync(force: false);
                 var requests = Path.Combine(directory, "requests");
@@ -71,7 +79,8 @@ internal static class ShutdownChecks
                 await File.WriteAllTextAsync(Path.Combine(directory, "reply"), refused ? "refused" : "accepted");
                 var results = await Task.WhenAll(tray, ipc, os).WaitAsync(TimeSpan.FromSeconds(10));
                 check(results.All(result => result == !refused), $"{scenario}: every close request gets the same result");
-                check((await File.ReadAllLinesAsync(requests)).SequenceEqual(["POST /api/workspace/close"]), $"{scenario}: one workspace close is sent for concurrent requests");
+                check((await File.ReadAllLinesAsync(requests)).SequenceEqual(["POST /api/workspace/close key"]),
+                    $"{scenario}: one workspace close, with the administration key, is sent for concurrent requests");
                 if (!refused)
                 {
                     check(!host.Running && !File.Exists(receipt), "a confirmed Quit stops the service and records nothing");
@@ -95,6 +104,7 @@ internal static class ShutdownChecks
             }
             finally { if (host.Running) host.Kill(); }
         }
+        check(keys.Count == 3 && keys.Distinct().Count() == 3, "each service launch gets its own administration key");
     }
 
     static async Task UnexpectedExit(string output, Action<bool, string> check)

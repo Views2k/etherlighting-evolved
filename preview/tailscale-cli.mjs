@@ -24,8 +24,10 @@ function outputAction(value) {
 export function createTailscaleRunner({platform=process.platform,env=process.env,execute=execFile,maxBuffer=65536}={}) {
   const executable=platform==='win32'?path.join(env.ProgramFiles||'C:/Program Files','Tailscale','tailscale.exe')
     :platform==='darwin'?'/Applications/Tailscale.app/Contents/MacOS/Tailscale':'/usr/bin/tailscale';
-  return args=>new Promise((resolve,reject)=>execute(executable,args,
-    {windowsHide:true,timeout:10000,maxBuffer,encoding:'utf8'},(error,stdout='',stderr='')=>{
+  // An aborted signal ends the CLI process, so a caller with a deadline is not held by a call that does not answer.
+  return (args,{signal}={})=>new Promise((resolve,reject)=>{
+    if(signal?.aborted){reject(Object.assign(new Error('Tailscale could not complete this action.'),{code:'tailscale_unavailable',actionUrl:null}));return;}
+    execute(executable,args,{windowsHide:true,timeout:10000,maxBuffer,encoding:'utf8',...(signal?{signal}:{})},(error,stdout='',stderr='')=>{
       // Status exits nonzero while signed out, but still returns the state JSON.
       if(args[0]==='status') {
         try {const status=JSON.parse(stdout);if(status&&typeof status.BackendState==='string'){resolve(stdout);return;}}catch{}
@@ -37,7 +39,8 @@ export function createTailscaleRunner({platform=process.platform,env=process.env
         :error.code==='EACCES'||/access denied|permission denied/i.test(stderr)?'tailscale_permission_required':'tailscale_unavailable';
       failure.actionUrl=outputAction(`${stdout}\n${stderr}`);
       reject(failure);
-    }));
+    });
+  });
 }
 
 export const runInstalledTailscale=createTailscaleRunner();

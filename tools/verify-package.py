@@ -34,7 +34,8 @@ def check_contents(app):
             raise ValueError(f'Missing notice: {name}')
     for name in ['EtherlightingEvolved.exe', 'libSkiaSharp.dll', 'libHarfBuzzSharp.dll', 'av_libglesv2.dll',
                  'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html', 'tools/approve-workspace-device.mjs',
-                 f'{RESIDENT}/fans.sh', f'{RESIDENT}/player.sh', f'{RESIDENT}/frames.awk']:
+                 'tools/private-access-cleanup.mjs', f'{RESIDENT}/fans.sh', f'{RESIDENT}/player.sh',
+                 f'{RESIDENT}/frames.awk']:
         path = app / name
         if not path.is_file() or not path.stat().st_size:
             raise ValueError(f'Missing application file: {name}')
@@ -99,10 +100,11 @@ def verify(root, app, node, installer=None, compiler_record=None):
                     raise ValueError(f'Unexpected authoring metadata: {relative.as_posix()}')
             sources[relative.as_posix()] = digest(source)
             assets += 1
-    helper = 'tools/approve-workspace-device.mjs'
-    sources[helper] = digest(root / helper)
-    if digest(app / helper) != sources[helper]:
-        raise ValueError('Bundled device approval tool differs from the checked source.')
+    for helper, name in [('tools/approve-workspace-device.mjs', 'device approval tool'),
+                         ('tools/private-access-cleanup.mjs', 'private access cleanup tool')]:
+        sources[helper] = digest(root / helper)
+        if digest(app / helper) != sources[helper]:
+            raise ValueError(f'Bundled {name} differs from the checked source.')
     check_contents(app)
     if digest(app / 'runtime/node.exe') != digest(node):
         raise ValueError('Bundled Node differs from the selected runtime.')

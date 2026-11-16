@@ -64,21 +64,76 @@ function uiDom(context){
 
 const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
 
-async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo}={}){
+async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,
+  capabilities=privateStatus,onCloseWorkspace}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
     calls.push({path,method,body});
     if(path==='/api/about')return about();
     if(path==='/api/session/handoff')return send();
-    if(path==='/api/session')return ++sessionReads===1?connected():reconcile;
+    if(path==='/api/session')return ++sessionReads===1?first:reconcile;
     if(path==='/api/state')return {num_ports:8,ports:[],sfp:[],mode:'running',stats:{}};
-    if(path==='/api/private-access')return privateStatus;
+    if(path==='/api/private-access')return capabilities;
     if(path==='/api/controller')return {connected:true,configured:true,preferences_supported:true,auto_reconnect:true,saved_login_available:true};
     throw new Error(`Unexpected request ${path}`);
   };
-  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args)});
+  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote,onCloseWorkspace});
   dom.after(cleanup);await flush();return {...dom,calls,sessions,cleanup};
 }
+
+const NO_HOST_LOGIN=' The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.';
+async function handoffMessage(ui){
+  ui.button('Handoff to UniFi').click();await flush();
+  const dialog=ui.dialog(),message=ui.findAll(dialog,node=>node.tagName==='p')[0].textContent;
+  ui.button('Cancel',dialog).click();await flush();return message;
+}
+
+test('Close web session needs administration access, and a tab without it says where to close the session',async context=>{
+  const CLOSE_HELP='To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.';
+  const shown=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.textContent===CLOSE_HELP).length;
+  for(const [capabilities,button,help] of [[{...privateStatus,can_close_workspace:true},true,0],
+    [{...privateStatus,can_close_workspace:false,admin_required:true},false,1],[{...privateStatus,can_close_workspace:false},false,0]]){
+    const ui=await settings(context,{capabilities,onCloseWorkspace:async()=>{}});
+    assert.equal(Boolean(ui.button('Close web session')),button,JSON.stringify(capabilities));
+    assert.equal(shown(ui),help,JSON.stringify(capabilities));
+  }
+});
+
+test('remote Settings leaves out saved-login removal and UniFi Network setup',async context=>{
+  const ui=await settings(context,{remote:true}),nav=ui.byClass(ui.host,'settings-nav')[0];
+  assert.equal(ui.button('Forget saved switch login'),undefined);
+  assert.equal(ui.button('UniFi',nav).hidden,true);assert.equal(ui.byClass(ui.host,'controller-settings')[0].hidden,true);
+  assert.equal(ui.calls.some(call=>call.path.startsWith('/api/controller')),false);
+  assert.ok(ui.button('Handoff to UniFi'));
+  assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),false);
+});
+
+test('a remote handoff warns when the host has no saved login that opens',async context=>{
+  for(const first of [{...connected(),has_saved_login:false},{...connected(),saved_login_error:'x'}]){
+    const ui=await settings(context,{remote:true,first});
+    assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),true);
+    assert.equal(ui.calls.some(call=>call.method),false);
+  }
+});
+
+test('local Settings keeps saved-login removal, UniFi Network setup and the plain handoff message',async context=>{
+  const ui=await settings(context,{first:{...connected(),has_saved_login:true,saved_login_error:'x'}});
+  assert.ok(ui.button('Forget saved switch login'));
+  assert.equal(ui.byClass(ui.host,'controller-settings')[0].hidden,false);
+  assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),false);
+});
+
+test('canceling a remote scene choice points to the login saved on the host',async context=>{
+  for(const [hasSaved,text] of [[false,'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.'],
+    [true,'Lighting setup canceled. Choose Connect with saved login to try again.']]){
+    const ui=uiDom(context),choice={connection_id:'candidate',legacy_revision:'legacy',legacy_available:true};
+    const request=async path=>path==='/api/private-access'?privateStatus:{logged_in:false,pending_scene_choice:null,has_saved_login:hasSaved};
+    const cleanup=renderSwitchConnection(ui.host,{request,session:{logged_in:false,has_saved_login:true,pending_scene_choice:choice},remote:true,
+      restoreSaved:async()=>assert.fail('No reconnect'),onConnected:async()=>assert.fail('No workspace')});ui.after(cleanup);await flush();
+    ui.button('Cancel',ui.dialog()).click();await flush();
+    assert.equal(ui.byClass(ui.host,'connection-notice')[0].textContent,text);
+  }
+});
 
 test('handoff requires a scoped confirmation and Cancel sends no command',async context=>{
   const ui=await settings(context);assert.ok(ui.button('Handoff to UniFi'));assert.equal(ui.calls.some(call=>call.method),false);

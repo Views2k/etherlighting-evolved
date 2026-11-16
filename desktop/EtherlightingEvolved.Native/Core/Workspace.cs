@@ -20,7 +20,8 @@ public sealed class Workspace : IAsyncDisposable
     long streamRevision, fullStateRevision, nextRefresh, appliedRefresh, bandwidthReceivedAt;
     readonly Dictionary<string, long> frameRevisions = [];
 
-    public Workspace(Uri baseUri) => Api = new EeApi(baseUri);
+    /// <param name="adminKey">The administration key of the gateway this program started, for that address only.</param>
+    public Workspace(Uri baseUri, string? adminKey = null) => Api = new EeApi(baseUri, adminKey);
 
     public EeApi Api { get; }
 
@@ -33,6 +34,9 @@ public sealed class Workspace : IAsyncDisposable
 
     /// <summary>/api/workspace: whether this workspace controls a real switch ("live").</summary>
     public JsonObject Options { get; set; } = new() { ["live"] = false };
+
+    /// <summary>/api/workspace: true when this window reaches the workspace through private access.</summary>
+    public bool Remote => Options.Bool("remote") == true;
 
     /// <summary>/api/about: the service's version and disclaimer. Empty for a service that does not report them.</summary>
     public JsonObject About { get; set; } = [];

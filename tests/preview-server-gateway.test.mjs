@@ -5,6 +5,7 @@ import net from 'node:net';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import {createWorkspaceServer} from '../preview/server.mjs';
+import {createAdminAccess} from '../preview/admin-access.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const host='127.0.0.1:4180';
@@ -21,7 +22,8 @@ async function gateway(t){
   const backendPort=await listen(backend);
   const {server}=createWorkspaceServer({root,port:4180,live:false,backendPort,token:'fixture-token',
     child:{exitCode:null,stdin:{writableEnded:false,end(){}}},diagnostics:{record(){}},
-    privateAccess:{status:()=>({}),close:async()=>{}},closeWorkspace:async()=>{},keepAvailable:()=>({observe(){},stop(){}})});
+    privateAccess:{status:()=>({}),close:async()=>{}},admin:createAdminAccess({key:'a'.repeat(64),port:4180}),
+    closeWorkspace:async()=>{},keepAvailable:()=>({observe(){},stop(){}})});
   const port=await listen(server);
   t.after(()=>Promise.all([server,backend].map(item=>{item.closeAllConnections();return new Promise(done=>item.close(done));})));
   return {port,backend,backendPort,received};
@@ -69,6 +71,19 @@ test('API requests reach the engine with its token and without the browser origi
   assert.equal(headers.authorization,'Bearer fixture-token');
   assert.equal(headers.origin,undefined);
   assert.equal(headers.host,`127.0.0.1:${f.backendPort}`);
+});
+
+test('the administration key and browser cookies never reach the engine',async t=>{
+  const f=await gateway(t),secrets={cookie:'ee_admin_4180=fixture; theme=dark','x-ee-admin-key':'a'.repeat(64)};
+  await request(f.port,'/api/session',{headers:secrets});
+  const [{headers}]=f.received;
+  assert.equal(headers.cookie,undefined);assert.equal(headers['x-ee-admin-key'],undefined);
+  assert.equal(headers.authorization,'Bearer fixture-token');
+  const arrived=new Promise(resolve=>f.backend.once('upgrade',(req,socket)=>{socket.destroy();resolve(req.headers);}));
+  const client=openSocket(f.port,{Cookie:secrets.cookie,'X-EE-Admin-Key':secrets['x-ee-admin-key']});
+  const upgraded=await arrived;client.destroy();
+  assert.equal(upgraded.cookie,undefined);assert.equal(upgraded['x-ee-admin-key'],undefined);
+  assert.equal(upgraded.authorization,'Bearer fixture-token');
 });
 
 test('API requests answer 503 when the engine is not listening',async t=>{

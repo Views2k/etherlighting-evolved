@@ -39,6 +39,7 @@ const messages = {
   controller_invalid_response: 'The controller response could not be read. Check the UniFi Network address.',
   site_required: 'Choose the UniFi site that contains your switch.',
   switch_not_found: 'The connected switch was not found in this site. Check the selected site.',
+  local_access_required: 'This action is available only on the computer running EE.',
   // The service's own text says which saved lighting failed (damaged behind switch playback, or saved by a newer
   // EE) and how to recover, and it names no host or user.
   invalid_saved_scene: error => typeof error.message === 'string' ? error.message : null,
@@ -48,6 +49,26 @@ export function connectionError(error, fallback = 'The connection could not be c
   const entry = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
   const message = typeof entry === 'function' ? entry(error) : entry;
   return message || (error?.name === 'TimeoutError' ? messages.timeout : fallback);
+}
+
+// A device on Tailscale cannot sign in, change the saved login or accept a host key, so these point to the computer
+// running EE.
+const remoteMessages = {
+  no_saved_login: 'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.',
+  saved_login_unavailable: 'The saved login could not be opened. Sign in to the switch on the computer running EE.',
+  auth_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
+  authentication_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
+  host_key_untrusted: 'Accept the switch’s SSH host key on the computer running EE, then connect again.',
+  host_key_changed: 'The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.',
+};
+
+export function remoteConnectionError(error) {
+  return typeof error?.code === 'string' && Object.hasOwn(remoteMessages,error.code) ? remoteMessages[error.code] : connectionError(error);
+}
+
+// SessionManager reports has_saved_login with saved_login_error when a saved login exists but cannot be opened.
+export function remoteCanRestore(session) {
+  return session?.has_saved_login === true && !session.saved_login_error;
 }
 
 function handoffNeedsReview(session) {return session?.error?.code==='handoff_recovery_required';}
@@ -256,6 +277,7 @@ const privateAccessMessages = {
   private_access_invalid_configuration:'Check the Tailscale configuration on this PC, then refresh status.',
   unavailable:'Private access could not be checked. Refresh status to try again.',
   forbidden:'Change this setting in EE on the host computer.',
+  admin_required:'To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.',
 };
 
 export function privateAccessError(error) {
@@ -295,6 +317,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const title=node('h2','','Mobile & remote access'),refresh=button('Refresh private access','quiet');header.append(title,refresh);
   const state=node('p','connection-state waiting','Checking private access…');
   const help=node('p','help-text','Use Tailscale to open this workspace on your phone or another device.');
+  const scope=node('p','help-text','Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.');
   const setup=node('div','connection-setup'),setupHelp=node('p','help-text','Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.');
   const setupActions=node('div','connection-actions'),setupLink=node('a','button'),signIn=button('Sign in to Tailscale','primary');
   setupLink.target='_blank';setupLink.rel='noopener noreferrer';setupActions.append(setupLink,signIn);setup.append(setupHelp,setupActions);setup.hidden=true;
@@ -312,8 +335,11 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   open.target='_blank';open.rel='noopener noreferrer';address.append(open,copy);address.hidden=true;
   const install=node('p','help-text','iPhone or iPad: Share → Add to Home Screen. Android: browser menu → Install app.');install.hidden=true;
   const [message,status]=notice();
-  section.append(header,help,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
+  section.append(header,help,scope,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
   const canConfigure=()=>current?.can_configure===true;
+  // A local tab without administration access on a live host. The demo gateway reports neither field, so a demo tab
+  // keeps the general text.
+  const locked=()=>current?.admin_required===true&&(current.available===true||typeof current.error==='object'&&current.error!==null);
   const canRetry=()=>current?.enabled===true&&current?.available===true&&current?.ready!==true;
   const currentPort=()=>Number.isInteger(current?.https_port)&&current.https_port>=1024&&current.https_port<=65535?current.https_port:8444;
   const readyUrl=()=>{const url=privateAccessUrl(current?.url);return current?.available===true&&current.enabled===true&&current.ready===true&&url&&Number(new URL(url).port)===currentPort()?url:null;};
@@ -331,6 +357,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!audienceChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
     apply.textContent=pending==='apply'?'Applying…':chosen===enabled&&canRetry()?'Retry private access':'Apply setting';refresh.disabled=Boolean(pending);
     section.setAttribute('aria-busy',String(Boolean(pending)));readOnly.hidden=!current||canConfigure();
+    readOnly.textContent=locked()?privateAccessMessages.admin_required:privateAccessMessages.forbidden;
     port.value=portDraft??String(currentPort());port.disabled=Boolean(pending)||!canChangePort();advanced.hidden=!current||!canConfigure();
     resetPort.hidden=portDraft===null;resetPort.disabled=Boolean(pending)||!canConfigure();
     const setupAction=current?.setup_action,setupUrl=privateAccessSetupUrl(current?.action_url,setupAction);
@@ -376,7 +403,14 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
       else if(saving&&(result.enabled!==wanted||portChange&&result.https_port!==wantedPort||audienceChange&&result.audience!==wantedAudience))status('The setting could not be confirmed. Refresh status before trying again.',true);
       else if(saving)status(audienceChange&&wanted===wasEnabled?'Private access updated.':wanted?'Private access enabled.':'Private access disabled.');
       else if(login&&result.setup_action==='approve')status('Continue in Tailscale to finish signing in, then refresh status.');
-    }catch(error){if(active){status(privateAccessError(error),true);if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});}}
+    }catch(error){
+      if(active){
+        status(privateAccessError(error),true);
+        // The page was opened before EE restarted, or without administration access: show the read-only status.
+        if(error?.code==='admin_required'){try{const latest=await request('/api/private-access');if(active)update(latest);}catch{}}
+        if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});
+      }
+    }
     finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});else if(login)(setupLink.hidden?refresh:setupLink).focus({preventScroll:true});}}
   };
   const start=(operation,check=false)=>{if(pending)return completion;completion=perform(operation,check);return completion;};
@@ -508,7 +542,9 @@ export function showSceneChoice(request, session, {signal} = {}) {
   return promise;
 }
 
-export function renderSwitchConnection(host, {request, session = {}, onConnected, onSessionChange, onDemo, restoreSaved, onHelp}) {
+// remote: the page is open on a device that uses private access. Such a device can only reconnect to the login saved
+// on the computer running EE, so the form holds only Connect with saved login and Retry handoff.
+export function renderSwitchConnection(host, {request, session = {}, onConnected, onSessionChange, onDemo, restoreSaved, onHelp, remote = false}) {
   let active = true, pending = null, completed = false, dirty = false, saved = session, forgetting = false;
   let retryingHandoff = false;
   const lifecycle = new AbortController();
@@ -531,10 +567,14 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const restore = button('Connect with saved login');
   const forget = button('Forget saved login','quiet');
   const retryHandoff = button('Retry handoff','primary');retryHandoff.hidden=true;
-  const actions = node('div', 'connection-actions'); actions.append(submit);
+  const actions = node('div', 'connection-actions');
+  if (!remote) actions.append(submit);
   if (restoreSaved) actions.append(restore);
-  actions.append(forget,retryHandoff);
-  form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
+  if (!remote) actions.append(forget);
+  actions.append(retryHandoff);
+  if (remote) form.append(actions);
+  else form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
+  const primary = remote ? restore : submit, failure = remote ? remoteConnectionError : connectionError;
   panel.append(message, form);
   if (onDemo) {
     const demo = button('Continue with demo', 'quiet');
@@ -563,8 +603,12 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
     restore.hidden=!restoreSaved || !saved.has_saved_login;
     forget.hidden=!saved.has_saved_login;
+    if (remote) intro.textContent = saved.has_saved_login === true ? 'Reconnect to the switch saved on the computer running EE.' : remoteMessages.no_saved_login;
     panel.querySelector(':scope > button')?.toggleAttribute('disabled', waiting);
   };
+  const canceledChoice = resolved => !remote ? 'Lighting setup canceled. You can edit this login and connect again.'
+    : remoteCanRestore(resolved) ? 'Lighting setup canceled. Choose Connect with saved login to try again.'
+    : resolved.saved_login_error ? remoteMessages.saved_login_unavailable : remoteMessages.no_saved_login;
   const enter = async value => {
     if (!active || completed) return;
     const resolved=await showSceneChoice(request,value,{signal:lifecycle.signal});
@@ -572,8 +616,8 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     saved=resolved;
     if(handoffBlocked(resolved)){const handoff=handoffStatus(resolved);status(handoff.message,handoff.error,handoff.tone);setBusy();return;}
     if(!resolved.logged_in){
-      if(value?.pending_scene_choice)status('Lighting setup canceled. You can edit this login and connect again.');
-      setBusy();submit.focus({preventScroll:true});return;
+      if(value?.pending_scene_choice)status(canceledChoice(resolved));
+      setBusy();primary.focus({preventScroll:true});return;
     }
     completed = true; password.value = ''; dirty = false;
     try { await onConnected(resolved); }
@@ -592,8 +636,8 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     if(handoffBlocked(saved)&&handoff)status(handoff.message,handoff.error,handoff.tone);
     else if (saved.pending_scene_choice) status('Choose lighting to finish connecting.');
     else if (saved.connecting) status('Connecting with saved login…');
-    else if (saved.saved_login_error) status(messages.saved_login_unavailable, true);
-    else if (saved.error) status(connectionError(saved.error), true);
+    else if (saved.saved_login_error) status((remote ? remoteMessages : messages).saved_login_unavailable, true);
+    else if (saved.error) status(failure(saved.error), true);
     else if(handoff)status(handoff.message,handoff.error,handoff.tone);
     setBusy();
     if(sceneChoiceDialog||(!handoffBlocked(saved)&&(saved.logged_in||saved.pending_scene_choice)))queueMicrotask(() => { void enter(saved); });
@@ -608,8 +652,8 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
         saved = result;
         if (!result?.logged_in&&!result?.pending_scene_choice) throw new Error('Connection was not established.');
         await enter(result);
-      } catch (error) { if (active) status(connectionError(error), true); }
-      finally { pending = null; setBusy();if(active&&!completed)submit.focus({preventScroll:true}); }
+      } catch (error) { if (active) status(failure(error), true); }
+      finally { pending = null; setBusy();if(active&&!completed)primary.focus({preventScroll:true}); }
     })();
     setBusy();
   };
@@ -641,11 +685,11 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
         if(result.session){update(result.session);await onSessionChange?.(result.session,result.error?{message:result.error,error:true}:undefined);}
         if(active&&result.error)status(result.error,true);
       }catch{if(active)status('Handoff status could not be displayed. Refresh the page to check its status.',true);}
-      finally{pending=null;retryingHandoff=false;setBusy();if(active){const target=handoffRetryable(saved)?retryHandoff:handoffBlocked(saved)?message:restoreSaved&&saved.has_saved_login?restore:submit;if(target===message)message.tabIndex=-1;target.focus({preventScroll:true});}}
+      finally{pending=null;retryingHandoff=false;setBusy();if(active){const target=handoffRetryable(saved)?retryHandoff:handoffBlocked(saved)?message:restoreSaved&&saved.has_saved_login?restore:primary;if(target===message)message.tabIndex=-1;target.focus({preventScroll:true});}}
     })();setBusy();
   });
   forget.addEventListener('click', async () => {
-    if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
+    if (remote || !active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     if (!await confirmAction(host,'Forget saved login?','Remove the saved switch login from this PC.','Forget login',lifecycle.signal)) return;
     if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     forgetting = true;
