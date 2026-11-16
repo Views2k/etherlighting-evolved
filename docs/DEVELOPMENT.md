@@ -57,7 +57,7 @@ Source workspace data defaults to `outputs/browser-preview-data/`. Simulator dat
 
 The packaged Windows gateway stores its workspace settings under `%LOCALAPPDATA%/Etherlighting Evolved/workspace/`. Its live engine uses the same engine data directory as source mode. Changing the checkout or rebuilding an installer does not require copying or deleting either data directory.
 
-`outputs/`, `dist/`, build caches, virtual environments, runtime configuration, and local working notes are excluded from version control. Preserve previously delivered installers when choosing a new output directory. Firmware images, extracted vendor files, private diagnostics, and saved credentials do not belong in the source repository.
+`outputs/`, `dist/`, build caches, virtual environments, runtime configuration, and local working notes are excluded from version control. Firmware images, extracted vendor files, private diagnostics, and saved credentials do not belong in the source repository.
 
 ## Tests
 
@@ -82,7 +82,7 @@ For the browser/backend contract harness:
 
 The harness uses an in-process simulator with temporary data. Keep simulator and fixture results distinct from physical switch testing. Device output, cleanup, and visual acceptance require the qualified model and firmware documented in [HARDWARE.md](HARDWARE.md).
 
-Run checks affected by a change and retain their command, source revision, result, and evidence location. A previously passing installer remains valid evidence for unchanged inputs; source changes need the relevant checks before the next package is delivered.
+Run the checks that a change affects before you build a new installer from it. `tools/verify.ps1` runs the local checks together (see [WORKFLOW.md](WORKFLOW.md#local-verification)).
 
 ## Command line
 

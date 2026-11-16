@@ -70,7 +70,7 @@ Dependabot (`.github/dependabot.yml`) opens weekly update pull requests for the 
 3. The EE Release workflow (`.github/workflows/release.yml`) checks that the tag names the application version, builds the installer and the macOS and Linux clients for x64 and arm64, writes `SHA256SUMS`, adds build provenance attestations and creates a draft GitHub Release with these files and `package-verification.json`.
 4. Review the draft and its files, then publish it by hand.
 
-The installer and the clients are not code-signed yet. The [README](../README.md#verify-a-download) describes how to verify a download.
+The Windows installer has no Authenticode signature yet. The macOS clients have an ad hoc signature but no Developer ID signature or notarization. The [README](../README.md#verify-a-download) describes how to verify a download.
 
 ## Local output
 

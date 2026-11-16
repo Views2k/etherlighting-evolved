@@ -43,7 +43,7 @@ Download the files from the [releases page](https://github.com/Views2k/etherligh
 | `SHA256SUMS` | SHA-256 checksums of the installer and the client archives |
 | `package-verification.json` | Record of the checks the release build ran on the Windows package |
 
-GitHub Actions builds each release from a version tag. The installer and the apps are not code-signed yet, so Windows SmartScreen can warn before Setup runs, and macOS asks you to allow the app in System Settings → Privacy & Security the first time it opens. Verify a download before you run it.
+GitHub Actions builds each release from a version tag. The Windows installer has no Authenticode signature yet, so Windows SmartScreen can warn before Setup runs. The macOS app has an ad hoc signature but is not signed with a Developer ID or notarized, so macOS blocks it the first time it opens; choose **Open Anyway** in System Settings → Privacy & Security (System Preferences → Security & Privacy on macOS 12). Verify a download before you run it.
 
 ### Verify a download
 
@@ -67,7 +67,7 @@ shasum -a 256 EtherlightingEvolved-<version>-osx-arm64.zip
 sha256sum EtherlightingEvolved-<version>-linux-x64.tar.gz
 ```
 
-Each file also has a build provenance attestation that ties it to the commit and workflow run that built it. Check it with the [GitHub CLI](https://cli.github.com/):
+The installer and each client archive also have a build provenance attestation that ties the file to the commit and workflow run that built it. Check it with the [GitHub CLI](https://cli.github.com/):
 
 ```sh
 gh attestation verify EtherlightingEvolved-Setup-<version>.exe --repo Views2k/etherlighting-evolved
@@ -91,7 +91,7 @@ Extract the archive. On macOS, open `EtherlightingEvolved.app`. On Linux, run `.
 
 Closing the window keeps EE running in the notification area. Choose **Quit** in the tray menu to stop it. To use the workspace in a browser on the same computer, choose **Open in browser** in the desktop app. A browser tab opened another way shows the Mobile & remote access settings read-only and cannot close the workspace.
 
-Devices that open EE through Tailscale can change lighting, effects, automation, profiles, schedules, port names and fans, and can reconnect to the saved switch. Logging in to a new switch, forgetting the saved login, UniFi Network setup, Tailscale settings and accepting a switch's key work only on the Windows computer that runs EE.
+Devices that open EE through Tailscale can change lighting, effects, automation, profiles, schedules, port names and fans, can reconnect to the saved switch, and can choose Handoff to UniFi. Logging in to a new switch, forgetting the saved login, UniFi Network setup, Tailscale settings and accepting a switch's key work only on the Windows computer that runs EE.
 
 ## What EE changes on the switch
 
@@ -118,9 +118,9 @@ On Windows, EE keeps its data in two folders. The uninstaller removes the progra
 | `%USERPROFILE%\.etherlighting-evolved` | Saved switch and UniFi Network logins (encrypted with Windows DPAPI for your account), pinned SSH host keys, lighting, profiles, schedules, port names, fan settings, the switch playback record and the output ownership records in `output-ownership` |
 | `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`. `workspace` holds the private access settings, approved Tailscale devices and `service-diagnostics.log`. `demo` holds the demo's data. |
 
-The macOS and Linux clients keep their settings and `desktop.log` in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, delete the app or its extracted folder and that data folder.
+The macOS and Linux clients keep their settings and `desktop.log` in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, quit it and delete the app or its extracted folder and that data folder. If you turned on **Start at login** in its tray menu, turn it off first, or delete `~/Library/LaunchAgents/com.views2k.etherlighting-evolved.plist` on macOS or `~/.config/autostart/etherlighting-evolved.desktop` on Linux. On Linux, also delete the files that the [desktop guide](desktop/README.md#add-ee-to-the-linux-applications-menu) adds for the applications menu: `~/.local/bin/EtherlightingEvolved`, `~/.local/share/applications/etherlighting-evolved.desktop` and `~/.local/share/icons/hicolor/256x256/apps/etherlighting-evolved.png`.
 
-To remove EE and its data from Windows, choose **Handoff to UniFi** for each switch, uninstall EE in Windows Settings → Apps, then delete both folders. Delete `output-ownership` only after Handoff to UniFi has finished: it records the switches whose lighting EE has to return at the next login. EE removes its Tailscale Serve route when it quits and when it is uninstalled. An installation for all users does not remove the route at uninstall; check it with `tailscale serve status`.
+To remove EE and its data from Windows, choose **Handoff to UniFi** for each switch, uninstall EE in Windows Settings → Apps, then delete both folders. Delete `output-ownership` only after Handoff to UniFi has finished: it records the switches whose lighting EE has to return at the next login. EE removes its Tailscale Serve route when it quits, and uninstalling removes it as well when EE was installed for you only. The uninstaller of an installation for all users skips that step. In that case, or when the uninstaller reports that it could not confirm the removal, run `tailscale serve status`; if the port of EE's private address (8444 by default) still forwards to `http://127.0.0.1`, remove it with `tailscale serve --https=<port> off`.
 
 ## Reporting a problem
 
