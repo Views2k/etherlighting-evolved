@@ -183,10 +183,6 @@ class Transport(ABC):
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
         """Run shell command(s) on the switch and return their combined output."""
 
-    async def run_isolated(self, command: str, *, channel: str, timeout: float = 10.0) -> str:
-        """Run a command whose failure must not end the other channels."""
-        return await self.run(command, channel=channel, timeout=timeout)
-
     async def read_health(self) -> str:
         from .health import HEALTH_COMMAND, HEALTH_TIMEOUT
         return await self.run(HEALTH_COMMAND, channel="health", timeout=HEALTH_TIMEOUT)
