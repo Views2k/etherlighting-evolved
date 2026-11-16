@@ -101,12 +101,11 @@ public sealed class ConnectPage : Page
             actions.Children.Add(restore);
             actions.Children.Add(retryHandoff);
             formElements = [restore, retryHandoff];
+            // Stays enabled while the form is busy or a handoff is blocked, so a window attached to a workspace in that
+            // state can still switch workspaces: Settings, which also has this button, is unavailable on this page.
+            // The shell waits for a pending connection before it changes the address.
             if (Shell.OpenWorkspaceAddress is not null)
-            {
-                var change = UiKit.Button("Change workspace address", "quiet", Shell.ChooseWorkspaceAddress);
-                actions.Children.Add(change);
-                formElements.Add(change);
-            }
+                actions.Children.Add(UiKit.Button("Change workspace address", "quiet", Shell.ChooseWorkspaceAddress));
         }
         else
         {

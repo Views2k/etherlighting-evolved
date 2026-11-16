@@ -134,6 +134,18 @@ internal static class RemoteAccessChecks
                     try { check(Texts(unreadable).Contains(HostLoginUnavailable), "a remote connection page reports a saved login the host cannot open"); }
                     finally { unreadable.Leave(); }
 
+                    workspace.Session = new JsonObject
+                    {
+                        ["logged_in"] = false, ["has_saved_login"] = true, ["error"] = new JsonObject { ["code"] = "handoff_recovery_required" },
+                    };
+                    var blocked = PageRegistry.Create("Connect", shell)!;
+                    try
+                    {
+                        check(Find(blocked, "Connect with saved login")?.IsEnabled == false && Find(blocked, "Change workspace address")?.IsEnabled == true,
+                            "a remote connection page keeps Change workspace address while the handoff needs a review on the host");
+                    }
+                    finally { blocked.Leave(); }
+
                     await SettingsChecks(shell, directory, check);
                     check(!Requests(directory).Any(line => line.Split(' ')[1] is "/api/session/login" or "/api/session/forget" or "/api/session/handoff"
                                                            || line.Split(' ')[1].StartsWith("/api/controller", StringComparison.Ordinal)),
