@@ -172,6 +172,7 @@ class Engine:
         self.reconnect_delay = bounded_number(reconnect_delay, 1, 300, "reconnect interval")
         self._reconnect_failures = 0
         self._reconnect_blocked = False
+        self._loop_failed = False
         self._recovering = False
         self._command_budget = min(self.max_commands, self.INITIAL_COMMANDS)
         self._cpu_updated_at: float | None = None
@@ -215,7 +216,7 @@ class Engine:
 
         self.mode = "running"  # "released" hands the LEDs back to the switch's own Etherlighting
         self.connected = False
-        self.error: str | None = None
+        self._error: str | None = None
         self.switch_info: dict = {}
         self.links: dict[int, PortLink] = {}
         self.poe: dict[int, PoePort] = {}
@@ -307,9 +308,21 @@ class Engine:
         # Health readings are optional; the other loops carry output, telemetry, fans and reconnects.
         if self._stopping or task.get_name() == "ee-health":
             return
-        self.error = "Lighting stopped unexpectedly. Reconnect the switch."
-        self._reconnect_blocked = True
+        self._loop_failed = True
         self._publish(self.state_message())
+
+    @property
+    def error(self) -> str | None:
+        # Connection attempts replace the connection error, but a stopped loop stays reported until Reconnect
+        # restarts it.
+        return "Lighting stopped unexpectedly. Reconnect the switch." if self._loop_failed else self._error
+
+    @error.setter
+    def error(self, message: str | None) -> None:
+        self._error = message
+
+    def _reconnect_required(self) -> bool:
+        return self._reconnect_blocked or self._loop_failed or self._native_blocked or self._output_uncertain()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -360,8 +373,7 @@ class Engine:
 
     def start_identify(self, port: Any) -> dict:
         port = self._port(port, effect_port=True)
-        if (not self.connected or self.mode != "running" or self._stopping
-                or self._native_blocked or self._output_uncertain() or self._reconnect_blocked):
+        if not self.connected or self.mode != "running" or self._stopping or self._reconnect_required():
             raise ValueError("Resume connected lighting before identifying a port.")
         self.switch.require_output_profile()
         if not isinstance(self.switch.transport, SimulatedTransport):
@@ -1141,7 +1153,7 @@ class Engine:
         if self._native_blocked or self._output_uncertain():
             raise TransportError("Reconnect before resuming lighting; "
                                  "the previous animation could not be confirmed stopped")
-        if self._reconnect_blocked:
+        if self._reconnect_blocked or self._loop_failed:
             raise TransportError("Reconnect your switch before resuming lighting")
         if self._native_release_pending or self._sfp_release_pending:
             raise ValueError("lighting release is still finishing")
@@ -1180,7 +1192,7 @@ class Engine:
                 self.error = "Lighting recovery is not confirmed. Check the connection and try Reconnect switch again."
                 self._reconnect_blocked = True
                 self._publish(self.state_message())
-                raise TransportError(self.error) from exc
+                raise TransportError(self._error) from exc
             self.switch_info = info
             self._native_release_pending = self._native_engaged = False
             self._sfp_release_pending = self._sfp_engaged = False
@@ -1189,6 +1201,7 @@ class Engine:
             self.connected, self.error = True, None
             self._invalidate_sfp_intent()
             if not self._stopping:
+                self._loop_failed = False
                 self.resume()
                 # The connection loop ends once reconnects are blocked, and any loop can end on an error.
                 self._tasks = [self._spawn(task.get_name()) if task.done() else task for task in self._tasks]
@@ -1399,7 +1412,7 @@ class Engine:
             "mode": self.mode,
             "connected": self.connected,
             "error": self.error,
-            "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
+            "reconnect_required": self._reconnect_required(),
             "switch": self.switch_info,
             "hardware_profile": (self.switch.hardware_profile.public_dict()
                                  if self.switch.hardware_profile is not None else None),
@@ -1478,7 +1491,7 @@ class Engine:
                 "identify": self.identify_state(), "telemetry": self.telemetry_state(),
                 "poe_summary": self.poe_summary(), "history_error": self.history_error,
                 "error": self.error,
-                "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
+                "reconnect_required": self._reconnect_required(),
                 "stats": self.output_stats(),
                 "uplink_bandwidth": self._bandwidth.snapshot(now=timing.monotonic(), connected=self.connected),
                 "ports": self.ports(), "sfp": self.sfp_state(), "sfp_sync": self.sfp_sync.to_dict()}
@@ -1753,7 +1766,7 @@ class Engine:
 
     async def _keep_connected(self) -> None:
         while True:
-            if self._stopping or self._reconnect_blocked:
+            if self._stopping or self._reconnect_blocked or self._loop_failed:
                 return
             if self._native_blocked or self._output_uncertain():
                 self.mode = "released"

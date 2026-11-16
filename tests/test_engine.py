@@ -8,7 +8,7 @@ from etherlighting_evolved.engine import Engine, NotFound, to_output
 from etherlighting_evolved.links import PortLink
 from etherlighting_evolved.poe import PoePort
 from etherlighting_evolved.switch import EtherlightSwitch, PortOutput
-from etherlighting_evolved.transport import SimulatedTransport
+from etherlighting_evolved.transport import SimulatedTransport, TransportError
 
 NOON = datetime(2026, 6, 3, 12, 0)
 
@@ -309,6 +309,104 @@ async def test_a_failed_loop_is_reported_and_reconnect_restarts_it(caplog):
         assert len(engine._tasks) == 5 and not any(task.done() for task in engine._tasks)
         engine.set_override(1, "#0000ff")
         assert await wait_for(lambda: sim.leds[1] == ("0000ff", 100))
+    finally:
+        await engine.stop()
+
+
+class FailingFans:
+    def __init__(self):
+        self.failing, self.polls = True, 0
+
+    async def poll(self):
+        if self.failing:
+            raise ValueError("fixture fan failure")
+        self.polls += 1
+
+    def interval(self):
+        return 0.05
+
+    def to_dict(self):
+        return {}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("loop", ["ee-status", "ee-fans"])
+async def test_reconnect_restarts_a_failed_status_or_fan_loop(loop, caplog):
+    switch = EtherlightSwitch(SimulatedTransport(latency=0))
+    engine = Engine(switch, fps=30, rules=[], link_poll=0.5)
+    fans, read_links = FailingFans(), switch.read_links
+    engine.attach_fans(fans)
+    if loop == "ee-status":
+        fans.failing = False
+
+        async def broken_links():
+            raise ValueError("fixture status failure")
+
+        switch.read_links = broken_links
+    await engine.start()
+    try:
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        assert f"{loop} stopped" in caplog.text
+        assert engine.mode == "running" and engine.error == "Lighting stopped unexpectedly. Reconnect the switch."
+        fans.failing, switch.read_links = False, read_links
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        sequence, polls = engine._telemetry_sequence, fans.polls
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.error is None
+        assert await wait_for(lambda: engine._telemetry_sequence > sequence and fans.polls > polls)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("attempt_succeeds", [False, True])
+async def test_a_reconnect_attempt_does_not_clear_a_failed_loop(attempt_succeeds):
+    switch = EtherlightSwitch(SimulatedTransport(latency=0))
+    engine = Engine(switch, fps=30, rules=[], reconnect_delay=1)
+    await engine.start()
+    try:
+        assert await wait_for(lambda: engine.connected)
+        connect, attempting, finish = switch.connect, asyncio.Event(), asyncio.Event()
+
+        async def slow_connect():
+            attempting.set()
+            await finish.wait()
+            if not attempt_succeeds:
+                raise TransportError("fixture connection refused")
+            await connect()
+
+        def broken_compose(*args, **kwargs):
+            raise ValueError("fixture effect failure")
+
+        switch.connect = slow_connect
+        engine._lost(TransportError("fixture connection lost"))
+        await asyncio.wait_for(attempting.wait(), 3)
+        engine.compose = broken_compose
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        finish.set()
+        if attempt_succeeds:
+            assert await wait_for(lambda: engine.connected)
+        else:
+            assert await wait_for(lambda: engine._reconnect_failures == 1)
+        state = engine.state()
+        assert state["reconnect_required"] and state["error"] == "Lighting stopped unexpectedly. Reconnect the switch."
+        with pytest.raises(TransportError):
+            engine.resume()
+
+        del engine.compose
+        switch.connect = connect
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.error is None
+        assert len(engine._tasks) == 5 and not any(task.done() for task in engine._tasks)
     finally:
         await engine.stop()
 
