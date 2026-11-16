@@ -13,7 +13,8 @@ const messages = {
   missing_host: 'Enter the switch address.',
   missing_username: 'Enter your SSH username.',
   bad_port: 'Enter an SSH port between 1 and 65535.',
-  host_key_changed: 'The switch identity has changed. Verify its SSH host key before reconnecting.',
+  host_key_untrusted: 'Check the switch’s SSH key before EE sends your password.',
+  host_key_changed: 'The switch’s SSH key changed. Review the saved and new keys before connecting.',
   unreachable: 'The switch could not be reached. Check its address and that SSH is enabled.',
   connect_failed: 'The switch could not be reached. Check its address and that SSH is enabled.',
   ssh_error: 'SSH could not connect. Check the switch address and SSH settings.',
@@ -48,6 +49,80 @@ export function connectionError(error, fallback = 'The connection could not be c
   const entry = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
   const message = typeof entry === 'function' ? entry(error) : entry;
   return message || (error?.name === 'TimeoutError' ? messages.timeout : fallback);
+}
+
+const SSH_FINGERPRINT=/^SHA256:[A-Za-z0-9+/]{43}$/;
+const SSH_KEY_TYPE=/^[A-Za-z0-9@._+-]{1,64}$/;
+
+// A host_key_untrusted or host_key_changed error whose fields can be shown and echoed back, or null. It reads a
+// refused request's details or a session error object.
+export function hostKeyProblem(error) {
+  const source=error?.details&&typeof error.details==='object'?error.details:error;
+  if(!source||typeof source!=='object'||!Object.hasOwn(source,'code'))return null;
+  const {code,host,port,ssh_host_key:fingerprint,saved_ssh_host_key:saved,ssh_host_key_type:type}=source;
+  if(code!=='host_key_untrusted'&&code!=='host_key_changed')return null;
+  if(typeof host!=='string'||host.length>253||!host.trim()||/[\u0000-\u001f\u007f]/.test(host))return null;
+  if(typeof port!=='number'||!Number.isInteger(port)||port<1||port>65535)return null;
+  if(typeof fingerprint!=='string'||!SSH_FINGERPRINT.test(fingerprint))return null;
+  const changed=code==='host_key_changed';
+  if(changed&&(typeof saved!=='string'||!SSH_FINGERPRINT.test(saved)||saved===fingerprint))return null;
+  const savedFingerprint=changed?saved:null,name=host.trim();
+  const body={host,port,ssh_host_key:fingerprint};
+  if(changed)body.saved_ssh_host_key=savedFingerprint;
+  return {code,changed,host,port,fingerprint,savedFingerprint,
+    keyType:typeof type==='string'&&SSH_KEY_TYPE.test(type)?type:null,
+    key:[code,name.toLowerCase(),port,fingerprint,savedFingerprint??''].join('\n'),
+    address:port===22?name:`${name} port ${port}`,
+    route:changed?'/api/session/host-key/replace':'/api/session/host-key/accept',body};
+}
+
+function hostKeyRemoteNote(problem) {
+  return problem?.changed===false?'This key can be accepted only in EE on the computer that runs it.'
+    :'A new key can be accepted only in EE on the computer that runs it.';
+}
+
+const hostKeyMessages = {
+  host_key_stale: 'The switch’s SSH key changed again. Connect again to review the current key.',
+  host_key_in_use: 'EE still has an open switch connection. Accept the new key after it closes. If it stays open, quit EE on the computer that runs it and open it again.',
+  switch_playback_reserved: 'EE is handing lighting back to UniFi or has lighting saved on another switch. A new SSH key cannot be accepted until that is finished.',
+  host_key_save_failed: 'The SSH key could not be saved. Check the EE data folder and try again.',
+  invalid_credentials: 'The SSH key details were not accepted. Connect again to review the key.',
+};
+
+// The message for a refused accept or replace request about `problem`.
+export function hostKeyError(error, problem) {
+  const code=typeof error?.code==='string'?error.code:'';
+  if(code==='local_access_required')return hostKeyRemoteNote(problem);
+  return Object.hasOwn(hostKeyMessages,code)?hostKeyMessages[code]:'The SSH key could not be saved. Connect again to review the key.';
+}
+
+// Keys are accepted only on the computer running EE. A failed private access request counts as remote.
+export function canAcceptHostKey(privateAccess) {return privateAccess?.can_close_workspace===true;}
+
+// Which key problem the Connect page reviews, and what runs after the key is saved: 'form' submits the login form
+// again, 'saved' restores the saved login, 'none' only asks the user to connect.
+export function createHostKeyFlow() {
+  let dismissed='';
+  const sameHost=(value,problem)=>typeof value==='string'&&value.trim()!==''&&value.trim().toLowerCase()===problem.host.trim().toLowerCase();
+  const flow={open:null,retry:'none',
+    fromAction(problem,retry){flow.open=problem;flow.retry=retry;},
+    fromSession(session,{host,port},{pending,blocked}){
+      if(session?.logged_in||session?.pending_scene_choice){flow.close();return false;}
+      if(flow.open||pending||blocked)return false;
+      const problem=hostKeyProblem(session?.error);
+      if(!problem||problem.key===dismissed)return false;
+      const remembered=session.remembered;
+      let retry=null;
+      if(session.has_saved_login===true&&sameHost(remembered?.host,problem)&&Number(remembered?.port??22)===problem.port)retry='saved';
+      else if(sameHost(host,problem)&&Number.isInteger(port)&&port===problem.port)retry='none';
+      if(!retry)return false;
+      flow.open=problem;flow.retry=retry;return true;
+    },
+    targetEdited(){flow.close();},
+    dismiss(){if(flow.open)dismissed=flow.open.key;flow.close();},
+    close(){flow.open=null;flow.retry='none';},
+  };
+  return flow;
 }
 
 function handoffNeedsReview(session) {return session?.error?.code==='handoff_recovery_required';}
@@ -510,7 +585,8 @@ export function showSceneChoice(request, session, {signal} = {}) {
 
 export function renderSwitchConnection(host, {request, session = {}, onConnected, onSessionChange, onDemo, restoreSaved, onHelp}) {
   let active = true, pending = null, completed = false, dirty = false, saved = session, forgetting = false;
-  let retryingHandoff = false;
+  let retryingHandoff = false, savingKey = false, keyAccess = null;
+  const keys = createHostKeyFlow();
   const lifecycle = new AbortController();
   host.replaceChildren();
   const panel = node('section', 'connection-panel panel');
@@ -534,7 +610,13 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const actions = node('div', 'connection-actions'); actions.append(submit);
   if (restoreSaved) actions.append(restore);
   actions.append(forget,retryHandoff);
-  form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
+  const review = node('div', 'connection-trust notice host-key-review'); review.hidden = true; review.setAttribute('role', 'group');
+  const reviewHeading = node('h2'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${crypto.randomUUID()}`;
+  review.setAttribute('aria-labelledby', reviewHeading.id);
+  const reviewNote = node('p', 'help-text');
+  const acceptKey = button('Accept key', 'primary'), dismissKey = button('Cancel', 'quiet');
+  const reviewActions = node('div', 'connection-actions'); reviewActions.append(acceptKey, dismissKey);
+  form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, review, actions);
   panel.append(message, form);
   if (onDemo) {
     const demo = button('Continue with demo', 'quiet');
@@ -559,7 +641,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     for (const control of form.elements) control.disabled = waiting||recovering;
     retryHandoff.hidden=!handoffRetryable(saved);retryHandoff.disabled=waiting||!handoffRetryable(saved);
     retryHandoff.textContent=retryingHandoff?'Handing off…':'Retry handoff';
-    submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting ? 'Connecting…' : 'Connect to switch';
+    submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting && !savingKey ? 'Connecting…' : 'Connect to switch';
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
     restore.hidden=!restoreSaved || !saved.has_saved_login;
     forget.hidden=!saved.has_saved_login;
@@ -579,6 +661,39 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     try { await onConnected(resolved); }
     catch { if (active) { completed = false; status('The switch connected, but the workspace could not load. Try opening it again.', true); } }
   };
+  // The panel's content is built once per problem, so the focused heading stays in place when the access check ends.
+  const showReview = () => {
+    const problem = keys.open;
+    keyAccess = null;
+    const paragraph = (text, className = '') => node('p', className, text);
+    const fingerprint = value => node('code', 'certificate-fingerprint', value);
+    const type = problem.keyType ? ` (${problem.keyType})` : '';
+    reviewHeading.textContent = problem.changed ? 'The switch’s SSH key changed' : 'Check the switch’s SSH key';
+    const content = problem.changed ? [
+      paragraph(`The device at ${problem.address} presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.`),
+      paragraph('Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.'),
+      paragraph('Saved key', 'muted'), fingerprint(problem.savedFingerprint),
+      paragraph(`New key${type}`, 'muted'), fingerprint(problem.fingerprint),
+    ] : [
+      paragraph(`EE has no saved SSH key for ${problem.address}. Check that this fingerprint belongs to your switch. EE sends your password only after you accept the key.`),
+      paragraph(`Fingerprint${type}`, 'muted'), fingerprint(problem.fingerprint),
+      paragraph('An SSH client that has connected to this switch shows the same fingerprint for the same key type.', 'help-text'),
+    ];
+    reviewNote.textContent = hostKeyRemoteNote(problem);
+    acceptKey.textContent = problem.changed ? 'Accept new key' : 'Accept key';
+    acceptKey.classList.toggle('primary', !problem.changed);
+    dismissKey.textContent = problem.changed ? 'Keep saved key' : 'Cancel';
+    review.classList.toggle('error', problem.changed);
+    review.replaceChildren(reviewHeading, ...content, reviewNote, reviewActions);
+    showKeyAccess(); review.hidden = false;
+    status(problem.changed ? 'The switch’s SSH key changed. Review it before connecting.' : 'The switch’s SSH key needs your approval.', problem.changed);
+    reviewHeading.focus({preventScroll:true});
+    void request('/api/private-access').catch(() => null).then(result => {
+      if (!active || keys.open !== problem) return;
+      keyAccess = canAcceptHostKey(result); showKeyAccess();
+    });
+  };
+  const showKeyAccess = () => { acceptKey.hidden = keyAccess !== true; reviewNote.hidden = keyAccess !== false; };
   const update = value => {
     if (!active) return;
     saved = value || {};
@@ -589,16 +704,19 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
       remember.checked = saved.has_saved_login === true;
     }
     const handoff=handoffStatus(saved);
+    const reviewing = keys.open && hostKeyProblem(saved.error)?.key === keys.open.key;
     if(handoffBlocked(saved)&&handoff)status(handoff.message,handoff.error,handoff.tone);
     else if (saved.pending_scene_choice) status('Choose lighting to finish connecting.');
     else if (saved.connecting) status('Connecting with saved login…');
     else if (saved.saved_login_error) status(messages.saved_login_unavailable, true);
-    else if (saved.error) status(connectionError(saved.error), true);
+    else if (saved.error) { if (!reviewing) status(connectionError(saved.error), true); }
     else if(handoff)status(handoff.message,handoff.error,handoff.tone);
+    if (keys.fromSession(saved, {host:address.value, port:Number(port.value)}, {pending:Boolean(pending), blocked:handoffBlocked(saved)})) showReview();
+    else review.hidden = !keys.open;
     setBusy();
     if(sceneChoiceDialog||(!handoffBlocked(saved)&&(saved.logged_in||saved.pending_scene_choice)))queueMicrotask(() => { void enter(saved); });
   };
-  const connect = action => {
+  const connect = (action, retry) => {
     if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     status('Connecting…');
     pending = (async () => {
@@ -608,14 +726,54 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
         saved = result;
         if (!result?.logged_in&&!result?.pending_scene_choice) throw new Error('Connection was not established.');
         await enter(result);
-      } catch (error) { if (active) status(connectionError(error), true); }
-      finally { pending = null; setBusy();if(active&&!completed)submit.focus({preventScroll:true}); }
+      } catch (error) {
+        if (!active) return;
+        const problem = hostKeyProblem(error);
+        if (problem) { keys.fromAction(problem, retry); showReview(); }
+        else status(connectionError(error), true);
+      }
+      finally { pending = null; setBusy();if(active&&!completed)(keys.open?reviewHeading:submit).focus({preventScroll:true}); }
     })();
     setBusy();
   };
-  form.addEventListener('input', event => { dirty = true;event?.target?.removeAttribute('aria-invalid'); });
-  form.addEventListener('submit', event => {
-    event.preventDefault();
+  const runRetry = retry => {
+    if (retry === 'form') submitLogin();
+    else if (retry === 'saved' && restoreSaved) connect(restoreSaved, 'saved');
+    else { status('SSH key saved. Connect to the switch to continue.'); (password.value ? submit : password).focus({preventScroll:true}); }
+  };
+  acceptKey.addEventListener('click', () => {
+    const problem = keys.open, retry = keys.retry;
+    if (!active || pending || !problem || keyAccess !== true || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
+    savingKey = true; status('Saving the SSH key…');
+    let accepted = false;
+    pending = (async () => {
+      try {
+        const result = await request(problem.route, 'POST', problem.body);
+        if (!active) return;
+        if (result && typeof result === 'object') saved = result;
+        keys.close(); review.hidden = true; accepted = true;
+      } catch (error) {
+        if (!active) return;
+        keys.dismiss(); review.hidden = true; status(hostKeyError(error, problem), true);
+      } finally {
+        pending = null; savingKey = false; setBusy();
+        if (active) { if (accepted) runRetry(retry); else submit.focus({preventScroll:true}); }
+      }
+    })();
+    setBusy();
+  });
+  dismissKey.addEventListener('click', () => {
+    const problem = keys.open;
+    if (!active || pending || !problem) return;
+    keys.dismiss(); review.hidden = true;
+    status(problem.changed ? 'EE kept the saved SSH key and did not connect.' : 'Connection canceled. EE did not send your password.');
+    submit.focus({preventScroll:true});
+  });
+  form.addEventListener('input', event => {
+    dirty = true;event?.target?.removeAttribute('aria-invalid');
+    if (event?.target === address || event?.target === port) { keys.targetEdited(); review.hidden = true; }
+  });
+  const submitLogin = () => {
     const invalid = [
       [address,!address.value.trim(),'Enter the switch address.'],
       [username,!username.value.trim(),'Enter the SSH username.'],
@@ -625,9 +783,10 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     if(invalid){invalid[0].setAttribute('aria-invalid','true');status(invalid[2],true);invalid[0].focus();return;}
     if (!form.reportValidity()) return;
     const payload = {host:address.value.trim(),username:username.value.trim(),password:password.value,port:Number(port.value),remember:remember.checked};
-    connect(() => request('/api/session/login', 'POST', payload));
-  });
-  restore.addEventListener('click', () => connect(restoreSaved));
+    connect(() => request('/api/session/login', 'POST', payload), 'form');
+  };
+  form.addEventListener('submit', event => { event.preventDefault(); submitLogin(); });
+  restore.addEventListener('click', () => connect(restoreSaved, 'saved'));
   retryHandoff.addEventListener('click',()=>{
     if(!active||pending||!handoffRetryable(saved))return;
     retryingHandoff=true;
