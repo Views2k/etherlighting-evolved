@@ -90,8 +90,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
         if request.url.path in {"/api/session/login", "/api/controller/connect", "/api/controller/consoles",
-                                "/api/controller/preferences", "/api/session/host-key/accept",
-                                "/api/session/host-key/replace"}:
+                                "/api/controller/preferences", "/api/session/host-key/replace"}:
             return JSONResponse(status_code=422, content={"detail": {
                 "code": "invalid_credentials", "message": "Check the connection fields and try again."
             }})

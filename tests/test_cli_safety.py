@@ -12,7 +12,6 @@ from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import (
     HostKeyMismatchError,
     HostKeyStore,
-    HostKeyUntrustedError,
     SimulatedTransport,
     TransportError,
 )
@@ -166,13 +165,11 @@ class KeyedSimulator(SimulatedTransport):
     async def connect(self):
         type(self).attempts += 1
         pinned = self.host_keys.get(self.host, self.port)
-        if pinned != self.presented:
-            if pinned is None:
-                raise HostKeyUntrustedError(f"EE has no saved SSH key for {self.host}:{self.port}.",
-                                            presented=self.presented)
+        if pinned is not None and pinned != self.presented:
             raise HostKeyMismatchError(f"The SSH key of {self.host}:{self.port} changed.", presented=self.presented,
                                        pinned=pinned)
         await super().connect()
+        self.host_keys.accept(self.host, self.port, self.presented)
 
 
 @pytest.fixture
@@ -187,18 +184,18 @@ def probe(*extra):
     return cli.main(["probe", "192.168.1.2", "-u", "fixture", "-p", "fixture-only", *extra])
 
 
-def test_probe_prints_the_presented_key_and_saves_nothing(keyed_cli, capsys):
+def test_probe_of_a_new_switch_saves_its_key(keyed_cli, capsys):
+    assert probe() in (0, 1)
+    assert keyed_cli.get("192.168.1.2", 22) == FP_B and KeyedSimulator.attempts == 1
+    assert "--accept-host-key" not in capsys.readouterr().err
+
+
+def test_probe_prints_a_changed_key_and_keeps_the_saved_one(keyed_cli, capsys):
+    keyed_cli.accept("192.168.1.2", 22, FP_A)
     assert probe() == 2
     error = capsys.readouterr().err
     assert FP_B in error and f"--accept-host-key {FP_B}" in error
-    assert not keyed_cli.path.exists() and KeyedSimulator.attempts == 1
-
-
-def test_accept_host_key_flag_saves_only_the_presented_key(keyed_cli, capsys):
-    assert probe("--accept-host-key", FP_A) == 2
-    assert not keyed_cli.path.exists() and KeyedSimulator.attempts == 1
-    assert probe("--accept-host-key", FP_B) in (0, 1)
-    assert keyed_cli.get("192.168.1.2", 22) == FP_B and KeyedSimulator.attempts == 3
+    assert keyed_cli.get("192.168.1.2", 22) == FP_A and KeyedSimulator.attempts == 1
 
 
 def test_accept_host_key_flag_replaces_a_changed_key(keyed_cli, capsys):

@@ -4,7 +4,7 @@
     etherlighting-evolved --demo          start logged in to the built-in simulator
     eectl probe 192.168.1.2 -u admin      check a switch works with EE
     eectl probe 192.168.1.2 -u admin --accept-host-key SHA256:...
-                                          accept the SSH key fingerprint that the previous run printed
+                                          accept the changed SSH key that the previous run printed
     eectl set 192.168.1.2 -u admin 3 ff00ff
     eectl benchmark 192.168.1.2 -u admin
     eectl effects
@@ -34,7 +34,6 @@ from .transport import (
     SSH_FINGERPRINT,
     HostKeyMismatchError,
     HostKeyStore,
-    HostKeyUntrustedError,
     SimulatedTransport,
     SSHTransport,
     TransportError,
@@ -84,21 +83,14 @@ def _switch(args: argparse.Namespace) -> EtherlightSwitch:
 
 
 async def _connect_switch(switch: EtherlightSwitch, args: argparse.Namespace) -> None:
-    """Connect, saving the switch's SSH key first when --accept-host-key names the key it just presented.
+    """Connect, replacing a changed SSH key first when --accept-host-key names the key the switch just presented.
 
-    The second attempt reuses the same switch, so the password is not asked for again, and its key exchange checks
-    the newly saved key.
+    A switch without a saved key connects and its key is saved, as in the app. The second attempt reuses the same
+    switch, so the password is not asked for again, and its key exchange checks the newly saved key.
     """
     try:
         await switch.connect()
         return
-    except HostKeyUntrustedError as exc:
-        if exc.presented is None:
-            raise
-        if args.accept_host_key != exc.presented:
-            raise TransportError(f"{exc} Check it, then run the command again with --accept-host-key "
-                                 f"{exc.presented}.") from exc
-        switch.transport.host_keys.accept(args.host, args.ssh_port, exc.presented)
     except HostKeyMismatchError as exc:
         if exc.presented is None:
             raise
@@ -238,7 +230,7 @@ def _init_config(args: argparse.Namespace) -> int:
 def _forget_host(args: argparse.Namespace) -> int:
     store = HostKeyStore(data_dir() / "known_switches.json")
     if store.forget(args.host, args.ssh_port):
-        print(f"Forgot the SSH key for {args.host}. The next connection shows the switch's key for you to accept.")
+        print(f"Forgot the SSH key for {args.host}. The next connection saves the key the switch presents.")
     else:
         print(f"No saved SSH key for {args.host}.")
     return 0
@@ -257,7 +249,7 @@ def _ssh_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-i", "--key-file", default=os.environ.get("EE_KEY_FILE") or None, help="SSH private key")
     parser.add_argument("--ssh-port", type=bounded_int(1, 65535), default=22)
     parser.add_argument("--accept-host-key", type=_fingerprint, metavar="FINGERPRINT",
-                        help="save this SSH key fingerprint for the switch when it presents it")
+                        help="replace the switch's saved SSH key with this one when the switch presents it")
     parser.add_argument("--ports", type=bounded_int(1, 64), default=8,
                         help="fallback port count for identification; known switches are detected automatically")
 

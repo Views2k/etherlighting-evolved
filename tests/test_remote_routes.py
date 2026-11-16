@@ -21,8 +21,7 @@ API_REFERENCE = ROOT / "docs" / "API.md"
 PREFIX = "export const ROUTE_ACCESS = "
 METHOD_ORDER = ["GET", "POST", "PUT", "PATCH", "DELETE", "WS"]
 OWNER_LOCAL = {
-    ("POST", "/api/session/login"),
-    ("POST", "/api/session/host-key/accept"), ("POST", "/api/session/host-key/replace"),
+    ("POST", "/api/session/login"), ("POST", "/api/session/host-key/replace"),
     ("POST", "/api/session/forget"), ("POST", "/api/session/logout"),
     ("POST", "/api/controller/connect"), ("POST", "/api/controller/consoles"), ("POST", "/api/controller/disconnect"),
     ("POST", "/api/controller/cancel"), ("PUT", "/api/controller/preferences"),

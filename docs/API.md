@@ -95,19 +95,18 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
 | 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
 | 403 | `admin_required` | This local gateway action needs the per-launch administration key, or a browser opened from the desktop app or from the printed administration link |
-| 403 | `local_access_required` | Only the computer running EE can make this request: the private gateway refuses it, and the SSH host-key routes also refuse a caller whose address is not a loopback address |
+| 403 | `local_access_required` | Only the computer running EE can make this request: the private gateway refuses it, and `POST /api/session/host-key/replace` also refuses a caller whose address is not a loopback address |
 | 403 | `private_access_denied` | The Tailscale identity is not approved, or the path cannot be opened through private access |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
-| 409 | `host_key_untrusted` | EE has no saved SSH key for the switch; nothing but the SSH key exchange was sent |
 | 409 | `host_key_changed` | The switch's SSH key differs from the saved key; nothing but the SSH key exchange was sent |
-| 409 | `host_key_stale` | The SSH key in a host-key request is not the key EE last saw at that address |
+| 409 | `host_key_stale` | The SSH keys in a key replacement are not the saved key and the key EE last saw at that address |
 | 409 | `host_key_in_use` | EE still has an open switch connection, so a changed SSH key cannot be accepted yet |
 | 409 | `switch_playback_reserved` | Switch playback is saved for a switch; also returned by `POST /api/session/host-key/replace` |
 | 409 | `not_simulated` | Simulator controls require a demo login |
 | 409 | `fans_unconfirmed` | The switch did not confirm a fan change; the previous fan settings are kept |
 | 413 | `too_large` | The request body is larger than 1 MiB |
-| 422 | `invalid_credentials` | The fields of a connection or SSH host-key request were not accepted |
+| 422 | `invalid_credentials` | The fields of a connection or SSH key replacement request were not accepted |
 | 422 | `no_etherlighting` | Logged in, but the device has no Etherlighting |
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
@@ -118,17 +117,14 @@ Errors include a code for the UI to check and a message that can be shown to the
 
 ### SSH host keys
 
-EE sends the SSH username and password only to a switch whose SSH key is saved. When an address has no saved key,
-or the switch presents a different one, EE ends the connection during the SSH key exchange and the login, the
-restore, `GET /api/session` `error` and the WebSocket `session` message report the key with HTTP 409:
+The first connection to an address that has no saved SSH key signs in with the username and password and then
+saves the key the switch presented (trust on first use). This applies to a login, a saved-login restore, the
+automatic login at startup and the engine's reconnect. While a switch is connected, `GET /api/session` reports its
+key in `ssh_host_key` and `ssh_host_key_type`, so a user can compare it with what an SSH client shows.
 
-```json
-{ "code": "host_key_untrusted",
-  "message": "Check this switch's SSH key fingerprint before signing in.",
-  "host": "192.168.1.2", "port": 22,
-  "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
-  "ssh_host_key_type": "ssh-ed25519" }
-```
+When the switch presents a key that differs from the saved one, EE ends the connection during the SSH key exchange,
+before any username or password is sent, and the login, the restore, `GET /api/session` `error` and the WebSocket
+`session` message report both keys with HTTP 409:
 
 ```json
 { "code": "host_key_changed",
@@ -142,15 +138,13 @@ restore, `GET /api/session` `error` and the WebSocket `session` message report t
 `host` is the trimmed host of the attempt and `port` an integer. Fingerprints have the form that `ssh` and
 `ssh-keygen -l` print. `ssh_host_key_type` is `null` when the type is not known. `ssh_host_key` is `null` only
 when the SSH library refused the key without asking EE, for example a host certificate; there is then nothing to
-accept. `saved_ssh_host_key` appears only on `host_key_changed`. A changed key happens after the switch is reset or
-replaced, or when another device answers at that address.
+accept. `saved_ssh_host_key` is the saved key. A changed key happens after the switch is reset or replaced, or when
+another device answers at that address.
 
-To approve the key, a client shows the fingerprints and echoes them back to
-[`POST /api/session/host-key/accept`](#post-apisessionhost-keyaccept) or
+To accept a changed key, a client on the computer running EE shows both fingerprints and echoes them back to
 [`POST /api/session/host-key/replace`](#post-apisessionhost-keyreplace), then repeats the login or the restore. That
 attempt checks the newly saved key during the key exchange. Keys saved by earlier releases are used as they are.
-A switch set in the [switch] configuration or EE_HOST connects at the next start after its key is accepted. For a
-headless setup, accept the key with `eectl probe` and `--accept-host-key`.
+For a headless setup, accept a changed key with `eectl probe` and `--accept-host-key`.
 
 If the server has an API token, send `Authorization: Bearer <token>` with every request. The browser UI uses
 authenticated REST polling for these connections so the token stays out of URLs and access logs.
@@ -197,8 +191,7 @@ These requests are local-only:
 | `POST /api/private-access/login` | Starts Tailscale sign-in on the host computer |
 | `POST /api/private-access/refresh` | Runs Tailscale checks on the host computer |
 | `POST /api/session/forget` | Deletes the saved switch login |
-| `POST /api/session/host-key/accept` | Trusts a switch's first SSH host key, part of signing in to a new switch |
-| `POST /api/session/host-key/replace` | Replaces a trusted SSH host key, part of signing in to a replaced switch |
+| `POST /api/session/host-key/replace` | Accepts a changed SSH host key, part of signing in to a reset or replaced switch |
 | `POST /api/session/login` | Signs in to a switch or the demo with typed details |
 | `POST /api/session/logout` | Ends the switch session; `forget=true` deletes the saved login |
 | `PUT /api/simulator/anomaly/{port}` | Demo simulator test control; the demo starts only from a local login |
@@ -357,6 +350,8 @@ A refused request changes nothing, so lighting and private access keep working.
   "simulated": false,
   "workspace_id": "opaque-workspace-id",
   "switch": { "hostname": "USW-Pro-XG-8-PoE", "etherlight_mcu": true, "port_rgb": true },
+  "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
+  "ssh_host_key_type": "ssh-ed25519",
   "error": null,
   "remembered": { "host": "192.168.1.2", "port": 22, "username": "admin" },
   "has_saved_login": true,
@@ -385,9 +380,13 @@ own result, or to `null` when no switch was connected.
 `error` is the engine's message while a switch is logged in and its engine has one; otherwise it is the error
 object of the last failed attempt. That object can be an [SSH host key](#ssh-host-keys) error with its fingerprints,
 also while another switch is logged in, so a client opens a key review only when `logged_in` is false. The WebSocket
-`session` message carries the same object. When a reconnect is refused because the switch's key changed or is not
-saved, the engine's message asks the user to quit EE, open it again and review the key on the Connect page; the
-startup connection then reports the key with its fingerprints.
+`session` message carries the same object. When a reconnect is refused because the switch's key changed, the
+engine's message asks the user to quit EE, open it again and review the key on the Connect page; the startup
+connection then reports both fingerprints.
+
+`ssh_host_key` and `ssh_host_key_type` describe the SSH key of the connected switch, which is the key EE saved for
+its address: the fingerprint as `ssh-keygen -l` prints it and the key algorithm, such as `ssh-ed25519`. Both are
+`null` while no switch is logged in, for the demo, and the type is `null` when it is not known.
 
 `connecting` is true during automatic startup login and returns to false after success, failure or cancellation.
 The server publishes both transitions as session messages. Clients must keep listening when their initial
@@ -429,33 +428,14 @@ HTTP 409 with `no_saved_login`; an unreadable saved record returns HTTP 409 with
 Connection errors use the normal login error contract. The saved record is retained, and its password is never
 returned to the browser.
 
-Devices that use private access reconnect with this route. Signing in with typed details and changing the switch's
-trusted SSH host key are available only on the computer running EE.
+Devices that use private access reconnect with this route. Like a login, a restore to an address without a saved
+SSH key saves the key the switch presents. Signing in with typed details and accepting a changed SSH host key are
+available only on the computer running EE.
 
 ### `POST /api/session/forget`
 
 Deletes the saved login, returns the updated session and publishes a session message. The current switch
 connection keeps running. This also removes an unreadable record when the user explicitly chooses Forget.
-
-### `POST /api/session/host-key/accept`
-
-```json
-{ "host": "192.168.1.2", "port": 22, "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ" }
-```
-
-Saves the first SSH key of an address, after a `host_key_untrusted` error. `host` is 1 to 253 characters, `port` a
-JSON integer from 1 to 65535 (default 22) and `ssh_host_key` matches `^SHA256:[A-Za-z0-9+/]{43}$`. Other fields
-and values of another JSON type return `422 invalid_credentials`. The route does not contact the switch: the
-retried login or restore verifies the saved key during the SSH key exchange. Returns the session, clears a
-host-key `error` for that address and publishes a session message.
-
-| Status | Code | When |
-|---|---|---|
-| 200 | | The key is saved, or was already the saved key |
-| 400 | `missing_host` | `host` is empty after trimming |
-| 403 | `local_access_required` | The caller's address is not a loopback address (127.0.0.0/8 or ::1) |
-| 409 | `host_key_stale` | A different key is saved for the address, or `ssh_host_key` is not the key EE last saw there |
-| 500 | `host_key_save_failed` | The saved keys could not be read or written; nothing changed |
 
 ### `POST /api/session/host-key/replace`
 
@@ -465,11 +445,14 @@ host-key `error` for that address and publishes a session message.
   "ssh_host_key": "SHA256:Zt4Wc8Hn1Lq6Rv3Xb9Me2Kd7Pj0Ys5Ug8Fa1Ni4Ow7E" }
 ```
 
-Replaces a changed SSH key, after a `host_key_changed` error. The fields follow the accept route, and
-`saved_ssh_host_key` must be the key saved now. The route does not contact the switch. It also deletes the switch
-playback record of the replaced key, as a confirmed handoff does, because that player ran in the previous switch's
-memory. Lighting, schedules and port names saved for the previous key stay saved but are not used with the new
-key. Returns the session and publishes a session message.
+Replaces a changed SSH key, after a `host_key_changed` error. `host` is 1 to 253 characters, `port` a JSON integer
+from 1 to 65535 (default 22), and `ssh_host_key` and `saved_ssh_host_key` match `^SHA256:[A-Za-z0-9+/]{43}$`.
+Other fields and values of another JSON type return `422 invalid_credentials`. `saved_ssh_host_key` must be the key
+saved now and `ssh_host_key` the key EE last saw at that address. The route does not contact the switch: the
+retried login or restore verifies the saved key during the SSH key exchange. It also deletes the switch playback
+record of the replaced key, as a confirmed handoff does, because that player ran in the previous switch's memory.
+Lighting, schedules and port names saved for the previous key stay saved but are not used with the new key. Returns
+the session, clears a `host_key_changed` `error` for that address and publishes a session message.
 
 | Status | Code | When |
 |---|---|---|
@@ -481,11 +464,13 @@ key. Returns the session and publishes a session message.
 | 409 | `switch_playback_reserved` | The switch playback record cannot be read, waits for a handoff, or belongs to another switch |
 | 500 | `host_key_save_failed` | The saved keys or the playback record could not be updated; the saved key and the record are unchanged |
 
-Both routes refuse a caller whose address is not a loopback address before they read the request body, and the
-private gateway refuses them, so SSH keys are accepted only on the computer running EE. The desktop app, the
-browser workspace and the gateway reach the service from 127.0.0.1.
+The route refuses a caller whose address is not a loopback address before it reads the request body, and the
+private gateway refuses it, so a changed SSH key is accepted only on the computer running EE. The desktop app, the
+browser workspace and the gateway reach the service from 127.0.0.1. `POST /api/session/host-key/accept` and
+`POST /api/session/forget-host-key` no longer exist and return 404.
 
-A client offers to accept a key only when the workspace gateway's `GET /api/private-access` returns `local: true`.
+A client offers to accept a changed key only when the workspace gateway's `GET /api/private-access` returns
+`local: true`.
 The gateway on the computer running EE includes that field in its answer, with or without permission to change
 private access. The private gateway answers the request itself without the field, and clients treat a failed
 request as remote.

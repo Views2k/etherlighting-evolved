@@ -1,11 +1,13 @@
-"""SSH host key approval: EE sends credentials only to a switch whose key the user accepted.
+"""SSH host keys: the first key of an address is saved at the first login, and a changed key is refused before any
+credentials are sent until the user accepts it on the computer running EE.
 
 The handshake tests run an ephemeral asyncssh server on 127.0.0.1 with fixture credentials only. The API tests use a
-transport that checks the saved key the way SSHTransport does and otherwise behaves as the simulator.
+transport that checks and saves the key the way SSHTransport does and otherwise behaves as the simulator.
 """
 
 import contextlib
 import json
+import logging
 
 import asyncssh
 import pytest
@@ -20,7 +22,6 @@ from etherlighting_evolved.transport import (
     PRESENTED_LIMIT,
     HostKeyMismatchError,
     HostKeyStore,
-    HostKeyUntrustedError,
     SimulatedTransport,
     SSHTransport,
     TransportError,
@@ -35,9 +36,7 @@ LOGIN = {"host": HOST, "port": 22, "username": "fixture", "password": "fixture-o
 BASE = "http://127.0.0.1"
 LOCAL = ("127.0.0.1", 50000)
 OWNER = "a" * 48
-ACCEPT = "/api/session/host-key/accept"
 REPLACE = "/api/session/host-key/replace"
-UNTRUSTED_MESSAGE = "Check this switch's SSH key fingerprint before signing in."
 CHANGED_MESSAGE = "The switch's SSH key changed. Check the new fingerprint before signing in."
 
 
@@ -74,40 +73,29 @@ def ssh(port, store):
 
 
 @pytest.mark.anyio
-async def test_first_connection_stops_before_the_username_is_sent(tmp_path):
+async def test_first_connection_sends_the_password_and_saves_the_key(tmp_path, caplog):
     key, events = asyncssh.generate_private_key("ssh-ed25519"), []
+    fingerprint = key.get_fingerprint("sha256")
     store = HostKeyStore(tmp_path / "known_switches.json")
+    caplog.set_level(logging.INFO, "etherlighting_evolved.transport")
     async with ssh_server(key, events) as port:
         transport = ssh(port, store)
-        with pytest.raises(HostKeyUntrustedError) as error:
-            await transport.connect()
-    assert error.value.presented == key.get_fingerprint("sha256")
-    assert error.value.presented_type == "ssh-ed25519"
-    assert events == [] and not transport.connected
-    assert store.presented("127.0.0.1", port) == error.value.presented
-    assert not store.path.exists()
-
-
-@pytest.mark.anyio
-async def test_accepted_key_logs_in_without_another_prompt(tmp_path):
-    key, events = asyncssh.generate_private_key("ssh-ed25519"), []
-    store = HostKeyStore(tmp_path / "known_switches.json")
-    async with ssh_server(key, events) as port:
-        with pytest.raises(HostKeyUntrustedError) as error:
-            await ssh(port, store).connect()
-        store.accept("127.0.0.1", port, error.value.presented)
+        await transport.connect()
+        assert (transport.host_key_fingerprint, transport.host_key_type) == (fingerprint, "ssh-ed25519")
+        await transport.close()
+        assert events == [("begin_auth", "fixture"), ("password", "fixture")]
+        assert store.get("127.0.0.1", port) == fingerprint and store.presented("127.0.0.1", port) is None
+        assert f"saved the ssh-ed25519 SSH key {fingerprint}" in caplog.text
         saved = store.path.read_bytes()
-        for _ in range(2):
-            transport = ssh(port, store)
-            await transport.connect()
-            assert transport.host_key_fingerprint == error.value.presented
-            await transport.close()
+        transport = ssh(port, store)
+        await transport.connect()
+        await transport.close()
     assert [kind for kind, _ in events].count("password") == 2
-    assert store.path.read_bytes() == saved and store.presented("127.0.0.1", port) is None
+    assert store.path.read_bytes() == saved
 
 
 @pytest.mark.anyio
-async def test_switch_pinned_by_an_earlier_release_connects_without_approval(tmp_path):
+async def test_switch_pinned_by_an_earlier_release_connects_without_a_write(tmp_path):
     key, events = asyncssh.generate_private_key("ssh-ed25519"), []
     path = tmp_path / "known_switches.json"
     async with ssh_server(key, events) as port:
@@ -123,18 +111,24 @@ async def test_switch_pinned_by_an_earlier_release_connects_without_approval(tmp
 
 
 @pytest.mark.anyio
-async def test_replaced_key_is_refused_before_authentication_with_both_fingerprints(tmp_path):
+async def test_changed_key_is_refused_before_credentials_with_both_fingerprints(tmp_path):
     original, replacement, events = (asyncssh.generate_private_key("ssh-ed25519"),
                                      asyncssh.generate_private_key("ssh-ed25519"), [])
     store = HostKeyStore(tmp_path / "known_switches.json")
     async with ssh_server(original, events) as port:
-        store.accept("127.0.0.1", port, original.get_fingerprint("sha256"))
+        transport = ssh(port, store)
+        await transport.connect()
+        await transport.close()
+    first_login = list(events)
     async with ssh_server(replacement, events, port):
+        transport = ssh(port, store)
         with pytest.raises(HostKeyMismatchError) as error:
-            await ssh(port, store).connect()
+            await transport.connect()
     assert error.value.presented == replacement.get_fingerprint("sha256")
     assert error.value.pinned == original.get_fingerprint("sha256")
-    assert events == []
+    # Neither the username nor the password reached the device with the changed key.
+    assert events == first_login and not transport.connected
+    assert store.get("127.0.0.1", port) == original.get_fingerprint("sha256")
     assert store.presented("127.0.0.1", port) == replacement.get_fingerprint("sha256")
 
 
@@ -166,12 +160,12 @@ def test_store_replace_refuses_a_stale_saved_key(tmp_path):
 
 def test_store_accept_never_overwrites_a_different_key(tmp_path):
     store = HostKeyStore(tmp_path / "known_switches.json")
-    store.accept(HOST, 22, FP_A)
+    assert store.accept(HOST, 22, FP_A) is True
     saved = store.path.read_bytes()
     with pytest.raises(HostKeyMismatchError) as error:
         store.accept(HOST, 22, FP_B)
     assert (error.value.presented, error.value.pinned) == (FP_B, FP_A)
-    store.accept(HOST, 22, FP_A)
+    assert store.accept(HOST, 22, FP_A) is False
     assert store.path.read_bytes() == saved
 
 
@@ -182,7 +176,7 @@ async def test_unreadable_store_fails_before_any_network_io(tmp_path, monkeypatc
     monkeypatch.setattr(asyncssh, "connect", lambda **kwargs: pytest.fail("the switch must not be contacted"))
     with pytest.raises(TransportError) as error:
         await SSHTransport(HOST, host_keys=HostKeyStore(path), username="fixture", password="fixture").connect()
-    assert not isinstance(error.value, HostKeyUntrustedError | HostKeyMismatchError)
+    assert not isinstance(error.value, HostKeyMismatchError)
 
 
 class FakeKey:
@@ -225,35 +219,56 @@ def handshake(key, *, after=None, connection=None):
 
 
 @pytest.mark.anyio
-async def test_transport_without_a_store_trusts_no_key(monkeypatch):
+async def test_transport_without_a_store_sends_no_credentials(monkeypatch):
     monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A)))
-    with pytest.raises(HostKeyUntrustedError) as error:
+    with pytest.raises(TransportError) as error:
         await SSHTransport(HOST, username="fixture", password="fixture").connect()
-    assert error.value.presented == FP_A and error.value.presented_type == "ssh-ed25519"
+    assert not isinstance(error.value, HostKeyMismatchError)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("change,expected", [("replace", HostKeyMismatchError), ("forget", HostKeyUntrustedError)])
-async def test_key_changed_during_authentication_is_not_adopted(tmp_path, monkeypatch, change, expected):
+async def test_key_replaced_during_authentication_is_not_adopted(tmp_path, monkeypatch):
     store = HostKeyStore(tmp_path / "known_switches.json")
     store.accept(HOST, 22, FP_A)
     connection = FakeConnection(FakeKey(FP_A))
-
-    def change_the_pin():
-        if change == "replace":
-            store.replace(HOST, 22, FP_A, FP_B)
-        else:
-            store.forget(HOST, 22)
-
-    monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A), after=change_the_pin, connection=connection))
+    monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A), after=lambda: store.replace(HOST, 22, FP_A, FP_B),
+                                                       connection=connection))
     transport = SSHTransport(HOST, host_keys=store, username="fixture", password="fixture")
-    with pytest.raises(expected) as error:
+    with pytest.raises(HostKeyMismatchError) as error:
         await transport.connect()
-    assert error.value.presented == FP_A
-    if expected is HostKeyMismatchError:
-        assert error.value.pinned == FP_B
+    assert (error.value.presented, error.value.pinned) == (FP_A, FP_B)
     assert connection.closed and not transport.connected and transport.host_key_fingerprint is None
-    assert store.presented(HOST, 22) == FP_A
+    assert store.get(HOST, 22) == FP_B and store.presented(HOST, 22) == FP_A
+
+
+@pytest.mark.anyio
+async def test_first_key_never_overwrites_a_key_saved_during_authentication(tmp_path, monkeypatch):
+    store = HostKeyStore(tmp_path / "known_switches.json")
+    connection = FakeConnection(FakeKey(FP_A))
+    monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A), after=lambda: store.accept(HOST, 22, FP_B),
+                                                       connection=connection))
+    transport = SSHTransport(HOST, host_keys=store, username="fixture", password="fixture")
+    with pytest.raises(HostKeyMismatchError) as error:
+        await transport.connect()
+    assert (error.value.presented, error.value.pinned) == (FP_A, FP_B)
+    assert connection.closed and not transport.connected and store.get(HOST, 22) == FP_B
+
+
+@pytest.mark.anyio
+async def test_first_key_that_cannot_be_saved_ends_the_connection(tmp_path, monkeypatch):
+    store = HostKeyStore(tmp_path / "known_switches.json")
+    connection = FakeConnection(FakeKey(FP_A))
+
+    def fail(self, data):
+        raise OSError("fixture storage failure")
+
+    monkeypatch.setattr(HostKeyStore, "_save", fail)
+    monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A), connection=connection))
+    transport = SSHTransport(HOST, host_keys=store, username="fixture", password="fixture")
+    with pytest.raises(TransportError, match="could not be saved") as error:
+        await transport.connect()
+    assert not isinstance(error.value, HostKeyMismatchError)
+    assert connection.closed and not transport.connected and transport.host_key_fingerprint is None
 
 
 @pytest.mark.anyio
@@ -263,9 +278,9 @@ async def test_rejection_without_the_callback_matches_the_store(tmp_path, monkey
 
     monkeypatch.setattr(asyncssh, "connect", refuse)
     store = HostKeyStore(tmp_path / "known_switches.json")
-    with pytest.raises(HostKeyUntrustedError) as untrusted:
+    with pytest.raises(TransportError) as unknown:
         await SSHTransport(HOST, host_keys=store, username="fixture", password="fixture").connect()
-    assert untrusted.value.presented is None
+    assert not isinstance(unknown.value, HostKeyMismatchError) and not store.path.exists()
     store.accept(HOST, 22, FP_A)
     with pytest.raises(HostKeyMismatchError) as changed:
         await SSHTransport(HOST, host_keys=store, username="fixture", password="fixture").connect()
@@ -281,7 +296,7 @@ async def test_connect_keeps_validation_on_and_disables_gss(tmp_path, monkeypatc
         raise asyncssh.HostKeyNotVerifiable("fixture rejection")
 
     monkeypatch.setattr(asyncssh, "connect", connect)
-    with pytest.raises(HostKeyUntrustedError):
+    with pytest.raises(TransportError):
         await SSHTransport(HOST, host_keys=HostKeyStore(tmp_path / "keys.json"), username="fixture",
                            password="fixture").connect()
     assert seen["known_hosts"] == ([], [], []) and seen["config"] is None
@@ -303,26 +318,26 @@ def test_presented_keys_are_bounded(tmp_path):
 # The session and its routes
 
 class KeyedSwitch:
-    """The simulator behind a key check that works as SSHTransport's: only the saved key gets past connect."""
+    """The simulator behind a key check that works as SSHTransport's: an address without a saved key saves the
+    presented one after the login, and a different saved key stops connect before it."""
 
     def __init__(self, store, host, port, presented):
         self.store, self.host, self.port, self.presented = store, host.strip(), port, presented
         self.simulator = SimulatedTransport(latency=0)
-        self.host_key_fingerprint = None
+        self.host_key_fingerprint = self.host_key_type = None
 
     def __getattr__(self, name):
         return getattr(self.simulator, name)
 
     async def connect(self):
         pinned = self.store.get(self.host, self.port)
-        if pinned != self.presented:
+        if pinned is not None and pinned != self.presented:
             self.store.note_presented(self.host, self.port, self.presented)
-            if pinned is None:
-                raise HostKeyUntrustedError("fixture", presented=self.presented, presented_type="ssh-ed25519")
             raise HostKeyMismatchError("fixture", presented=self.presented, presented_type="ssh-rsa", pinned=pinned)
         self.store.clear_presented(self.host, self.port)
-        self.host_key_fingerprint = self.presented
         await self.simulator.connect()
+        self.store.accept(self.host, self.port, self.presented)
+        self.host_key_fingerprint, self.host_key_type = self.presented, "ssh-ed25519"
 
     async def run_isolated(self, command, *, channel, timeout=10.0):
         return await self.simulator.run(command, channel=channel, timeout=timeout)
@@ -370,11 +385,6 @@ def client(app):
         yield test_client
 
 
-def untrusted(fingerprint=FP_A):
-    return {"code": "host_key_untrusted", "message": UNTRUSTED_MESSAGE, "host": HOST, "port": 22,
-            "ssh_host_key": fingerprint, "ssh_host_key_type": "ssh-ed25519"}
-
-
 def changed(saved=FP_A, new=FP_B):
     return {"code": "host_key_changed", "message": CHANGED_MESSAGE, "host": HOST, "port": 22, "ssh_host_key": new,
             "ssh_host_key_type": "ssh-rsa", "saved_ssh_host_key": saved}
@@ -386,8 +396,7 @@ def save_playback(config, record):
 
 
 def log_in_elsewhere(client, app):
-    """Connect to OTHER, a switch that is not the simulator and whose key is saved, up to its lighting choice."""
-    app.state.sessions.host_keys.accept(OTHER, 22, FP_A)
+    """Connect to OTHER, a switch that is not the simulator, up to its lighting choice."""
     return client.post("/api/session/login", json={**LOGIN, "host": OTHER}).json()["pending_scene_choice"]
 
 
@@ -396,11 +405,23 @@ def choose_new_lighting(client, pending):
                        "choice": "start_new", "legacy_revision": pending["legacy_revision"]}).json()
 
 
-def test_login_reports_an_untrusted_key_with_its_fingerprint(client):
+def test_login_saves_the_key_of_a_new_switch_and_shows_it(client, app):
+    session = client.get("/api/session").json()
+    assert (session["ssh_host_key"], session["ssh_host_key_type"]) == (None, None)
     response = client.post("/api/session/login", json=LOGIN)
-    assert response.status_code == 409
-    assert response.json()["detail"] == untrusted()
-    assert client.get("/api/session").json()["error"] == untrusted()
+    assert response.status_code == 200 and response.json()["pending_scene_choice"]
+    assert app.state.sessions.host_keys.get(HOST, 22) == FP_A
+    connected = choose_new_lighting(client, response.json()["pending_scene_choice"])
+    assert connected["logged_in"] and connected["error"] is None
+    session = client.get("/api/session").json()
+    assert (session["ssh_host_key"], session["ssh_host_key_type"]) == (FP_A, "ssh-ed25519")
+
+
+def test_the_demo_shows_no_ssh_key(config):
+    with TestClient(create_app(config, autoconnect=False), base_url=BASE, client=LOCAL) as client:
+        session = client.post("/api/session/login", json={"host": "demo"}).json()
+    assert session["logged_in"] and session["simulated"]
+    assert session["ssh_host_key"] is None and session["ssh_host_key_type"] is None
 
 
 def test_login_reports_a_changed_key_with_saved_and_new_fingerprints(client, app, keys):
@@ -409,36 +430,18 @@ def test_login_reports_a_changed_key_with_saved_and_new_fingerprints(client, app
     response = client.post("/api/session/login", json=LOGIN)
     assert response.status_code == 409 and response.json()["detail"] == changed()
     assert client.get("/api/session").json()["error"] == changed()
+    assert app.state.sessions.host_keys.get(HOST, 22) == FP_A
     assert choose_new_lighting(client, log_in_elsewhere(client, app))["logged_in"]
     assert client.post("/api/session/login", json=LOGIN).status_code == 409
     session = client.get("/api/session").json()
     assert session["logged_in"] and session["host"] == OTHER and session["error"] == changed()
 
 
-def test_accept_saves_only_the_key_ee_last_saw(client, app, monkeypatch):
-    sessions = app.state.sessions
-    assert client.post("/api/session/login", json=LOGIN).status_code == 409
-    stale = client.post(ACCEPT, json={"host": HOST, "port": 22, "ssh_host_key": FP_B})
-    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "host_key_stale"
-    assert not sessions.host_keys.path.exists()
-    assert client.get("/api/session").json()["error"] == untrusted()
-    accepted = client.post(ACCEPT, json={"host": HOST, "port": 22, "ssh_host_key": FP_A})
-    assert accepted.status_code == 200 and accepted.json()["error"] is None
-    assert sessions.host_keys.get(HOST, 22) == FP_A and sessions.host_keys.presented(HOST, 22) is None
-    assert client.get("/api/session").json()["error"] is None
-    writes = []
-    monkeypatch.setattr(HostKeyStore, "_save", lambda self, data: writes.append(data))
-    assert client.post(ACCEPT, json={"host": HOST, "port": 22, "ssh_host_key": FP_A}).status_code == 200
-    assert writes == []
-    assert client.post("/api/session/login", json=LOGIN).json()["pending_scene_choice"]
-
-
-def test_accept_never_replaces_a_saved_key(client, app, keys):
+def test_first_use_approval_routes_are_gone(client, app):
     app.state.sessions.host_keys.accept(HOST, 22, FP_A)
-    keys[HOST] = FP_B
-    assert client.post("/api/session/login", json=LOGIN).status_code == 409
-    response = client.post(ACCEPT, json={"host": HOST, "port": 22, "ssh_host_key": FP_B})
-    assert response.status_code == 409 and response.json()["detail"]["code"] == "host_key_stale"
+    for path in ["/api/session/host-key/accept", "/api/session/forget-host-key"]:
+        response = client.post(path, json={"host": HOST, "port": 22, "ssh_host_key": FP_B})
+        assert response.status_code == 404, path
     assert app.state.sessions.host_keys.get(HOST, 22) == FP_A
 
 
@@ -455,11 +458,19 @@ def test_replace_requires_the_saved_and_the_presented_key(client, app, keys, mon
     body = {"host": HOST, "port": 22, "saved_ssh_host_key": FP_A, "ssh_host_key": FP_B}
     response = client.post(REPLACE, json=body)
     assert response.status_code == 200 and response.json()["error"] is None
-    assert store.get(HOST, 22) == FP_B
+    assert store.get(HOST, 22) == FP_B and store.presented(HOST, 22) is None
     writes = []
     monkeypatch.setattr(HostKeyStore, "_save", lambda self, data: writes.append(data))
     assert client.post(REPLACE, json=body).status_code == 200 and writes == []
     assert client.post("/api/session/login", json=LOGIN).json()["pending_scene_choice"]
+
+
+def test_replace_needs_a_saved_key(client, app):
+    store = app.state.sessions.host_keys
+    store.note_presented(HOST, 22, FP_B)
+    response = client.post(REPLACE, json=REPLACE_BODY)
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "host_key_stale"
+    assert not store.path.exists()
 
 
 @pytest.fixture
@@ -544,74 +555,56 @@ def test_replace_is_refused_while_a_switch_connection_is_open(client, app, logge
     assert store.get(HOST, 22) == FP_A
 
 
-@pytest.mark.parametrize("route,body", [
-    (ACCEPT, {"host": HOST, "port": 22, "ssh_host_key": FP_B}),
-    (REPLACE, REPLACE_BODY),
-])
-def test_host_key_routes_are_refused_for_callers_off_this_computer(app, route, body):
+def test_replace_is_refused_for_callers_off_this_computer(app):
     store = app.state.sessions.host_keys
+    store.accept(HOST, 22, FP_A)
+    store.note_presented(HOST, 22, FP_B)
     for caller in [("100.64.0.5", 50000), ("testclient", 50000), ("::ffff:100.64.0.5", 50000)]:
         with TestClient(app, base_url=BASE, client=caller) as remote:
-            for request in (body, {**body, "port": "22"}):
-                response = remote.post(route, json=request)
+            for request in (REPLACE_BODY, {**REPLACE_BODY, "port": "22"}):
+                response = remote.post(REPLACE, json=request)
                 assert response.status_code == 403
                 assert response.json()["detail"] == {"code": "local_access_required",
                                                      "message": "Manage this setting on the computer running EE."}
-    assert not store.path.exists()
-    for caller in [("::1", 50000), ("127.0.0.1", 50000), ("::ffff:127.0.0.1", 50000)]:
+    assert store.get(HOST, 22) == FP_A
+    for caller in [("::1", 50000), ("::ffff:127.0.0.1", 50000)]:
         with TestClient(app, base_url=BASE, client=caller) as local:
-            response = local.post(route, json=body)
+            response = local.post(REPLACE, json={**REPLACE_BODY, "saved_ssh_host_key": FP_C})
             assert response.status_code == 409 and response.json()["detail"]["code"] == "host_key_stale"
+    with TestClient(app, base_url=BASE, client=LOCAL) as local:
+        assert local.post(REPLACE, json=REPLACE_BODY).status_code == 200
+    assert store.get(HOST, 22) == FP_B
 
 
-@pytest.mark.parametrize("route,body", [
-    (ACCEPT, {"host": HOST, "port": 22, "ssh_host_key": FP_A}),
-    (REPLACE, REPLACE_BODY),
-])
-def test_host_key_requests_reject_malformed_input(client, route, body):
-    for change in [{"ssh_host_key": FP_A[:-1]}, {"ssh_host_key": "MD5:" + "A" * 43}, {"port": 0}, {"port": "22"},
-                   {"port": True}, {"port": 22.5}, {"force": True}, {"host": ""}]:
-        response = client.post(route, json={**body, **change})
+def test_replace_rejects_malformed_input(client):
+    for change in [{"ssh_host_key": FP_A[:-1]}, {"saved_ssh_host_key": "MD5:" + "A" * 43}, {"port": 0},
+                   {"port": "22"}, {"port": True}, {"port": 22.5}, {"force": True}, {"host": ""}]:
+        response = client.post(REPLACE, json={**REPLACE_BODY, **change})
         assert response.status_code == 422, change
         assert response.json()["detail"] == {"code": "invalid_credentials",
                                              "message": "Check the connection fields and try again."}
-    missing = {key: value for key, value in body.items() if key != "ssh_host_key"}
-    assert client.post(route, json=missing).status_code == 422
-    blank = client.post(route, json={**body, "host": "   "})
+    for field in ["ssh_host_key", "saved_ssh_host_key"]:
+        missing = {key: value for key, value in REPLACE_BODY.items() if key != field}
+        assert client.post(REPLACE, json=missing).status_code == 422
+    blank = client.post(REPLACE, json={**REPLACE_BODY, "host": "   "})
     assert blank.status_code == 400 and blank.json()["detail"]["code"] == "missing_host"
-
-
-def test_failed_key_write_keeps_the_previous_pin(client, app, monkeypatch):
-    store = app.state.sessions.host_keys
-    store.accept(OTHER, 22, FP_C)
-    saved = store.path.read_bytes()
-    assert client.post("/api/session/login", json=LOGIN).status_code == 409
-
-    def fail(self, data):
-        raise OSError("fixture storage failure")
-
-    monkeypatch.setattr(HostKeyStore, "_save", fail)
-    response = client.post(ACCEPT, json={"host": HOST, "port": 22, "ssh_host_key": FP_A})
-    assert response.status_code == 500 and response.json()["detail"]["code"] == "host_key_save_failed"
-    assert store.path.read_bytes() == saved and store.presented(HOST, 22) == FP_A
-    assert client.get("/api/session").json()["error"] == untrusted()
 
 
 def test_unreadable_saved_keys_are_reported_without_a_write(client, app):
     store = app.state.sessions.host_keys
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text("not-json", "utf-8")
-    store.note_presented(HOST, 22, FP_A)
-    for route, body in [(ACCEPT, {"host": HOST, "port": 22, "ssh_host_key": FP_A}), (REPLACE, REPLACE_BODY)]:
-        response = client.post(route, json=body)
-        assert response.status_code == 500 and response.json()["detail"]["code"] == "host_key_save_failed"
+    store.note_presented(HOST, 22, FP_B)
+    response = client.post(REPLACE, json=REPLACE_BODY)
+    assert response.status_code == 500 and response.json()["detail"]["code"] == "host_key_save_failed"
     assert store.path.read_text("utf-8") == "not-json"
 
 
-def test_forget_host_key_route_is_gone(client, app):
-    app.state.sessions.host_keys.accept(HOST, 22, FP_A)
-    response = client.post("/api/session/forget-host-key", json={"host": HOST, "port": 22})
-    assert response.status_code == 404
+def test_saved_login_restore_saves_the_key_of_a_new_switch(config, keys, saved_login):
+    app = make_app(config, keys)
+    with TestClient(app, base_url=BASE, client=LOCAL) as client:
+        session = client.post("/api/session/restore?resume=true").json()
+    assert session["pending_scene_choice"] and session["error"] is None
     assert app.state.sessions.host_keys.get(HOST, 22) == FP_A
 
 
@@ -634,26 +627,41 @@ def manager(config, keys):
 
 
 @pytest.mark.anyio
-async def test_automatic_login_leaves_the_key_problem_for_the_connect_page(config, keys, saved_login, caplog):
+async def test_automatic_login_saves_the_key_of_a_new_switch(config, keys, saved_login):
     sessions = manager(config, keys)
     try:
         await sessions.auto_connect()
-        assert sessions.info()["error"] == untrusted()
-        assert not sessions.info()["logged_in"] and not sessions.info()["connecting"]
-        assert f"Presented key: {FP_A}." in caplog.text
+        assert sessions.info()["error"] is None and not sessions.info()["connecting"]
+        assert sessions.host_keys.get(HOST, 22) == FP_A
     finally:
         await sessions.close()
 
 
 @pytest.mark.anyio
-async def test_accept_publishes_a_session_message(config, keys):
+async def test_automatic_login_leaves_a_changed_key_for_the_connect_page(config, keys, saved_login, caplog):
+    HostKeyStore(config.data_dir / "known_switches.json").accept(HOST, 22, FP_A)
+    keys[HOST] = FP_B
+    sessions = manager(config, keys)
+    try:
+        await sessions.auto_connect()
+        assert sessions.info()["error"] == changed()
+        assert not sessions.info()["logged_in"] and not sessions.info()["connecting"]
+        assert f"Presented key: {FP_B}." in caplog.text
+    finally:
+        await sessions.close()
+
+
+@pytest.mark.anyio
+async def test_replace_publishes_a_session_message(config, keys):
+    HostKeyStore(config.data_dir / "known_switches.json").accept(HOST, 22, FP_A)
+    keys[HOST] = FP_B
     sessions = manager(config, keys)
     try:
         with pytest.raises(LoginError) as error:
             await sessions.connect(HOST, "fixture", "fixture-only")
-        assert error.value.detail() == untrusted()
+        assert error.value.detail() == changed()
         mailbox = sessions.listen()
-        await sessions.accept_host_key(HOST, 22, FP_A)
+        await sessions.replace_host_key(HOST, 22, FP_A, FP_B)
         message = await mailbox.get()
         assert message["type"] == "session" and message["session"]["error"] is None
     finally:

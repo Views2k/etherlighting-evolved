@@ -47,7 +47,6 @@ from .switch import EtherlightSwitch, PortOutput
 from .transport import (
     AuthenticationError,
     HostKeyMismatchError,
-    HostKeyUntrustedError,
     PortSampleUnavailable,
     SimulatedTransport,
     TransportError,
@@ -59,8 +58,6 @@ log = logging.getLogger(__name__)
 # Handoff to UniFi is not offered because it would have to reach the switch through the refused key.
 HOST_KEY_CHANGED_ERROR = ("The switch's SSH key changed. Quit EE on the computer that runs it, open it again, and "
                           "review the new key on the Connect page.")
-HOST_KEY_UNTRUSTED_ERROR = ("EE has no saved SSH key for this switch. Quit EE on the computer that runs it, open it "
-                            "again, and review the switch's key on the Connect page.")
 
 
 class NotFound(KeyError):
@@ -1198,7 +1195,6 @@ class Engine:
                 info = await self.switch.recover_output(outputs)
             except BaseException as exc:
                 self.error = (HOST_KEY_CHANGED_ERROR if isinstance(exc, HostKeyMismatchError)
-                              else HOST_KEY_UNTRUSTED_ERROR if isinstance(exc, HostKeyUntrustedError)
                               else "Lighting recovery is not confirmed. Check the connection and try Reconnect switch "
                                    "again.")
                 self._reconnect_blocked = True
@@ -1812,7 +1808,7 @@ class Engine:
                         self._native_blocked = True
                         self.mode = "released"
                         self._output_halt.set()
-                    permanent = isinstance(exc, (AuthenticationError, HostKeyMismatchError, HostKeyUntrustedError))
+                    permanent = isinstance(exc, (AuthenticationError, HostKeyMismatchError))
                     retryable = isinstance(exc, (TransportError, OSError)) and not permanent
                     self._reconnect_blocked = (self._native_blocked or not retryable
                                                or self._reconnect_failures >= self.MAX_RECONNECT_ATTEMPTS)
@@ -1822,8 +1818,6 @@ class Engine:
                             self.error = "SSH credentials were not accepted. Reconnect your switch to sign in again."
                         elif isinstance(exc, HostKeyMismatchError):
                             self.error = HOST_KEY_CHANGED_ERROR
-                        elif isinstance(exc, HostKeyUntrustedError):
-                            self.error = HOST_KEY_UNTRUSTED_ERROR
                         elif not self._native_blocked:
                             self.error = (
                                 "Automatic reconnect stopped. Reconnect your switch to try again."

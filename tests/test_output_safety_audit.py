@@ -16,7 +16,6 @@ from etherlighting_evolved.switch import EtherlightSwitch, PortOutput, parse_mcu
 from etherlighting_evolved.transport import (
     HostKeyMismatchError,
     HostKeyStore,
-    HostKeyUntrustedError,
     SimulatedTransport,
     SSHTransport,
     TransportError,
@@ -417,17 +416,14 @@ async def test_real_ssh_handshake_checks_key_before_password(tmp_path):
     server = await asyncssh.create_server(Server, "127.0.0.1", 0, server_host_keys=[key])
     port = server.get_port()
     try:
-        transport = SSHTransport("127.0.0.1", port=port, host_keys=store, username="fixture", password="fixture")
-        with pytest.raises(HostKeyUntrustedError) as untrusted:
-            await transport.connect()
-        assert authentications == []
-        store.accept("127.0.0.1", port, untrusted.value.presented)
+        # The first connection to an address without a saved key logs in and saves the key.
         for _ in range(2):
             transport = SSHTransport("127.0.0.1", port=port, host_keys=store,
                                      username="fixture", password="fixture")
             await transport.connect()
             await transport.close()
         assert len(authentications) == 2
+        assert store.get("127.0.0.1", port) == key.get_fingerprint("sha256")
     finally:
         server.close()
         await server.wait_closed()

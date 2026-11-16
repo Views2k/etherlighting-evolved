@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import random
 import re
 import secrets
@@ -17,6 +18,8 @@ import time
 from abc import ABC, abstractmethod
 
 from .storage import NewerFormatError, atomic_write_json, check_version
+
+log = logging.getLogger(__name__)
 
 SSH_CLOSE_TIMEOUT = 3.0
 HOST_KEY_FORMAT_VERSION = 1
@@ -64,21 +67,11 @@ class HostKeyMismatchError(TransportError):
         self.pinned = pinned
 
 
-class HostKeyUntrustedError(TransportError):
-    """EE has no saved SSH host key for the switch's address, so it did not send any credentials."""
-
-    def __init__(self, message: str = "EE has no saved SSH host key for this switch.", *,
-                 presented: str | None = None, presented_type: str | None = None) -> None:
-        super().__init__(message)
-        self.presented = presented
-        self.presented_type = presented_type
-
-
 KEY_TYPE = re.compile(r"[A-Za-z0-9@._+-]{1,64}")
-# A fingerprint as `ssh-keygen -l` prints it. The API and eectl both take one back to accept a key, so both use this
-# pattern; it is anchored for Pydantic, which searches rather than matches.
+# A fingerprint as `ssh-keygen -l` prints it. The API and eectl both take one back to accept a changed key, so both
+# use this pattern; it is anchored for Pydantic, which searches rather than matches.
 SSH_FINGERPRINT = r"^SHA256:[A-Za-z0-9+/]{43}$"
-# Addresses whose presented key is kept for approval. A client that probes many addresses cannot grow it further.
+# Addresses whose changed key is kept for review. A client that probes many addresses cannot grow it further.
 PRESENTED_LIMIT = 32
 
 
@@ -95,10 +88,10 @@ def _key_type(key) -> str | None:
 class HostKeyStore:
     """The saved SSH host key fingerprint of each switch address, kept in a small JSON file.
 
-    EE trusts only a saved key. When an address has no saved key, or the switch presents a different one, the SSH
-    connection ends during the key exchange, before any username or password is sent, and the presented key is kept
-    in memory. The user then accepts it (`accept` for a first key, `replace` for a changed one), and only a key that
-    EE itself saw at that address can be accepted.
+    The first key an address presents is saved after the login succeeds (trust on first use). A key that differs from
+    the saved one ends the connection during the key exchange, before any username or password is sent, and is kept
+    in memory. The user can then accept it with `replace`, and only a key that EE itself saw at that address can be
+    accepted.
     """
 
     def __init__(self, path) -> None:
@@ -136,18 +129,20 @@ class HostKeyStore:
     def get(self, host: str, port: int) -> str | None:
         return self._load().get(self.address_key(host, port))
 
-    def accept(self, host: str, port: int, fingerprint: str) -> None:
-        """Save the first key of an address. A different saved key is never overwritten here."""
+    def accept(self, host: str, port: int, fingerprint: str) -> bool:
+        """Save the first key of an address, returning whether it was written. A different saved key is never
+        overwritten here."""
         data = self._load()
         key = self.address_key(host, port)
         pinned = data.get(key)
         if pinned == fingerprint:
-            return
+            return False
         if pinned is not None:
             raise HostKeyMismatchError(f"{key} already has a different saved SSH key.", presented=fingerprint,
                                        pinned=pinned)
         data[key] = fingerprint
         self._save(data)
+        return True
 
     def replace(self, host: str, port: int, previous: str, fingerprint: str) -> None:
         """Replace the saved key only while it is still `previous`."""
@@ -177,7 +172,7 @@ class HostKeyStore:
             del self._presented[next(iter(self._presented))]
 
     def presented(self, host: str, port: int) -> str | None:
-        """The key the switch at this address presented last, while it waits for approval."""
+        """The changed key the switch at this address presented last, while it waits for review."""
         return self._presented.get(self.address_key(host, port))
 
     def clear_presented(self, host: str, port: int) -> None:
@@ -185,9 +180,10 @@ class HostKeyStore:
 
 
 class Transport(ABC):
-    # Set on SSH connections: the authenticated host key, and the lease that lets desktop output override the
-    # switch-resident player while that player is installed.
+    # Set on SSH connections: the authenticated host key and its algorithm, and the lease that lets desktop output
+    # override the switch-resident player while that player is installed.
     host_key_fingerprint: str | None = None
+    host_key_type: str | None = None
     desktop_output = None
 
     def revoke_lighting_profile(self) -> None:
@@ -474,15 +470,20 @@ class SSHTransport(Transport):
             def validate_host_public_key(self, host, addr, port, key):
                 nonlocal rejection
                 fingerprint = key.get_fingerprint("sha256")
-                if store is not None and pinned == fingerprint:
+                if store is None:
+                    # Without a store the key could be neither checked nor saved.
+                    rejection = TransportError("EE has no place to save SSH host keys, so it did not connect.")
+                    return False
+                if pinned is None or pinned == fingerprint:
                     store.clear_presented(transport.host, transport.port)
                     return True
-                rejection = transport._rejected_key(fingerprint, _key_type(key), pinned)
+                rejection = transport._changed_key(fingerprint, _key_type(key), pinned)
                 return False
 
         # An empty trusted-key set makes asyncssh call the validation callback during the key exchange, before the
-        # userauth request that carries the username and password. Only a saved key passes it. GSS key exchange
-        # is off because it would authenticate the server without this callback.
+        # userauth request that carries the username and password. An address without a saved key passes it and
+        # its key is saved after the login; any other key must be the saved one. GSS key exchange is off because
+        # it would authenticate the server without this callback.
         kwargs: dict = {"host": self.host, "port": self.port, "known_hosts": ([], [], []),
                         "client_factory": PinnedHostClient, "config": None, "gss_kex": False, "gss_auth": False}
         if self.username:
@@ -503,7 +504,7 @@ class SSHTransport(Transport):
             # asyncssh refused the key without asking EE, for example a host certificate.
             message = "The switch's SSH host key could not be verified."
             if pinned is None:
-                raise HostKeyUntrustedError(message) from exc
+                raise TransportError(message) from exc
             raise HostKeyMismatchError(message, pinned=pinned) from exc
         except asyncssh.PermissionDenied as exc:
             raise AuthenticationError("SSH login failed: wrong username or password") from exc
@@ -517,14 +518,22 @@ class SSHTransport(Transport):
             raise TransportError("the SSH session closed while connecting")
         try:
             key = conn.get_server_host_key()
-            fingerprint = key.get_fingerprint("sha256") if key else None
-            # The saved key can change during the handshake (another EE window, eectl). Only the key saved now is
-            # trusted, and a key that matched only the earlier read is never adopted.
-            current = store.get(self.host, self.port) if store is not None else None
-            if fingerprint is None or current != fingerprint:
-                raise self._rejected_key(fingerprint, _key_type(key), current, f"The saved SSH key for {self.host}:"
-                                         f"{self.port} changed while EE was connecting. Connect again.")
-            self.host_key_fingerprint = fingerprint
+            if key is None or store is None:
+                raise TransportError("The switch's SSH host key could not be read after the login.")
+            fingerprint, key_type = key.get_fingerprint("sha256"), _key_type(key)
+            # Saves the key of an address that has none. The saved key can also change during the handshake (another
+            # EE window, eectl): a different key saved meanwhile is kept, and this connection is refused.
+            try:
+                saved_now = store.accept(self.host, self.port, fingerprint)
+            except HostKeyMismatchError as exc:
+                raise self._changed_key(fingerprint, key_type, exc.pinned, f"The saved SSH key for {self.host}:"
+                                        f"{self.port} changed while EE was connecting. Connect again.") from exc
+            except OSError as exc:
+                raise TransportError(f"The SSH key of {self.host}:{self.port} could not be saved.") from exc
+            if saved_now:
+                log.info("saved the %s SSH key %s of %s:%s at the first connection", key_type or "unknown",
+                         fingerprint, self.host, self.port)
+            self.host_key_fingerprint, self.host_key_type = fingerprint, key_type
         except Exception:
             conn.close()
             try:
@@ -539,20 +548,14 @@ class SSHTransport(Transport):
         self._unfinished_port_reads = 0
         self._rgb_checked = self._rgb_failed = False
 
-    def _rejected_key(self, presented: str | None, presented_type: str | None, pinned: str | None,
-                      message: str | None = None) -> TransportError:
+    def _changed_key(self, presented: str, presented_type: str | None, pinned: str | None,
+                     message: str | None = None) -> HostKeyMismatchError:
         """The error for a key that is not the saved one. The presented key is kept so the user can accept it."""
-        if self.host_keys is not None and presented is not None:
+        if self.host_keys is not None:
             self.host_keys.note_presented(self.host, self.port, presented)
-        address = f"{self.host}:{self.port}"
-        if pinned is None:
-            kind = f"{presented_type} " if presented_type else ""
-            return HostKeyUntrustedError(
-                message or f"EE has no saved SSH key for {address}. The switch presented the {kind}key {presented}.",
-                presented=presented, presented_type=presented_type)
         return HostKeyMismatchError(
-            message or f"The SSH key of {address} changed. Saved key: {pinned}. Presented key: {presented}. If you did "
-            "not reset or replace the switch, another device may be using this address.",
+            message or f"The SSH key of {self.host}:{self.port} changed. Saved key: {pinned}. Presented key: "
+            f"{presented}. If you did not reset or replace the switch, another device may be using this address.",
             presented=presented, presented_type=presented_type, pinned=pinned)
 
     async def _open_shell(self, conn, name: str) -> _Channel:
