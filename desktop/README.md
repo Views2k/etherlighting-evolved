@@ -1,14 +1,18 @@
 # Etherlighting Evolved desktop
 
-The desktop workspace uses Avalonia 11.3 and .NET 8. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
+The desktop workspace uses Avalonia 11.3 and .NET 10. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
 
 ## Run the app
 
 The Windows installer includes the desktop app, gateway and lighting engine. Start Etherlighting Evolved from the Start menu, then connect to your switch or choose the demo. Closing the window hides it in the notification area. Use the tray menu to open it again or quit.
 
-For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime. Start an EE workspace service on the same computer, or connect to an existing one using its private HTTPS workspace address. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address. The default local address is `http://127.0.0.1:4180/`.
+For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime. Start an EE workspace service on the same computer, or connect to an existing one using its private HTTPS workspace address. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, or an HTTP origin on this computer, without account details, a path or a query. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
 
 On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
+
+### Desktop log
+
+The app keeps `desktop.log` in its data folder: `%LOCALAPPDATA%\Etherlighting Evolved` on Windows, `~/Library/Application Support/Etherlighting Evolved` on macOS and `~/.config/etherlighting-evolved` on Linux. It records errors the window could not report in full and why the bundled service did not start or stopped. Each entry has the time, the app version, the error type and the code locations involved, or the service's exit code and its last 64 error output lines. The app does not record its own error messages, screen text or request contents. The service's output lines can include file paths and addresses; the user name and password in an address are removed. The file stays on the computer. When it passes 256 KB it is renamed to `desktop.log.1`, replacing the previous one.
 
 ### Connect a tagged Tailscale device
 
@@ -45,16 +49,16 @@ The menu entry runs `EtherlightingEvolved` by name. Make sure `$HOME/.local/bin`
 
 ## Build and test
 
-Use the .NET 8 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
+Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
 dotnet build desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj -c Release --no-restore
-dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
+dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
 ```
 
-The check program renders windows off screen. Its service checks use a simulator with isolated data. To use the app interactively from the same build, launch the source app in demo mode.
+The check program renders windows off screen. Its service checks use a simulator with isolated data. To use the app interactively from the same build, launch the source app in demo mode. A demo copy can run beside the installed app; it keeps its workspace data and its preferences, such as the theme and saved palettes, in the `demo` folder of the app's data folder.
 
 [WINDOWS POWERSHELL]
 

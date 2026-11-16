@@ -34,6 +34,11 @@ public sealed class Workspace : IAsyncDisposable
     /// <summary>/api/workspace: whether this workspace controls a real switch ("live").</summary>
     public JsonObject Options { get; set; } = new() { ["live"] = false };
 
+    /// <summary>/api/about: the service's version and disclaimer. Empty for a service that does not report them.</summary>
+    public JsonObject About { get; set; } = [];
+
+    public string Disclaimer => About.Str("disclaimer") is { Length: > 0 } text ? text : "Unofficial community project. Not affiliated with Ubiquiti.";
+
     /// <summary>The live stream is interrupted (the browser workspace's "disconnected").</summary>
     public bool Disconnected { get; private set; }
 
@@ -360,7 +365,9 @@ public sealed class Workspace : IAsyncDisposable
                 FansChanged?.Invoke();
                 break;
             case "session":
-                if (message["session"] is JsonObject session && SessionMessage is { } handler) _ = handler((JsonObject)session.DeepClone());
+                if (message["session"] is JsonObject session && SessionMessage is { } handler)
+                    _ = handler((JsonObject)session.DeepClone()).ContinueWith(task => DesktopLog.Error("session_error", task.Exception!),
+                        CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
                 break;
         }
     }

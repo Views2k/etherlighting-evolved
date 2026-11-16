@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EtherlightingEvolved.Native.Core;
 using Microsoft.Win32;
 
 namespace EtherlightingEvolved.Native;
@@ -179,27 +180,38 @@ public static class Locations
 
     public static string Workspace(bool demo) => Path.Combine(AppData, demo ? "demo" : "workspace");
 
-    static string SettingsFile => Path.Combine(AppData, "native.json");
+    internal static string SettingsFile => Path.Combine(AppData, "native.json");
 
-    /// <summary>The workspace address this window uses when it does not start EE itself.</summary>
+    /// <summary>The native.json layout this version writes. A file without "format" is the same layout.</summary>
+    const int SettingsFormat = 1;
+
+    /// <summary>
+    /// The workspace address this window uses when it does not start EE itself. Only an address the address dialog
+    /// accepts is used. Saving keeps the file's other settings.
+    /// </summary>
     public static Uri? SavedWorkspace
     {
-        get
-        {
-            try
-            {
-                var node = JsonNode.Parse(File.ReadAllText(SettingsFile));
-                return Uri.TryCreate(node?["workspace_url"]?.GetValue<string>(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" ? uri : null;
-            }
-            catch (Exception) { return null; }
-        }
+        get => WorkspaceAddress.Parse(ReadSettings().Str("workspace_url"));
         set
         {
+            var settings = ReadSettings();
+            settings["format"] ??= SettingsFormat;
+            settings["workspace_url"] = value?.ToString();
             Directory.CreateDirectory(AppData);
-            var temporary = SettingsFile + ".tmp";
-            File.WriteAllText(temporary, new JsonObject { ["workspace_url"] = value?.ToString() }.ToJsonString());
-            File.Move(temporary, SettingsFile, overwrite: true);
+            var temporary = SettingsFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, settings.ToJsonString());
+                File.Move(temporary, SettingsFile, overwrite: true);
+            }
+            finally { File.Delete(temporary); }
         }
+    }
+
+    static JsonObject ReadSettings()
+    {
+        try { return Json.Parse(File.ReadAllText(SettingsFile)) as JsonObject ?? []; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
     }
 
     /// <summary>The same record the earlier desktop app kept when shutdown could not be confirmed.</summary>
@@ -213,7 +225,7 @@ public static class Locations
             File.WriteAllText(temporary, JsonSerializer.Serialize(new
             {
                 time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"), stage = "desktop_exit", outcome = "cleanup_unconfirmed",
-                build = typeof(App).Assembly.GetName().Version?.ToString(3),
+                build = App.Version,
             }) + "\n");
             File.Move(temporary, file, overwrite: true);
         }

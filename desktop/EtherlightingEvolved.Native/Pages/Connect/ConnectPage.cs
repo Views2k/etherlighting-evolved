@@ -9,7 +9,9 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using EtherlightingEvolved.Native.Ui;
+using static EtherlightingEvolved.Native.Pages.Connections;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
@@ -32,17 +34,17 @@ public sealed class ConnectPage : Page
     readonly Func<Task<JsonNode?>>? restoreSaved;
     readonly Func<Task>? onDemo;
     readonly CancellationTokenSource lifecycle = new();
-    readonly Notice message = new();
-    readonly TextBox address = ConnectionUi.Input(253);
-    readonly TextBox username = ConnectionUi.Input(128);
-    readonly TextBox password = ConnectionUi.Input(password: true);
-    readonly TextBox port = ConnectionUi.Input();
+    readonly Notice message = new(connection: true);
+    readonly TextBox address = UiKit.Input(maxLength: 253);
+    readonly TextBox username = UiKit.Input(maxLength: 128);
+    readonly TextBox password = UiKit.Input();
+    readonly TextBox port = UiKit.Input();
     readonly CheckBox remember;
     readonly Button reveal;
-    readonly Button submit = ConnectionUi.Button("Connect to switch", "primary");
-    readonly Button restore = ConnectionUi.Button("Connect with saved login");
-    readonly Button forget = ConnectionUi.Button("Forget saved login", "quiet");
-    readonly Button retryHandoff = ConnectionUi.Button("Retry handoff", "primary");
+    readonly Button submit = UiKit.Button("Connect to switch", "primary");
+    readonly Button restore = UiKit.Button("Connect with saved login");
+    readonly Button forget = UiKit.Button("Forget saved login", "quiet");
+    readonly Button retryHandoff = UiKit.Button("Retry handoff", "primary");
     readonly Button? firstPanelButton;
     readonly List<Control> formElements;
     readonly PrivateAccessPanel privateAccess;
@@ -67,16 +69,17 @@ public sealed class ConnectPage : Page
         {
             Text = "Connect your switch", Classes = { "h1" }, FontSize = 24, LineHeight = 34.8, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 14, 0, 8),
         };
-        var intro = ConnectionUi.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
+        var intro = UiKit.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
         intro.Margin = default;
         panel.Children.Add(logo);
         panel.Children.Add(heading);
         panel.Children.Add(intro);
 
         port.Text = "22";
-        (var rememberLabel, remember) = ConnectionUi.CheckRow("Save login on this PC", "text", 32);
+        var rememberLabel = new CheckRow("Save login on this PC", "text", 32);
+        remember = rememberLabel.Box;
         var options = new Disclosure("Connection options");
-        var portField = ConnectionUi.Field("SSH port", port);
+        var portField = UiKit.Field("SSH port", port);
         portField.Margin = new Thickness(0, 14, 0, 0);
         portField.Width = 150;
         portField.HorizontalAlignment = HorizontalAlignment.Left;
@@ -86,11 +89,11 @@ public sealed class ConnectPage : Page
         actions.Children.Add(forget);
         actions.Children.Add(retryHandoff);
         retryHandoff.IsVisible = false;
-        var (passwordField, revealButton) = ConnectionUi.PasswordField("SSH password", password);
-        reveal = revealButton;
+        var passwordField = new SecretField("SSH password", password);
+        reveal = passwordField.Reveal;
         var form = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Classes = { "connection-form" } };
-        form.Children.Add(ConnectionUi.Field("Switch address", address));
-        form.Children.Add(ConnectionUi.Field("SSH username", username));
+        form.Children.Add(UiKit.Field("Switch address", address));
+        form.Children.Add(UiKit.Field("SSH username", username));
         form.Children.Add(passwordField);
         form.Children.Add(rememberLabel);
         form.Children.Add(options);
@@ -106,7 +109,7 @@ public sealed class ConnectPage : Page
         var inline = new FlowRow(0);
         if (onDemo is not null)
         {
-            var demo = ConnectionUi.Button("Continue with demo", "quiet");
+            var demo = UiKit.Button("Continue with demo", "quiet");
             demo.Click += async (_, _) =>
             {
                 if (pending is not null || saved.Truthy("connecting") || HandoffBlocked(saved)) return;
@@ -116,7 +119,7 @@ public sealed class ConnectPage : Page
             inline.Children.Add(demo);
             firstPanelButton = demo;
         }
-        var help = ConnectionUi.Button("Connection help", "quiet");
+        var help = UiKit.Button("Connection help", "quiet");
         help.Click += (_, _) => Shell.ShowLoginHelp();
         inline.Children.Add(help);
         firstPanelButton ??= help;
@@ -126,7 +129,7 @@ public sealed class ConnectPage : Page
         panel.Children.Add(privateAccess);
         panel.Children.Add(new TextBlock
         {
-            Text = "Unofficial community project. Not affiliated with Ubiquiti.", FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
+            Text = Workspace.Disclaimer, FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 24, 0, 0),
         }.Bind(TextBlock.ForegroundProperty, "muted"));
 
@@ -322,7 +325,7 @@ public sealed class ConnectPage : Page
             (username, string.IsNullOrWhiteSpace(username.Text), "Enter the SSH username."),
             (password, string.IsNullOrEmpty(password.Text),
                 restoreSaved is not null && saved.Truthy("has_saved_login") ? "Enter the SSH password, or choose Connect with saved login." : "Enter the SSH password."),
-            (port, !IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
+            (port, !Core.Model.Js.IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
         }.FirstOrDefault(entry => entry.Failed);
         if (invalid.Control is not null)
         {
@@ -347,8 +350,8 @@ public sealed class ConnectPage : Page
         {
             try
             {
-                if (!await Confirmation.ConfirmAction(Shell.Overlay, this, "Retry handoff to UniFi?", "Stop EE lighting and return control to UniFi. Your saved setup is kept.",
-                        "Retry handoff", lifecycle.Token) || !active)
+                if (!await Shell.Overlay.Confirm("Retry handoff to UniFi?", "Stop EE lighting and return control to UniFi. Your saved setup is kept.",
+                        "Retry handoff", this, lifecycle.Token) || !active)
                     return;
                 Status("Handing lighting back to UniFi…");
                 var result = await RequestHandoff(request, () => active);
@@ -363,7 +366,7 @@ public sealed class ConnectPage : Page
             }
             catch (Exception)
             {
-                if (active) Status("Handoff status could not be displayed. Refresh the page to check its status.", true);
+                if (active) Status("Handoff status could not be displayed. Choose Retry handoff to check again, or reopen EE.", true);
             }
             finally
             {
@@ -385,7 +388,7 @@ public sealed class ConnectPage : Page
     async Task Forget()
     {
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
-        if (!await Confirmation.ConfirmAction(Shell.Overlay, this, "Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", lifecycle.Token)) return;
+        if (!await Shell.Overlay.Confirm("Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", this, lifecycle.Token)) return;
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         forgetting = true;
         StartPending(async () =>

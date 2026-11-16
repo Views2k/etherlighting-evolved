@@ -9,6 +9,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Pages.Settings;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
@@ -176,14 +177,14 @@ internal static class ControllerConnectionChecks
                     "trust and site selection keep the save intent pending");
                 Click("Connect and save login");
                 check(attempts.Last().Str("site") == "second" && string.IsNullOrEmpty(key.Text) && saves == 0
-                    && Controls<NoticeBox>().Any(notice => notice.IsError && notice.Text.Contains("retry saving")),
+                    && Controls<Notice>().Any(notice => notice.IsError && notice.Text.Contains("retry saving")),
                     "a protected save failure keeps the controller connected and offers a retry");
                 Click("Save reconnect preference");
-                check(attempts.Count == 3 && saves == 1 && Controls<NoticeBox>().Any(notice => notice.Text.Contains("Controller login saved")),
+                check(attempts.Count == 3 && saves == 1 && Controls<Notice>().Any(notice => notice.Text.Contains("Controller login saved")),
                     "retrying saves the established login without another connection or key entry");
             }
             else if (modern)
-                check(saves == 0 && Controls<NoticeBox>().Any(notice => notice.Text == "Controller connected and login saved."),
+                check(saves == 0 && Controls<Notice>().Any(notice => notice.Text == "Controller connected and login saved."),
                     "confirmed connect-and-save updates the saved login with one request");
             check(attempts.Count > 0 && attempts.All(body => modern ? body.Bool("remember") == true : !body.ContainsKey("remember")),
                 modern ? "connect carries the selected save intent through every step" : "legacy servers receive their original connect payload");

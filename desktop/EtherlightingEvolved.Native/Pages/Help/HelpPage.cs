@@ -7,6 +7,8 @@ using Avalonia.Media;
 using EtherlightingEvolved.Native.Pages.Settings;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
+using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Help;
 
@@ -25,7 +27,7 @@ public sealed class HelpPage : Page
 {
     public HelpPage(AppShell shell) : base(shell)
     {
-        var (copper, sfp) = PortTopology.LightingPorts(Workspace.State);
+        var (copper, sfp) = Core.Model.PortTopology.LightingPorts(Workspace.State);
         var sfpScope = sfp.Count > 0 ? $"SFP {string.Join(", ", sfp)}" : "the SFP indicators";
         var chapters = new List<(string Title, string[] Paragraphs)>
         {
@@ -42,7 +44,6 @@ public sealed class HelpPage : Page
                 "The port map previews those changes. Show applied lets you compare them with the applied lighting; Show preview returns to your edits.",
                 "Lighting previews stay available while you browse. Return to Lighting to continue editing, or save the preview as a profile. Apply changes sends it to the switch.",
                 "Undo last apply restores the setup from before the most recent lighting or profile apply. It is available in Lighting and Profiles while that setup is still current.",
-                "Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.",
                 "History in Workspace lists earlier lighting setups for this switch. Review an entry and choose Restore to apply it.",
                 "When another device changes the lighting, Review lighting changes shows both edits. Reapply compatible edits or choose which settings to keep.",
             ]),
@@ -130,7 +131,7 @@ public sealed class HelpPage : Page
         row.Children.Add(chevron);
         row.Children.Add(heading);
         var summary = new Border { Child = row, Background = Brushes.Transparent };
-        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * SettingsKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
+        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * UiKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
         // The steps are p elements, whose own 1.5 line height replaces the card's 1.65.
         foreach (var text in paragraphs)
             steps.Children.Add(new TextBlock { Text = text, FontSize = 13, LineHeight = 19.5, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted"));

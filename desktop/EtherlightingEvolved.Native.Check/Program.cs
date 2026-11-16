@@ -22,6 +22,8 @@ void Check(bool ok, string name)
     if (!ok) failures.Add(name);
 }
 
+PreferencesChecks.Run(Check);
+DesktopLogChecks.Run(Check);
 if (args.Contains("--service") || args.Contains("--quit-check"))
 {
     ShutdownChecks.Run(output, Check).GetAwaiter().GetResult();
@@ -38,6 +40,7 @@ AppBuilder.Configure<App>()
     .SetupWithoutStarting();
 
 ShellChecks.Contracts(Check);
+ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
 
 // Palettes read from the browser workspace's themes.css

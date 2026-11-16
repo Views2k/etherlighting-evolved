@@ -3,13 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using EtherlightingEvolved.Native.Core;
 
-namespace EtherlightingEvolved.Native.Pages.Connect;
-
-/// <summary>An error with only a code, for the places where the browser workspace throws <c>{code}</c>.</summary>
-public sealed class CodedException(string code, string? message = null) : Exception(message ?? code)
-{
-    public string Code { get; } = code;
-}
+namespace EtherlightingEvolved.Native.Pages;
 
 /// <summary>A handoff or connection message with its notice tone ("online", "waiting" or none).</summary>
 public sealed record ConnectionNotice(string Message, bool Error, string Tone);
@@ -17,24 +11,13 @@ public sealed record ConnectionNotice(string Message, bool Error, string Tone);
 /// <summary>The result of a handoff request: the latest session, and the error to show when it was not confirmed.</summary>
 public sealed record HandoffResult(JsonObject? Session, string? Error);
 
-/// <summary>The controller target a form or saved connection describes.</summary>
-public sealed record ControllerTarget(string? Url, string? ControllerKind, string? AuthMethod, string? ConsoleId)
-{
-    public static ControllerTarget? From(JsonNode? node) => node is JsonObject
-        ? new ControllerTarget(node.Str("url"), node.Str("controller_kind"), node.Str("auth_method"), node.Str("console_id"))
-        : null;
-}
-
-/// <summary>The controller form values checked before connecting.</summary>
-public sealed record ControllerValues(string? Url, string? ControllerKind, string? AuthMethod, string? ConsoleId,
-    string? Username = null, string? Password = null, string? ApiKey = null);
-
 /// <summary>The reconnect preference controls (controllerReconnectControls).</summary>
 public readonly record struct ReconnectControls(bool Supported, bool Checked, bool Changed, bool CanApply);
 
 /// <summary>
-/// Messages, checks and requests of the browser workspace's connection views (preview/connections.mjs): switch login
-/// and handoff messages, the UniFi controller messages and checks, and the private access messages and addresses.
+/// Messages, checks and requests of the browser workspace's connection views (preview/connections.mjs), shared by the
+/// connection view and Settings: switch login and handoff, the UniFi Network controller connection, and private access
+/// through Tailscale. An error is a refused request or an error object from a status payload, as in the browser.
 /// </summary>
 public static class Connections
 {
@@ -76,19 +59,12 @@ public static class Connections
         ["switch_not_found"] = "The connected switch was not found in this site. Check the selected site.",
     };
 
-    static string? CodeOf(Exception? error) => error switch
-    {
-        ApiException api => api.Code,
-        CodedException coded => coded.Code,
-        _ => null,
-    };
-
     /// <summary>The message for a failed connection (connectionError).</summary>
     public static string ConnectionError(string? code, bool timedOut = false, string fallback = DefaultError) =>
         code is not null && Messages.TryGetValue(code, out var message) ? message : timedOut ? Messages["timeout"] : fallback;
 
     public static string ConnectionError(Exception? error, string fallback = DefaultError) =>
-        ConnectionError(CodeOf(error), error is TimeoutException, fallback);
+        ConnectionError((error as ApiException)?.Code, error is TimeoutException, fallback);
 
     public static string ConnectionError(JsonNode? error, string fallback = DefaultError) => ConnectionError(error.Str("code"), false, fallback);
 
@@ -191,7 +167,7 @@ public static class Connections
     /// The message for a controller error (controllerError). <paramref name="detail"/> holds the operation and
     /// upstream status of a "controller_error".
     /// </summary>
-    public static string ControllerErrorFor(string? code, JsonNode? detail, bool timedOut = false, string fallback = DefaultControllerError)
+    static string ControllerError(string? code, JsonNode? detail, bool timedOut, string fallback)
     {
         if (code == "controller_error")
         {
@@ -208,11 +184,11 @@ public static class Connections
     }
 
     public static string ControllerError(Exception? error, string fallback = DefaultControllerError) =>
-        ControllerErrorFor(CodeOf(error), (error as ApiException)?.Details, error is TimeoutException, fallback);
+        ControllerError((error as ApiException)?.Code, (error as ApiException)?.Details, error is TimeoutException, fallback);
 
     /// <summary>A controller error object from the workspace state: its details are the object itself.</summary>
     public static string ControllerError(JsonNode? error, string fallback = DefaultControllerError) =>
-        ControllerErrorFor(error.Str("code"), error.At("details") as JsonObject ?? error.At("detail") as JsonObject ?? error, false, fallback);
+        ControllerError(error.Str("code"), error.At("details") as JsonObject ?? error.At("detail") as JsonObject ?? error, false, fallback);
 
     public static ReconnectControls ControllerReconnectControls(JsonNode? current, bool? draft)
     {
@@ -223,79 +199,80 @@ public static class Connections
             supported && (chosen ? current.Bool("can_save_login") == true && (!saved || current.Bool("saved_login_matches_connection") == false) : saved));
     }
 
-    public static bool ControllerReconnectConfirmed(JsonNode? current, bool? enabled) =>
-        enabled is { } value && current.Bool("preferences_supported") == true && !current.Truthy("saved_login_error") &&
-        current.Bool("auto_reconnect") == value && current.Bool("saved_login_available") == value &&
-        (!value || current.Bool("saved_login_matches_connection") == true);
+    public static bool ControllerReconnectConfirmed(JsonNode? current, bool enabled) =>
+        current.Bool("preferences_supported") == true && !current.Truthy("saved_login_error") &&
+        current.Bool("auto_reconnect") == enabled && current.Bool("saved_login_available") == enabled &&
+        (!enabled || current.Bool("saved_login_matches_connection") == true);
 
-    /// <summary>The HTTPS origin of a controller address with no path, query, fragment or account details.</summary>
+    /// <summary>The https origin of a controller address with no path, query, fragment or account; otherwise null.</summary>
     public static string? ControllerOrigin(string? value)
     {
-        if (value is null || value.Any(char.IsWhiteSpace)) return null;
+        if (value is null || Regex.IsMatch(value, @"\s")) return null;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var url)) return null;
-        var search = url.Query.Length > 1 ? url.Query : "";
-        var hash = url.Fragment.Length > 1 ? url.Fragment : "";
-        return url.Scheme == "https" && url.Host.Length > 0 && url.UserInfo.Length == 0 && url.AbsolutePath is "" or "/" && search.Length == 0 && hash.Length == 0
-            ? Origin(url) : null;
+        if (url.Scheme != "https" || url.Host.Length == 0 || url.UserInfo.Length > 0 || url.AbsolutePath is not ("" or "/") || url.Query.Length > 0 || url.Fragment.Length > 0) return null;
+        // The URL parser keeps a bare query or fragment mark out of Query and Fragment; the browser treats them as empty too.
+        return url.IsDefaultPort ? $"https://{url.IdnHost}" : $"https://{url.IdnHost}:{url.Port}";
     }
-
-    static string Origin(Uri url) => url.IsDefaultPort ? $"{url.Scheme}://{url.Host}" : $"{url.Scheme}://{url.Host}:{url.Port.ToString(CultureInfo.InvariantCulture)}";
-
-    static readonly string[] ControllerKinds = ["self_hosted", "unifi_os", "cloud_connector"];
 
     /// <summary>The sign-in methods each controller type supports here (controllerSupportedMethods).</summary>
     public static Dictionary<string, List<string>> ControllerSupportedMethods(JsonNode? current)
     {
         var allowed = new Dictionary<string, string[]> { ["self_hosted"] = ["password"], ["unifi_os"] = ["password", "api_key"], ["cloud_connector"] = ["api_key"] };
-        if (current is not JsonObject obj || !obj.ContainsKey("supported_auth_methods"))
+        if (current is not JsonObject value || !value.ContainsKey("supported_auth_methods"))
             return new() { ["self_hosted"] = ["password"], ["unifi_os"] = ["password"], ["cloud_connector"] = [] };
-        var advertised = obj["supported_auth_methods"];
+        var advertised = value["supported_auth_methods"];
         return allowed.ToDictionary(entry => entry.Key, entry => entry.Value
             .Where(method => advertised.At(entry.Key) is JsonArray list && list.Any(item => item.Str() == method)).ToList());
     }
 
-    static string? OrNull(string? value) => string.IsNullOrEmpty(value) ? null : value;
+    /// <summary>The controller target a form describes.</summary>
+    public sealed record Target(string? Url, string ControllerKind, string AuthMethod, string? ConsoleId);
 
-    public static bool SameControllerTarget(ControllerTarget? target, ControllerValues values) =>
-        !string.IsNullOrEmpty(target?.Url) && ControllerOrigin(values.Url?.Trim()) == ControllerOrigin(target.Url) &&
-        (OrNull(target.ControllerKind) ?? "self_hosted") == values.ControllerKind &&
-        (OrNull(target.AuthMethod) ?? "password") == (OrNull(values.AuthMethod) ?? "password") &&
-        OrNull(target.ConsoleId) == OrNull(values.ConsoleId);
+    /// <summary>A saved or pending controller target that the form values describe (sameControllerTarget).</summary>
+    public static bool SameTarget(JsonNode? target, Target values) =>
+        target.Truthy("url") && ControllerOrigin(values.Url?.Trim()) == ControllerOrigin(target.Str("url"))
+        && (target.Str("controller_kind") is { Length: > 0 } kind ? kind : "self_hosted") == values.ControllerKind
+        && (target.Str("auth_method") is { Length: > 0 } method ? method : "password") == (values.AuthMethod is { Length: > 0 } auth ? auth : "password")
+        && (target.Str("console_id") is { Length: > 0 } console ? console : null) == (values.ConsoleId is { Length: > 0 } id ? id : null);
+
+    public readonly record struct FieldProblem(string Field, string Message);
 
     /// <summary>The first problem with the controller form, as the field to focus and its message (controllerConnectionProblem).</summary>
-    public static (string Field, string Message)? ControllerConnectionProblem(ControllerValues values, JsonNode? current)
+    public static FieldProblem? ControllerConnectionProblem(Target values, string username, string password, string apiKey, JsonNode? current)
     {
         var methods = ControllerSupportedMethods(current);
-        var method = OrNull(values.AuthMethod) ?? "password";
-        if (values.ControllerKind is null || !ControllerKinds.Contains(values.ControllerKind) || methods[values.ControllerKind].Count == 0)
-            return ("controller_kind", ControllerMessages["invalid_controller_kind"]);
-        if (!methods[values.ControllerKind].Contains(method)) return ("auth_method", ControllerMessages["invalid_auth_method"]);
+        var method = values.AuthMethod is { Length: > 0 } chosen ? chosen : "password";
+        if (values.ControllerKind is not ("self_hosted" or "unifi_os" or "cloud_connector") || methods[values.ControllerKind].Count == 0)
+            return new("controller_kind", ControllerMessages["invalid_controller_kind"]);
+        if (!methods[values.ControllerKind].Contains(method)) return new("auth_method", ControllerMessages["invalid_auth_method"]);
         var origin = ControllerOrigin(values.Url?.Trim());
-        if (origin is null) return ("url", "Enter the controller’s direct HTTPS address and port, without a page path, query, or account details.");
+        if (origin is null) return new("url", "Enter the controller’s direct HTTPS address and port, without a page path, query, or account details.");
         if (values.ControllerKind == "cloud_connector")
         {
-            if (values.Url?.Trim() != "https://api.ui.com") return ("url", ControllerMessages["invalid_cloud_origin"]);
-            if (!Regex.IsMatch(values.ConsoleId ?? "", "^[A-Za-z0-9_-]{1,128}(?::[0-9]{1,20})?$")) return ("console_id", ControllerMessages["invalid_console_id"]);
+            if (values.Url?.Trim() != "https://api.ui.com") return new("url", ControllerMessages["invalid_cloud_origin"]);
+            if (!Regex.IsMatch(values.ConsoleId ?? "", @"^[A-Za-z0-9_-]{1,128}(?::[0-9]{1,20})?$")) return new("console_id", ControllerMessages["invalid_console_id"]);
         }
-        else if (!string.IsNullOrEmpty(values.ConsoleId)) return ("console_id", ControllerMessages["invalid_console_id"]);
-        var savedTargets = new List<ControllerTarget?>();
-        if (current.Truthy("configured")) savedTargets.Add(ControllerTarget.From(current));
-        if (current.Truthy("pending_site_choice")) savedTargets.Add(ControllerTarget.From(current.At("pending_site_choice")));
-        var reuse = savedTargets.Any(target => SameControllerTarget(target, values));
+        else if (!string.IsNullOrEmpty(values.ConsoleId)) return new("console_id", ControllerMessages["invalid_console_id"]);
+        var saved = new List<JsonNode?>();
+        if (current.Truthy("configured")) saved.Add(current);
+        if (current.Truthy("pending_site_choice")) saved.Add(current.At("pending_site_choice"));
+        var reuse = saved.Any(target => SameTarget(target, values));
         if (method == "api_key")
         {
-            if (string.IsNullOrEmpty(values.ApiKey) && reuse) return null;
-            if (string.IsNullOrEmpty(values.ApiKey)) return ("api_key", ControllerMessages["api_key_required"]);
-            if (!PrintableKey(values.ApiKey)) return ("api_key", ControllerMessages["invalid_api_key"]);
+            if (apiKey.Length == 0 && reuse) return null;
+            if (apiKey.Length == 0) return new("api_key", ControllerMessages["api_key_required"]);
+            if (!ValidApiKey(apiKey)) return new("api_key", ControllerMessages["invalid_api_key"]);
             return null;
         }
-        var username = values.Username?.Trim() ?? "";
-        var password = values.Password ?? "";
-        if (username.Length == 0 && password.Length == 0 && reuse) return null;
-        if (username.Length == 0) return ("username", "Enter your local UniFi username.");
-        if (password.Length == 0) return ("password", "Enter your UniFi password.");
+        var name = username.Trim();
+        if (name.Length == 0 && password.Length == 0 && reuse) return null;
+        if (name.Length == 0) return new("username", "Enter your local UniFi username.");
+        if (password.Length == 0) return new("password", "Enter your UniFi password.");
         return null;
     }
+
+    /// <summary>An API key of 1 to 4096 printable ASCII characters without spaces.</summary>
+    public static bool ValidApiKey(string value) => Regex.IsMatch(value, @"^[\x21-\x7e]{1,4096}$");
 
     /// <summary>JavaScript's Number(text): surrounding spaces are ignored, empty text is 0, anything else not a number is NaN.</summary>
     public static double JsNumber(string? text)
@@ -313,12 +290,6 @@ public static class Connections
         if (!Regex.IsMatch(value, @"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")) return double.NaN;
         return double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
     }
-
-    /// <summary>Number.isInteger for a JavaScript number.</summary>
-    public static bool IsInteger(double value) => double.IsFinite(value) && Math.Floor(value) == value;
-
-    /// <summary>An API key of 1 to 4096 printable ASCII characters without spaces.</summary>
-    public static bool PrintableKey(string? value) => value is { Length: >= 1 and <= 4096 } && value.All(c => c is >= '\x21' and <= '\x7e');
 
     // ---- Private access through Tailscale
 
@@ -352,9 +323,11 @@ public static class Connections
     /// <summary>A private access error: a code string or an object with a code.</summary>
     public static string PrivateAccessError(JsonNode? error) => PrivateAccessError(error.Str() ?? error.Str("code"));
 
-    public static string PrivateAccessError(Exception? error) => PrivateAccessError(CodeOf(error));
+    public static string PrivateAccessError(Exception? error) => PrivateAccessError((error as ApiException)?.Code);
 
     static bool HasControl(string value) => value.Any(c => c <= ' ' || c == '\u007f');
+
+    static string Origin(Uri url) => url.IsDefaultPort ? $"{url.Scheme}://{url.Host}" : $"{url.Scheme}://{url.Host}:{url.Port.ToString(CultureInfo.InvariantCulture)}";
 
     const string Label = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 

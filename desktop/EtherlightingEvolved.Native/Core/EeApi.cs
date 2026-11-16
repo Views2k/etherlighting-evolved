@@ -85,13 +85,21 @@ public sealed class EeApi : IDisposable
                     "invalid_response", status, writing, null);
             }
             if (response.IsSuccessStatusCode) return result;
-            var detail = result is JsonObject json ? json["detail"] : null;
-            var message = detail is JsonValue value && value.TryGetValue<string>(out var text2) ? text2
-                : detail?["message"]?.GetValue<string>() is { Length: > 0 } nested ? nested
-                : "The change could not be confirmed. Try again.";
-            throw new ApiException(message, detail is JsonObject ? detail["code"]?.GetValue<string>() : null, status, writing && status >= 500,
-                detail as JsonObject);
+            throw FromError(status, writing, result);
         }
+    }
+
+    /// <summary>
+    /// The exception for a refused request. The detail is a message, an object with a message and code, or another
+    /// shape (such as a validation list) that gets the general message, as in the browser workspace.
+    /// </summary>
+    internal static ApiException FromError(int status, bool writing, JsonNode? body)
+    {
+        var detail = body is JsonObject json ? json["detail"] : null;
+        var fields = detail as JsonObject;
+        var message = detail.Str() ?? fields.Str("message");
+        return new ApiException(message is { Length: > 0 } ? message : "The change could not be confirmed. Try again.", fields.Str("code"), status,
+            writing && status >= 500, fields);
     }
 
     public void Dispose() => http.Dispose();

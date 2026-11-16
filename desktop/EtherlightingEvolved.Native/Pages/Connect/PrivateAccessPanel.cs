@@ -5,7 +5,9 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using EtherlightingEvolved.Native.Core;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using EtherlightingEvolved.Native.Ui;
+using static EtherlightingEvolved.Native.Pages.Connections;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
@@ -19,27 +21,27 @@ public sealed class PrivateAccessPanel : UserControl
     readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly CancellationTokenRegistration abortRegistration;
     readonly StackPanel section = new() { Spacing = 12, Classes = { "private-access", "automation-section" } };
-    readonly Button refresh = ConnectionUi.Button("Refresh private access", "quiet");
+    readonly Button refresh = UiKit.Button("Refresh private access", "quiet");
     readonly StateLine state = new("Checking private access…", "waiting");
     readonly StackPanel setup = new() { IsVisible = false };
-    readonly TextBlock setupHelp = ConnectionUi.HelpText("Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.");
-    readonly Button setupLink = ConnectionUi.Button("");
-    readonly Button signIn = ConnectionUi.Button("Sign in to Tailscale", "primary");
-    readonly StackPanel label;
+    readonly TextBlock setupHelp = UiKit.HelpText("Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.");
+    readonly Button setupLink = UiKit.Button("");
+    readonly Button signIn = UiKit.Button("Sign in to Tailscale", "primary");
+    readonly CheckRow label = new("Use Tailscale");
     readonly CheckBox toggle;
     readonly SelectBox audience = new();
     readonly StackPanel audienceField;
-    readonly TextBlock readOnly = ConnectionUi.HelpText("Change this setting in EE on the host computer.");
-    readonly Button apply = ConnectionUi.Button("Apply setting", "primary");
+    readonly TextBlock readOnly = UiKit.HelpText("Change this setting in EE on the host computer.");
+    readonly Button apply = UiKit.Button("Apply setting", "primary");
     readonly FlowRow actions;
     readonly Disclosure advanced = new("Connection options");
-    readonly TextBox port = ConnectionUi.Input();
-    readonly Button resetPort = ConnectionUi.Button("Reset port", "quiet");
+    readonly TextBox port = UiKit.Input();
+    readonly Button resetPort = UiKit.Button("Reset port", "quiet");
     readonly FlowRow address;
-    readonly Button open = ConnectionUi.Button("Open private workspace");
-    readonly Button copy = ConnectionUi.Button("Copy private address", "quiet");
-    readonly TextBlock install = ConnectionUi.HelpText("iPhone or iPad: Share → Add to Home Screen. Android: browser menu → Install app.");
-    readonly Notice message = new();
+    readonly Button open = UiKit.Button("Open private workspace");
+    readonly Button copy = UiKit.Button("Copy private address", "quiet");
+    readonly TextBlock install = UiKit.HelpText("iPhone or iPad: Share → Add to Home Screen. Android: browser menu → Install app.");
+    readonly Notice message = new(connection: true);
     bool active, updating;
     JsonObject? current;
     bool? draft;
@@ -57,15 +59,15 @@ public sealed class PrivateAccessPanel : UserControl
         Grid.SetColumn(refresh, 1);
         header.Children.Add(title);
         header.Children.Add(refresh);
-        var help = ConnectionUi.HelpText("Use Tailscale to open this workspace on your phone or another device.");
+        var help = UiKit.HelpText("Use Tailscale to open this workspace on your phone or another device.");
         setup.Children.Add(setupHelp);
         setup.Children.Add(new FlowRow(10, setupLink, signIn) { Classes = { "connection-actions" } });
-        (label, toggle) = ConnectionUi.CheckRow("Use Tailscale", "muted", 28);
+        toggle = label.Box;
         audience.SetOptions([("owner", "Only my Tailscale account", false), ("accounts", "Any Tailscale account that can reach this computer", false)]);
-        audienceField = ConnectionUi.Field("Who can open EE", audience, "Tailscale decides which accounts can reach this computer. Devices without an account stay blocked.");
+        audienceField = UiKit.Field("Who can open EE", audience, "Tailscale decides which accounts can reach this computer. Devices without an account stay blocked.");
         readOnly.IsVisible = false;
         actions = new FlowRow(10, apply) { Classes = { "connection-actions" } };
-        var portField = ConnectionUi.Field("Private HTTPS port", port);
+        var portField = UiKit.Field("Private HTTPS port", port);
         portField.Margin = new Thickness(0, 14, 0, 0);
         portField.MaxWidth = 150;
         portField.HorizontalAlignment = HorizontalAlignment.Left;
@@ -74,7 +76,7 @@ public sealed class PrivateAccessPanel : UserControl
         resetPort.HorizontalAlignment = HorizontalAlignment.Left;
         advanced.Body.Children.Add(portField);
         advanced.Body.Children.Add(resetPort);
-        advanced.Body.Children.Add(ConnectionUi.HelpText("Use a free HTTPS port between 1024 and 65535. Turn off private access before changing it."));
+        advanced.Body.Children.Add(UiKit.HelpText("Use a free HTTPS port between 1024 and 65535. Turn off private access before changing it."));
         address = new FlowRow(10, open, copy) { IsVisible = false, Classes = { "connection-actions" } };
         install.IsVisible = false;
         foreach (var child in new Control[] { header, help, state, setup, label, audienceField, advanced, readOnly, actions, address, install, message }) section.Children.Add(child);
@@ -258,14 +260,14 @@ public sealed class PrivateAccessPanel : UserControl
             openHref = ready ? url : null;
             copy.IsEnabled = !(!ready || busy);
             if (current is null)
-                state.Show(busy ? "Checking private access…" : "Private access unavailable", busy ? "waiting" : "is-disconnected");
-            else if (ready) state.Show("Private access connected", "online");
-            else if (setupAction == "approve" && setupUrl is not null) state.Show("Waiting for Tailscale approval", "waiting");
-            else if (setupAction == "install" && setupUrl is not null) state.Show("Set up Tailscale", "is-disconnected");
-            else if (setupAction == "signin") state.Show("Sign in to enable private access", "is-disconnected");
-            else if (current.Truthy("error")) state.Show(PrivateAccessError(current["error"]), "is-disconnected");
-            else if (current.Bool("available") != true) state.Show("Tailscale is unavailable on this PC.", "is-disconnected");
-            else state.Show(enabled ? "Private access is not ready. Refresh status to check it." : "Private access is off", enabled ? "waiting" : "is-disconnected");
+                state.Set(busy ? "Checking private access…" : "Private access unavailable", busy ? "waiting" : "is-disconnected");
+            else if (ready) state.Set("Private access connected", "online");
+            else if (setupAction == "approve" && setupUrl is not null) state.Set("Waiting for Tailscale approval", "waiting");
+            else if (setupAction == "install" && setupUrl is not null) state.Set("Set up Tailscale", "is-disconnected");
+            else if (setupAction == "signin") state.Set("Sign in to enable private access", "is-disconnected");
+            else if (current.Truthy("error")) state.Set(PrivateAccessError(current["error"]), "is-disconnected");
+            else if (current.Bool("available") != true) state.Set("Tailscale is unavailable on this PC.", "is-disconnected");
+            else state.Set(enabled ? "Private access is not ready. Refresh status to check it." : "Private access is off", enabled ? "waiting" : "is-disconnected");
         }
         finally { updating = false; }
     }
@@ -324,7 +326,7 @@ public sealed class PrivateAccessPanel : UserControl
             if (active)
             {
                 Status(PrivateAccessError(error), true);
-                if (current is null) state.Show("Private access unavailable", "is-disconnected");
+                if (current is null) state.Set("Private access unavailable", "is-disconnected");
             }
         }
         finally
