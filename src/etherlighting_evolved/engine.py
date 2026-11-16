@@ -171,6 +171,7 @@ class Engine:
         self.reconnect_delay = bounded_number(reconnect_delay, 1, 300, "reconnect interval")
         self._reconnect_failures = 0
         self._reconnect_blocked = False
+        self._recovering = False
         self._command_budget = min(self.max_commands, self.INITIAL_COMMANDS)
         self._cpu_updated_at: float | None = None
         self._healthy_cpu_samples = 0
@@ -287,13 +288,27 @@ class Engine:
             self.connected = True
         if self.mode == "running":
             self._output_halt = asyncio.Event()
-        self._tasks = [
-            asyncio.create_task(self._keep_connected(), name="ee-connection"),
-            asyncio.create_task(self._render_loop(), name="ee-render"),
-            asyncio.create_task(self._status_loop(), name="ee-status"),
-            asyncio.create_task(self._health_loop(), name="ee-health"),
-            asyncio.create_task(self._fan_loop(), name="ee-fans"),
-        ]
+        self._tasks = [self._spawn(name) for name in self._loops()]
+
+    def _loops(self) -> dict:
+        return {"ee-connection": self._keep_connected, "ee-render": self._render_loop,
+                "ee-status": self._status_loop, "ee-health": self._health_loop, "ee-fans": self._fan_loop}
+
+    def _spawn(self, name: str) -> asyncio.Task:
+        task = asyncio.create_task(self._loops()[name](), name=name)
+        task.add_done_callback(self._loop_ended)
+        return task
+
+    def _loop_ended(self, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        log.error("%s stopped", task.get_name(), exc_info=task.exception())
+        # Health readings are optional; the other loops carry output, telemetry, fans and reconnects.
+        if self._stopping or task.get_name() == "ee-health":
+            return
+        self.error = "Lighting stopped unexpectedly. Reconnect the switch."
+        self._reconnect_blocked = True
+        self._publish(self.state_message())
 
     async def stop(self) -> None:
         self._stopping = True
@@ -309,6 +324,7 @@ class Engine:
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
+            # _loop_ended has logged any failure; the connection must close regardless.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks = []
@@ -1125,7 +1141,7 @@ class Engine:
 
     async def recover_connection(self) -> None:
         """Revalidate and clean up owned lighting before resuming the retained scene."""
-        if getattr(self, "_recovering", False):
+        if self._recovering:
             raise TransportError("Switch recovery is already in progress.")
         if self._stopping:
             raise TransportError("Finish closing this lighting session before reconnecting.")
@@ -1162,10 +1178,8 @@ class Engine:
             self._invalidate_sfp_intent()
             if not self._stopping:
                 self.resume()
-                if self._tasks and not any(
-                    task.get_name() == "ee-connection" and not task.done() for task in self._tasks
-                ):
-                    self._tasks.append(asyncio.create_task(self._keep_connected(), name="ee-connection"))
+                # The connection loop ends once reconnects are blocked, and any loop can end on an error.
+                self._tasks = [self._spawn(task.get_name()) if task.done() else task for task in self._tasks]
 
     # Scenes (presets, autosave)
 

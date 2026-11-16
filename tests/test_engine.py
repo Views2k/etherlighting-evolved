@@ -281,6 +281,39 @@ async def test_engine_drives_the_simulator():
 
 
 @pytest.mark.anyio
+async def test_a_failed_loop_is_reported_and_reconnect_restarts_it(caplog):
+    sim = SimulatedTransport(latency=0)
+    switch = EtherlightSwitch(sim)
+    engine = Engine(switch, fps=30, rules=[])
+    await engine.start()
+    try:
+        assert await wait_for(lambda: len(sim.leds) == 8)
+        write = switch.write
+
+        async def invariant_failure(*args, **kwargs):
+            raise ValueError("fixture invariant failure")
+
+        switch.write = invariant_failure
+        engine.set_override(1, "#00ff00")
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        assert engine.error == "Lighting stopped unexpectedly. Reconnect the switch."
+        assert "ee-render stopped" in caplog.text and "fixture invariant failure" in caplog.text
+        switch.write = write
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.mode == "running"
+        assert len(engine._tasks) == 5 and not any(task.done() for task in engine._tasks)
+        engine.set_override(1, "#0000ff")
+        assert await wait_for(lambda: sim.leds[1] == ("0000ff", 100))
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
 async def test_the_command_budget_holds_while_an_effect_runs():
     sim = SimulatedTransport(latency=0)
     engine = Engine(EtherlightSwitch(sim), fps=30, max_commands=20, effect="rainbow", effect_params={"speed": 2})

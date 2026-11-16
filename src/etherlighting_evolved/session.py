@@ -46,6 +46,11 @@ log = logging.getLogger(__name__)
 SCENE_CHOICE_TIMEOUT = 300.0
 
 
+def _log_failure(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        log.error("%s stopped", task.get_name(), exc_info=task.exception())
+
+
 @dataclass(repr=False)
 class PendingSceneChoice:
     engine: Engine
@@ -797,7 +802,8 @@ class SessionManager:
 
     def _retry_playback_handoff(self):
         if not self._closing and (self._playback_retry is None or self._playback_retry.done()):
-            self._playback_retry = asyncio.create_task(self._retry_until_released())
+            self._playback_retry = asyncio.create_task(self._retry_until_released(), name="ee-playback-retry")
+            self._playback_retry.add_done_callback(_log_failure)
 
     async def _retry_until_released(self):
         while self._playback.data and self._playback.data.get("state") == "handoff":
