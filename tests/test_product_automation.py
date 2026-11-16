@@ -18,13 +18,15 @@ def scheduler_fixture(tmp_path):
     store = ScheduleStore(tmp_path / "schedules.json")
     calls = []
     engine = SimpleNamespace(
-        set_brightness=lambda value: calls.append(value), apply_snapshot=lambda scene: calls.append(scene)
+        set_brightness=lambda value: calls.append(value), apply_snapshot=lambda scene: calls.append(scene),
+        _sfp_revisions={},
     )
     sessions = SimpleNamespace(engine=engine, schedule_identity=lambda: "demo")
     return profiles, store, calls, sessions
 
 
-def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
+@pytest.mark.anyio
+async def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     profiles.path.write_text(json.dumps({"Evening": {"brightness": 23}}), encoding="utf-8")
     schedule = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "preset", "preset": "Evening"}})
@@ -33,7 +35,7 @@ def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
     profiles.rename("Evening", "Night")
     profiles.save("Evening", {"brightness": 82}, overwrite=False)
     assert store.get(schedule.id).action["profile_id"] == original["id"]
-    scheduler.tick(NOW)
+    await scheduler.tick_confirmed(NOW)
     assert calls == [{"brightness": 23}]
     assert scheduler.list()[0]["action"]["preset"] == "Night"
     assert PresetStore(profiles.path).record(name="Night")["id"] == original["id"]
@@ -60,27 +62,29 @@ def test_explicit_invalid_days_are_not_defaulted(days):
     assert len(Schedule.parse({"at": "18:00", "action": {"type": "release"}}).days) == 7
 
 
-def test_occurrence_and_history_survive_restart_and_dst_fold(tmp_path):
+@pytest.mark.anyio
+async def test_occurrence_and_history_survive_restart_and_dst_fold(tmp_path):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     item = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
     scheduler = Scheduler(store, profiles, sessions)
-    scheduler.tick(NOW)
+    assert await scheduler.tick_confirmed(NOW) == [item.id]
     again = Scheduler(ScheduleStore(store.path), profiles, sessions)
-    assert again.tick(NOW.replace(second=50, fold=1)) == []
+    assert await again.tick_confirmed(NOW.replace(second=50, fold=1)) == []
     assert calls == [23] and again.history[0]["result"] == "ok"
     again.run(again.store.get(item.id), NOW)
     assert calls == [23, 23] and again.history[0]["trigger"] == "manual"
-    assert again.tick(NOW) == []
+    assert await again.tick_confirmed(NOW) == []
 
 
-def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_path, monkeypatch):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
     scheduler = Scheduler(store, profiles, sessions)
     original = scheduler._save_journal
     monkeypatch.setattr(scheduler, "_save_journal", lambda: (_ for _ in ()).throw(ScheduleStoreError("fixture")))
     with pytest.raises(ScheduleStoreError):
-        scheduler.tick(NOW)
+        await scheduler.tick_confirmed(NOW)
     assert calls == [] and scheduler._fired == {}
     saves = 0
 
@@ -93,9 +97,9 @@ def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_pat
 
     monkeypatch.setattr(scheduler, "_save_journal", fail_final)
     with pytest.raises(ScheduleStoreError):
-        scheduler.tick(NOW)
+        await scheduler.tick_confirmed(NOW)
     again = Scheduler(ScheduleStore(store.path), profiles, sessions)
-    assert again.tick(NOW.replace(second=40)) == [] and calls == [23]
+    assert await again.tick_confirmed(NOW.replace(second=40)) == [] and calls == [23]
     assert again.history[0]["result"].startswith("unconfirmed")
 
 

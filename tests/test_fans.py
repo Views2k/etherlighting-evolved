@@ -18,6 +18,7 @@ from etherlighting_evolved.fans import (
     CURVES,
     FanControl,
     FanSettings,
+    FanSettingsError,
     FanStore,
     SimulatedFans,
     SwitchFans,
@@ -156,15 +157,53 @@ def test_settings_validation_and_lines():
             FanSettings.from_dict(bad)
 
 
-def test_store_round_trip_and_unreadable_file(tmp_path):
+def test_store_round_trip(tmp_path):
     store = FanStore(tmp_path / "fans.json")
     assert store.load() == FanSettings()
     store.save(FanSettings(mode="target", target_celsius=58))
     assert store.load() == FanSettings(mode="target", target_celsius=58)
-    (tmp_path / "fans.json").write_text("{not json", "utf-8")
-    assert store.load() == FanSettings()
-    (tmp_path / "fans.json").write_text(json.dumps({"mode": "manual", "manual_percent": 5}), "utf-8")
-    assert store.load() == FanSettings()
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", ""])
+def test_unreadable_settings_are_moved_aside(tmp_path, caplog, content):
+    path = tmp_path / "fans.json"
+    path.write_text(content, "utf-8")
+    with pytest.raises(FanSettingsError, match="could not be read"):
+        FanStore(path).load()
+    assert not path.exists()
+    [moved] = tmp_path.glob("fans.json.corrupt-*")
+    assert moved.read_text("utf-8") == content
+    assert str(moved) in caplog.text
+
+
+@pytest.mark.parametrize("content", [{"mode": "manual", "manual_percent": 5}, {"curve": []}, {"mode": "auto"}])
+def test_settings_this_release_cannot_use_stay_in_place(tmp_path, caplog, content):
+    # A newer release may save a mode or value this one does not know; that release can still read it later.
+    path = tmp_path / "fans.json"
+    path.write_text(json.dumps(content), "utf-8")
+    with pytest.raises(FanSettingsError):
+        FanStore(path).load()
+    assert json.loads(path.read_text("utf-8")) == content
+    assert not list(tmp_path.glob("fans.json.corrupt-*"))
+    assert str(path) in caplog.text
+
+
+async def test_lost_fan_choice_stays_reported_until_a_new_one_is_saved(tmp_path):
+    path = tmp_path / "fans.json"
+    path.write_text("{not json", "utf-8")
+    backend = SimulatedFans()
+    await backend.apply("manual 40")
+    control = FanControl(backend, FanStore(path), supported=True)
+    assert control.settings == FanSettings()
+    message = "Saved fan settings could not be read. The switch controls the fans until you choose a mode."
+    assert control.to_dict()["settings_error"] == message
+    # The switch takes the fans back, which clears error but not the report of the lost choice.
+    await control.poll()
+    assert control.reading["controller"] == "absent"
+    assert control.to_dict()["error"] is None and control.to_dict()["settings_error"] == message
+    await control.update({"mode": "manual", "manual_percent": 50})
+    assert control.to_dict()["settings_error"] is None
+    assert FanStore(path).load() == FanSettings(mode="manual", manual_percent=50)
 
 
 def test_parse_reading():
@@ -343,6 +382,8 @@ class LocalTransport:
                                          env=self.switch["env"], timeout=timeout + 10)
         return result.stdout.decode()
 
+    run_isolated = run
+
 
 class ChannelTransport:
     """One long-running shell fed each command and an end marker, the way SSHTransport uses a switch channel.
@@ -358,10 +399,9 @@ class ChannelTransport:
                                         stderr=subprocess.STDOUT, env=switch["env"])
         self.lines = queue.Queue()
         self.sequence = 0
-        # SSHTransport.run ends a command with "echo marker"; run_isolated starts the marker on a new line.
+        # SSHTransport.run_isolated starts the marker on a new line; a transport without isolated shells ends a
+        # command with "echo marker".
         self.isolated = isolated
-        if not isolated:
-            self.run_isolated = None
 
         def pump():
             for line in iter(self.process.stdout.readline, b""):
@@ -392,9 +432,6 @@ class ChannelTransport:
                 text = "".join(output)
                 return text[:-1] if self.isolated and text.endswith("\n") else text
             output.append(line)
-
-    async def run(self, command, *, channel="main", timeout=10.0):
-        return await asyncio.to_thread(self._send, command, timeout)
 
     async def run_isolated(self, command, *, channel, timeout=10.0):
         return await asyncio.to_thread(self._send, command, timeout)
@@ -499,6 +536,65 @@ async def test_controller_releases_on_bad_sensor(mock_switch):
         assert _wait(lambda: _daemon_state(mock_switch["daemon"]) != "T", 15)
     finally:
         await backend.stop()
+
+
+@needs_shell
+async def test_sensor_fault_returns_the_fans_to_the_switch_and_backs_off(mock_switch):
+    control = FanControl(backend_for(mock_switch, mock_switch["location"]), None, supported=True)
+    try:
+        await control.update({"mode": "manual", "manual_percent": 40})
+        put(mock_switch["hw"] / "temp1_input", "garbage")
+        assert _wait(lambda: _daemon_state(mock_switch["daemon"]) != "T", 15)
+        # The restarted controller faults too; its earlier ./active line must not confirm the setting.
+        await control.poll()
+        assert control.error == "The switch did not confirm the fan setting. The fans are back on switch control."
+        assert control._retry_at > time.monotonic()
+        await control.poll()
+        assert _daemon_state(mock_switch["daemon"]) != "T"
+    finally:
+        await control.backend.stop()
+
+
+@needs_shell
+def test_guard_never_kills_a_process_that_reuses_the_controller_pid(mock_switch):
+    controller, elsewhere = mock_switch["root"] / "controller", mock_switch["root"] / "elsewhere"
+    controller.mkdir()
+    elsewhere.mkdir()
+    start = "nohup sh -c 'echo $$ > other.pid; exec sleep 60' </dev/null >/dev/null 2>&1 &\n"
+    subprocess.run([SHELL, "-s"], input=start.encode(), cwd=elsewhere, capture_output=True, env=BASE_ENV, timeout=20)
+    assert _wait(lambda: (elsewhere / "other.pid").exists() and (elsewhere / "other.pid").read_text().strip(), 5)
+    other = (elsewhere / "other.pid").read_text().strip()
+    try:
+        # A heartbeat far past the limit: a controller this old would be killed as hung.
+        put(controller / "status", "1 manual 40")
+        result = shell(fans.SCRIPT.as_posix(), "guard", other, env=mock_switch["env"], cwd=controller)
+        assert result.returncode == 0
+        assert (controller / "status").read_text().strip() == "released"
+        assert shell("-c", f"kill -0 {other}").returncode == 0
+    finally:
+        shell("-c", f"kill {other} 2>/dev/null")
+
+
+async def test_missing_fan_program_does_not_stop_a_lighting_login(config, tmp_path, monkeypatch):
+    from test_session_restore import LocalTransport
+
+    from etherlighting_evolved.session import SessionManager
+
+    monkeypatch.setattr(fans, "SCRIPT", tmp_path / "missing" / "fans.sh")
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
+    try:
+        pending = (await sessions.connect("switch.invalid", "fixture", "fixture-only"))["pending_scene_choice"]
+        info = await sessions.choose_scene(pending["connection_id"], "start_new", pending["legacy_revision"])
+        assert info["logged_in"]
+        control = sessions.engine.fans
+        assert control.supported
+        await control.poll()
+        state = control.to_dict()
+        assert not state["supported"] and "Reinstall EE" in state["unsupported_reason"]
+        with pytest.raises(ValueError, match="Reinstall EE"):
+            await control.update({"mode": "manual", "manual_percent": 50})
+    finally:
+        await sessions.close()
 
 
 @needs_shell

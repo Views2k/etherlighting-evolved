@@ -11,19 +11,21 @@ uses the Python version.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import functools
 import hashlib
 import json
+import logging
 import math
-import os
-import secrets
 import shlex
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .storage import atomic_write_json, quarantine
 from .transport import TransportError
+
+log = logging.getLogger(__name__)
 
 MODES = ("switch", "curve", "manual", "target")
 # CPU temperature in degrees C and fan speed in percent. Speeds between points are interpolated.
@@ -156,27 +158,44 @@ class FanSettings:
         return None
 
 
+class FanSettingsError(ValueError):
+    """A fan choice was saved but cannot be used, so the switch keeps control of its fans, the safe default."""
+
+
+_UNUSABLE_SETTINGS = "Saved fan settings could not be read. The switch controls the fans until you choose a mode."
+
+
 class FanStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def load(self) -> FanSettings:
+        """The saved choice, or the switch's own control when nothing was saved.
+
+        Raises FanSettingsError when a saved choice cannot be used. A file that holds no JSON object is moved aside
+        first. A JSON object this release cannot use, such as a choice saved by a newer release, stays in place
+        until a new choice replaces it.
+        """
         try:
-            return FanSettings.from_dict(json.loads(self.path.read_text("utf-8")))
-        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            data = json.loads(self.path.read_text("utf-8"))
+        except FileNotFoundError:
             return FanSettings()
+        except OSError as exc:
+            log.warning("The saved fan settings in %s could not be read: %s", self.path, exc)
+            raise FanSettingsError(_UNUSABLE_SETTINGS) from exc
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            quarantine(self.path, "The saved fan settings could not be read")
+            raise FanSettingsError(_UNUSABLE_SETTINGS)
+        try:
+            return FanSettings.from_dict(data)
+        except (ValueError, TypeError) as exc:
+            log.warning("The saved fan settings in %s are not ones this version of EE can use: %s", self.path, exc)
+            raise FanSettingsError(_UNUSABLE_SETTINGS) from exc
 
     def save(self, settings: FanSettings) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix("." + secrets.token_hex(8) + ".tmp")
-        try:
-            with temp.open("x", encoding="utf-8") as stream:
-                json.dump(asdict(settings), stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temp.replace(self.path)
-        finally:
-            temp.unlink(missing_ok=True)
+        atomic_write_json(self.path, asdict(settings))
 
 
 def _number(value: str) -> int | None:
@@ -239,17 +258,28 @@ class SwitchFans:
         self.transport = transport
         # Shell variables for EE's directory, the fan controller and the port temperatures.
         self.paths = f"d={shlex.quote(location)}; h={shlex.quote(hw)}; q={shlex.quote(phy)}"
-        self.script = SCRIPT.read_text("ascii")
-        self.digest = hashlib.sha256(self.script.encode("ascii")).hexdigest()
+
+    # Read on first use, so a damaged installation costs fan control but never a lighting login.
+    @functools.cached_property
+    def script(self) -> str:
+        try:
+            return SCRIPT.read_text("ascii")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("The fan control program of this EE installation is missing or damaged. "
+                             "Reinstall EE to use fan control.") from exc
+
+    @functools.cached_property
+    def digest(self) -> str:
+        return hashlib.sha256(self.script.encode("ascii")).hexdigest()
 
     async def _run(self, command: str, timeout: float = 10) -> str:
         # Fan commands use their own shell: a failure there must not close the lighting connection.
-        run = getattr(self.transport, "run_isolated", None) or self.transport.run
-        return (await run("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
+        return (await self.transport.run_isolated("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
 
     async def read(self) -> dict[str, Any]:
+        digest = self.digest
         reading = parse_reading(await self._run(self.paths + _READ))
-        reading["script_current"] = reading.pop("script") == self.digest
+        reading["script_current"] = reading.pop("script") == digest
         return reading
 
     def _inside(self, command: str) -> str:
@@ -284,7 +314,9 @@ class SwitchFans:
         if await self._run(self._inside(command)) != "saved":
             raise TransportError("The switch could not save the fan setting.")
         if reading["controller"] != "running":
-            start = ('rm -f stop status\nnohup sh fans.sh run </dev/null >/dev/null 2>&1 &\n'
+            # A controller that stopped after a sensor fault leaves ./active behind. Removing it makes the check
+            # below wait for the new controller's own first clean step.
+            start = ('rm -f stop status active active.new\nnohup sh fans.sh run </dev/null >/dev/null 2>&1 &\n'
                      'echo $! > pid && echo started')
             if await self._run(self._inside(start)) != "started":
                 raise TransportError("The switch did not start fan control.")
@@ -300,8 +332,10 @@ class SwitchFans:
             if status.split()[:1] in (["unsupported"], ["released"]):
                 break
             await asyncio.sleep(0.25)
-        with contextlib.suppress(TransportError, ValueError):
+        try:
             await self.stop()
+        except TransportError as exc:
+            raise TransportError("The switch did not confirm the fan setting or the return to switch control.") from exc
         raise TransportError("The switch did not confirm the fan setting. The fans are back on switch control.")
 
     async def stop(self) -> None:
@@ -410,7 +444,15 @@ class FanControl:
         self.backend = backend
         self.store = store
         self.supported = supported
-        self.settings = store.load() if store else FanSettings()
+        self.settings = FanSettings()
+        # Kept apart from error, which the next successful step clears, so the lost choice stays reported until
+        # a new one is saved.
+        self.settings_error: str | None = None
+        if store:
+            try:
+                self.settings = store.load()
+            except FanSettingsError as exc:
+                self.settings_error = str(exc)
         self.reading: dict[str, Any] | None = None
         self.error: str | None = None
         self.unsupported: str | None = None if supported else "Fan control needs a USW-Pro-XG-8-PoE."
@@ -429,6 +471,7 @@ class FanControl:
             "settings": asdict(self.settings),
             "reading": self.reading,
             "error": self.error,
+            "settings_error": self.settings_error,
             "curves": {name: {"name": CURVE_NAMES[name], "points": [list(p) for p in points]}
                        for name, points in CURVES.items()},
             "limits": {"manual_percent": list(MANUAL_RANGE), "target_celsius": list(TARGET_RANGE)},
@@ -450,6 +493,7 @@ class FanControl:
             self.settings = settings
             if self.store:
                 self.store.save(settings)
+            self.settings_error = None
 
     async def _enforce(self, settings: FanSettings) -> None:
         line = settings.config_line()
@@ -474,6 +518,9 @@ class FanControl:
             except TransportError:
                 self.reading = None
                 raise
+            except ValueError as exc:
+                self.unsupported = str(exc)
+                return
             self.reading = reading
             line = self.settings.config_line()
             running = reading["controller"] == "running"
