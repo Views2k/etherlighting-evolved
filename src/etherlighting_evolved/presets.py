@@ -169,6 +169,10 @@ class SceneStore:
         write_json(self.path, scene)
 
 
+class UnusableSceneError(ValueError):
+    """The saved scene file is damaged or belongs to another device or port layout."""
+
+
 class DeviceSceneStore(SceneStore):
     """A scene explicitly assigned to an authenticated device and qualified port layout."""
 
@@ -179,8 +183,8 @@ class DeviceSceneStore(SceneStore):
     def load(self) -> dict | None:
         """The saved scene, or None when there is none.
 
-        A file that cannot be parsed or verified is moved aside and treated as missing, so the next login offers
-        the lighting setup choice instead of failing on every attempt.
+        An unusable file raises UnusableSceneError and stays where it is: the caller decides whether to set it aside
+        and start over, because a scene saved to the switch may still depend on it.
         """
         try:
             envelope = json.loads(self.path.read_text("utf-8"))
@@ -188,13 +192,20 @@ class DeviceSceneStore(SceneStore):
             return None
         except OSError as exc:
             raise ValueError("The saved lighting for this switch could not be read.") from exc
-        except ValueError:
-            envelope = None
-        if (isinstance(envelope, dict) and envelope.get("version") == 1 and envelope.get("identity") == self.identity
-                and isinstance(envelope.get("scene"), dict) and envelope["scene"]):
-            return envelope["scene"]
+        except ValueError as exc:
+            raise UnusableSceneError("The saved lighting for this switch could not be verified.") from exc
+        version = envelope.get("version") if isinstance(envelope, dict) else None
+        if type(version) is int and version > 1:
+            raise ValueError("The saved lighting for this switch was saved by a newer version of EE. "
+                             "Update EE to use it.")
+        if (version != 1 or envelope.get("identity") != self.identity
+                or not isinstance(envelope.get("scene"), dict) or not envelope["scene"]):
+            raise UnusableSceneError("The saved lighting for this switch could not be verified.")
+        return envelope["scene"]
+
+    def set_aside(self) -> None:
+        """Move an unusable file aside under a dated name, so a new setup can be saved without losing it."""
         quarantine(self.path, "The saved lighting for this switch could not be verified")
-        return None
 
     def save(self, scene: dict) -> None:
         write_json(self.path, {"version": 1, "identity": self.identity, "scene": scene})
