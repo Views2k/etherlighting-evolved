@@ -53,6 +53,10 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, bool Quit)
 public sealed class App : Application
 {
     public const string ThemeKey = "ee.theme.v1";
+
+    /// <summary>The program version (major.minor.patch).</summary>
+    public static string Version { get; } = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
+
     public static Options Options { get; set; } = new(false, false, null, false);
     internal static SingleInstance? Instance { get; set; }
     internal static string DataDirectory { get; set; } = Locations.Workspace(false);

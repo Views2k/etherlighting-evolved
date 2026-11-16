@@ -42,7 +42,6 @@ public sealed class HelpPage : Page
                 "The port map previews those changes. Show applied lets you compare them with the applied lighting; Show preview returns to your edits.",
                 "Lighting previews stay available while you browse. Return to Lighting to continue editing, or save the preview as a profile. Apply changes sends it to the switch.",
                 "Undo last apply restores the setup from before the most recent lighting or profile apply. It is available in Lighting and Profiles while that setup is still current.",
-                "Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.",
                 "History in Workspace lists earlier lighting setups for this switch. Review an entry and choose Restore to apply it.",
                 "When another device changes the lighting, Review lighting changes shows both edits. Reapply compatible edits or choose which settings to keep.",
             ]),

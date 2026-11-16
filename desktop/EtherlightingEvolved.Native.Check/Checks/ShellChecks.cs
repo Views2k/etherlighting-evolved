@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
+using EtherlightingEvolved.Native.Core.Model;
 using EtherlightingEvolved.Native.Pages;
 using EtherlightingEvolved.Native.Shell;
 
@@ -65,9 +67,14 @@ internal static class ShellChecks
                 try
                 {
                     window.Show();
+                    // A client older than its service has fewer bundled effects than the service sends.
+                    EffectRenderer.SetEffectCatalog(new JsonArray(EffectCatalog.Catalog[0]!.DeepClone()));
                     await shell.Start();
                     if (!workspace.Ready || workspace.Options.Bool("live") != false || workspace.Session.Bool("simulated") != true)
                         throw new InvalidOperationException("The native page checks require their own active simulator.");
+                    var served = (await workspace.Request("/api/effects")).Arr().Select(effect => effect.Str("id"));
+                    check(EffectRenderer.EffectList.Select(effect => effect.Str("id")).SequenceEqual(served),
+                        "the service's effect catalog is installed before any page opens");
                     foreach (var name in AppShell.PageNames)
                     {
                         await shell.Navigate(name);
@@ -77,6 +84,8 @@ internal static class ShellChecks
                     check(shell.PageName == "Settings", "Back returns to the previous page");
                     await shell.MoveHistory(1);
                     check(shell.PageName == "Help", "Forward restores the page");
+                    check(!Texts(shell.CurrentPage!).Any(text => text.Contains("Refreshing the page")), "Help does not mention a page refresh");
+                    await SettingsAboutChecks(shell, check);
                     await shell.SetHidden(true);
                     await shell.SetHidden(false);
                     var clock = Stopwatch.StartNew();
@@ -102,5 +111,27 @@ internal static class ShellChecks
             }
             finally { deadline.Cancel(); }
         }
+    }
+
+    static List<string> Texts(Control root) =>
+        root.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "").ToList();
+
+    static async Task SettingsAboutChecks(AppShell shell, Action<bool, string> check)
+    {
+        var workspace = shell.Workspace;
+        await shell.Navigate("Settings");
+        var settings = shell.CurrentPage!;
+        await settings.CanLeave();
+        var texts = Texts(settings);
+        var buttons = settings.GetLogicalDescendants().OfType<Button>().Select(button => button.Content as string).ToList();
+        check(texts.Contains("Ethernet ports") && !buttons.Contains("Close web session"),
+            "Settings returns the switch through Handoff or Quit, without the browser's close button");
+        var service = workspace.About.Str("version");
+        check(service is { Length: > 0 } && texts.Contains(service) && texts.Contains(App.Version) && buttons.Contains("Releases"),
+            "About shows the app and service versions and a Releases link");
+        check(workspace.Disclaimer.Contains("use at your own risk") && texts.Contains(workspace.Disclaimer), "About shows the service's full disclaimer");
+        var connect = PageRegistry.Create("Connect", shell)!;
+        try { check(Texts(connect).Contains(workspace.Disclaimer), "the connection view shows the service's full disclaimer"); }
+        finally { connect.Leave(); }
     }
 }

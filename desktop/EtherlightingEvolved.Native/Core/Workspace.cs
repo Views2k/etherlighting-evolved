@@ -34,6 +34,11 @@ public sealed class Workspace : IAsyncDisposable
     /// <summary>/api/workspace: whether this workspace controls a real switch ("live").</summary>
     public JsonObject Options { get; set; } = new() { ["live"] = false };
 
+    /// <summary>/api/about: the service's version and disclaimer. Empty for a service that does not report them.</summary>
+    public JsonObject About { get; set; } = [];
+
+    public string Disclaimer => About.Str("disclaimer") is { Length: > 0 } text ? text : "Unofficial community project. Not affiliated with Ubiquiti.";
+
     /// <summary>The live stream is interrupted (the browser workspace's "disconnected").</summary>
     public bool Disconnected { get; private set; }
 

@@ -213,7 +213,7 @@ public static class Locations
             File.WriteAllText(temporary, JsonSerializer.Serialize(new
             {
                 time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"), stage = "desktop_exit", outcome = "cleanup_unconfirmed",
-                build = typeof(App).Assembly.GetName().Version?.ToString(3),
+                build = App.Version,
             }) + "\n");
             File.Move(temporary, file, overwrite: true);
         }

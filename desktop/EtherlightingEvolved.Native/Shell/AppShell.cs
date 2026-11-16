@@ -18,7 +18,7 @@ namespace EtherlightingEvolved.Native.Shell;
 /// <summary>
 /// The workspace frame and controller, ported from preview/app.mjs: title bar, navigation, status bar, the
 /// reconnect and pending-preview bars, toasts, and the session flow (start, accept a session, open or reset a
-/// workspace, close it).
+/// workspace). The desktop releases the switch through Handoff to UniFi or Quit, not the browser's close button.
 /// </summary>
 public sealed class AppShell : UserControl
 {
@@ -475,10 +475,15 @@ public sealed class AppShell : UserControl
             var effects = Workspace.Request("/api/effects");
             var session = Workspace.Request("/api/session");
             var options = Workspace.Request("/api/workspace");
+            var about = ReadAbout();
             await Task.WhenAll(effects, session, options);
             Workspace.Effects = (await effects) as JsonArray ?? [];
+            // Lighting, its dialogs and previews read the shared renderer, so a newer service's effects are known
+            // before any page opens, as in the browser workspace.
+            Core.Model.EffectRenderer.SetEffectCatalog(Workspace.Effects);
             Workspace.Session = (await session) as JsonObject ?? [];
             Workspace.Options = (await options) as JsonObject ?? new JsonObject { ["live"] = false };
+            Workspace.About = await about;
             EffectsLoaded?.Invoke();
             Workspace.ConnectFrames();
             startedOnce = true;
@@ -493,6 +498,13 @@ public sealed class AppShell : UserControl
                 : UiKit.Row(8, retry, UiKit.Button("Change workspace address", null, ChooseWorkspaceAddress));
             ShowView(UiKit.EmptyState("Couldn’t open the workspace", "Check the workspace connection and try again.", actions));
             Status("Connection unavailable", true);
+        }
+
+        // A host that predates /api/about still opens; About then shows no service version.
+        async Task<JsonObject> ReadAbout()
+        {
+            try { return await Workspace.Request("/api/about") as JsonObject ?? []; }
+            catch (ApiException) { return []; }
         }
     }
 
@@ -602,28 +614,6 @@ public sealed class AppShell : UserControl
         content.Children.Add(help);
         var dialog = Overlay.Show(content, width: 760);
         content.Children.Add(UiKit.Button("Back to connection", null, () => dialog.Close()));
-    }
-
-    /// <summary>Port of closeWorkspace: releases this window's hold on the workspace.</summary>
-    public async Task CloseWorkspace()
-    {
-        Workspace.Closing = true;
-        try
-        {
-            await Workspace.Request("/api/workspace/close", "POST");
-            Workspace.StopFrames();
-            ResetWorkspace();
-            UpdateConnection();
-            connection.Set("Web session closed", "is-disconnected");
-            Status("Lighting connection released");
-            ShowView(UiKit.EmptyState("Web session closed", "Your lighting setup and saved switch login are preserved. You can now open the desktop app."));
-        }
-        catch (Exception)
-        {
-            Workspace.Closing = false;
-            Workspace.ConnectFrames();
-            throw;
-        }
     }
 }
 

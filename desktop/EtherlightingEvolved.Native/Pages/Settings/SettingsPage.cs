@@ -26,6 +26,7 @@ static class Registration
 /// </summary>
 public sealed class SettingsPage : Page
 {
+    const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
     readonly Send request;
     readonly OperationGate gate;
     readonly NoticeBox notice = new();
@@ -83,8 +84,12 @@ public sealed class SettingsPage : Page
         var aboutBody = new StackPanel { Spacing = 12 };
         aboutBody.Children.Add(SettingsKit.H2("Etherlighting Evolved", "accent", 15));
         aboutBody.Children.Add(SettingsKit.P("Open-source UniFi Etherlighting controller.", "muted"));
-        aboutBody.Children.Add(SettingsKit.P("Unofficial community project. Not affiliated with Ubiquiti.", "muted"));
+        var versions = new DetailsList();
+        versions.Set([("App version", App.Version), ("Service version", Workspace.About.Str("version") ?? "Unknown")]);
+        aboutBody.Children.Add(versions);
+        aboutBody.Children.Add(SettingsKit.P(Workspace.Disclaimer, "muted"));
         aboutBody.Children.Add(SettingsKit.ActionButton("Open help", () => Shell.Navigate("Help"), "quiet"));
+        aboutBody.Children.Add(SettingsKit.ActionButton("Releases", () => Connect.ConnectionUi.OpenLink(this, ReleasesUrl), "quiet"));
         if (shell.OpenWorkspaceAddress is not null)
             aboutBody.Children.Add(SettingsKit.ActionButton("Change workspace address", shell.ChooseWorkspaceAddress, "quiet"));
         about = SettingsKit.Panel(aboutBody, maxWidth: 720);
@@ -204,11 +209,9 @@ public sealed class SettingsPage : Page
         {
             var sessionTask = request("/api/session");
             var stateTask = request("/api/state");
-            var capabilitiesTask = Capabilities();
-            await Task.WhenAll(sessionTask, stateTask, capabilitiesTask);
+            await Task.WhenAll(sessionTask, stateTask);
             var session = await sessionTask;
             var state = await stateTask;
-            var capabilities = await capabilitiesTask;
             if (!gate.Active) return;
             var simulated = session.Truthy("simulated");
             health.IsVisible = !simulated;
@@ -277,12 +280,6 @@ public sealed class SettingsPage : Page
             content.Children.Add(details);
             Status();
             Dispatcher.UIThread.Post(UpdateSection, DispatcherPriority.Background);
-            if (capabilities.Bool("can_close_workspace") == true)
-                content.Children.Add(SettingsKit.ActionButton("Close web session", () => gate.Run(async () =>
-                {
-                    if (await Confirm("Close web session?", "This releases the switch connection and closes the web service. Your saved setup is preserved.", "Close web session") && gate.Active)
-                        await Shell.CloseWorkspace();
-                }), "quiet"));
         }
         catch (Exception)
         {
@@ -290,12 +287,6 @@ public sealed class SettingsPage : Page
             throw;
         }
     });
-
-    async Task<JsonNode?> Capabilities()
-    {
-        try { return await request("/api/private-access"); }
-        catch (Exception) { return new JsonObject { ["can_close_workspace"] = false }; }
-    }
 
     async Task<bool> Confirm(string title, string message, string accept) => !closed && await Shell.Overlay.Confirm(title, message, accept);
 

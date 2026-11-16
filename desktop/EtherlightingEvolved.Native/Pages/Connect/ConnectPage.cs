@@ -126,7 +126,7 @@ public sealed class ConnectPage : Page
         panel.Children.Add(privateAccess);
         panel.Children.Add(new TextBlock
         {
-            Text = "Unofficial community project. Not affiliated with Ubiquiti.", FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
+            Text = Workspace.Disclaimer, FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 24, 0, 0),
         }.Bind(TextBlock.ForegroundProperty, "muted"));
 
@@ -363,7 +363,7 @@ public sealed class ConnectPage : Page
             }
             catch (Exception)
             {
-                if (active) Status("Handoff status could not be displayed. Refresh the page to check its status.", true);
+                if (active) Status("Handoff status could not be displayed. Choose Retry handoff to check again, or reopen EE.", true);
             }
             finally
             {
