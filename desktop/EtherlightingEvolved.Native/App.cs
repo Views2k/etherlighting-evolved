@@ -182,6 +182,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         {
             OpenWorkspaceAddress = service is null && options.Smoke is null ? ChangeWorkspace : null,
         });
+        PointerDiagnostics.Attach(window);
         if (options.Smoke is not null)
         {
             // Checks run in a real window placed off screen, so nothing appears on the desktop.

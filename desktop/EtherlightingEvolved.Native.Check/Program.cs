@@ -254,7 +254,7 @@ Check(catalog.Count == 2 && catalog[1].Params.Count == 4 && catalog[1].Params[1]
 if (args.Contains("--service"))
 {
     var page = Arg("--page-check");
-    if (page is not (null or "Lighting" or "Effects" or "Automation" or "Profiles"))
+    if (page is not (null or "Lighting" or "Effects" or "Automation" or "Profiles" or "Fans"))
         throw new ArgumentException("Unknown editing workflow.");
     ShellChecks.ExerciseDesktop(output, Check, page);
     // The API checks below run independently of the UI dispatcher.

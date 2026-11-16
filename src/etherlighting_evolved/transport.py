@@ -223,6 +223,7 @@ class SSHTransport(Transport):
         self._channel_lock = asyncio.Lock()
         self._rgb_lock = asyncio.Lock()
         self._health_lock = asyncio.Lock()
+        self._isolated_locks: dict[str, asyncio.Lock] = {}
         self._rgb_client = None
         self._rgb_checked = False
         self._rgb_failed = False
@@ -563,6 +564,60 @@ class SSHTransport(Transport):
             connection.close()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(connection.wait_closed(), 3)
+
+    async def run_isolated(self, command: str, *, channel: str, timeout: float = 10.0) -> str:
+        """Run a command on its own channel. A failure or timeout closes that channel's shell, not LED output."""
+        conn = self._conn
+        if conn is None:
+            raise TransportError("not connected")
+        lock = self._isolated_locks.setdefault(channel, asyncio.Lock())
+        shell = None
+        async with lock:
+            try:
+                async with asyncio.timeout(timeout):
+                    if self._conn is not conn:
+                        raise TransportError("the SSH session changed before the command")
+                    shell = self._channels.get(channel)
+                    if shell is None:
+                        import asyncssh
+                        self._opening_started(conn)
+                        try:
+                            tag = 'ee_' + secrets.token_hex(16)
+                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
+                            self._process_tags[id(process)] = tag
+                            if self._conn is not conn:
+                                self._retire_process(conn, process)
+                                raise TransportError("the SSH session changed while opening a shell")
+                            shell = _Channel(process)
+                            self._channels[channel] = shell
+                        finally:
+                            self._opening_finished(conn)
+                    self._seq += 1
+                    marker = f"__EE_DONE_{self._seq}__"
+                    # The marker starts on its own line even when the output does not end with one.
+                    shell.process.stdin.write(f"{command}\nprintf '\\n%s\\n' {marker}\n")
+                    lines, size = [], 0
+                    while True:
+                        line = await shell.process.stdout.readline()
+                        if line == "":
+                            raise TransportError("the switch closed the shell")
+                        if line.strip() == marker:
+                            output = "".join(lines)
+                            return output[:-1] if output.endswith("\n") else output
+                        size += len(line)
+                        if size > 262144:
+                            raise TransportError("the switch returned an oversized response")
+                        lines.append(line)
+            except (Exception, asyncio.CancelledError) as exc:
+                if shell is not None:
+                    if self._channels.get(channel) is shell:
+                        self._channels.pop(channel)
+                    self._retire_process(conn, shell.process)
+                if isinstance(exc, asyncio.CancelledError | TransportError):
+                    raise
+                if isinstance(exc, TimeoutError):
+                    raise TransportError(f"the switch did not answer within {timeout:g}s") from exc
+                raise TransportError(f"SSH error: {exc}") from exc
 
     async def read_health(self) -> str:
         """Run only the fixed health probe; a failed probe closes its shell, not LED output."""
