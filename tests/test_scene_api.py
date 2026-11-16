@@ -308,7 +308,7 @@ async def test_profile_apply_reports_an_unconfirmed_offline_copy(scene_app, scen
         raise OSError("fixture offline copy failure")
     monkeypatch.setattr(sessions, "save_current_scene", saved.append)
     monkeypatch.setattr(sessions, "sync_offline_lighting", unconfirmed)
-    monkeypatch.setattr(scene_engine.switch.transport, "desktop_output", object(), raising=False)
+    monkeypatch.setattr(scene_engine.switch.transport, "desktop_output", object())
     result = await scene_client.post("/api/presets/Offline/apply")
     assert result.status_code == 503 and result.json()["detail"]["code"] == "offline_scene_unconfirmed"
     assert saved == [scene_engine] and scene_engine.brightness == 41

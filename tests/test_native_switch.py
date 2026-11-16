@@ -43,6 +43,9 @@ def clock(monkeypatch):
 
 
 class MemoryTransport:
+    host_key_fingerprint = None
+    desktop_output = None
+
     def __init__(self):
         self.connected = False
         self.direct_rgb = True

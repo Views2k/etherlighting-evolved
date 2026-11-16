@@ -115,7 +115,7 @@ class ApiContext:
         if confirm_output:
             revisions = e.sfp_revisions()
             await await_output(e.confirm_sfp_output, {port: revisions[port] for port in affected_sfp})
-        if getattr(e.switch.transport, "desktop_output", None):
+        if e.switch.transport.desktop_output:
             self.sessions.save_current_scene(e)
             try:
                 await self.sessions.sync_offline_lighting(e)

@@ -343,7 +343,7 @@ class Engine:
                 await task
         self._tasks = []
         lease = self.switch.output_lease
-        desktop_output = getattr(self.switch.transport, "desktop_output", None)
+        desktop_output = self.switch.transport.desktop_output
         if (cleanup_error is not None and lease is not None
                 and (self.switch.native_uncertain or
                      (desktop_output is not None and lease.keep_for_player and self._sfp_release_pending))):
@@ -380,7 +380,7 @@ class Engine:
             lease = self.switch.output_lease
             if lease is None or lease.closed or lease.uncertain or not all(lease.owns(path) for path in lease.paths):
                 raise ValueError("EE must own lighting output before identifying a port.")
-            lease.before_write(getattr(self.switch.transport, "host_key_fingerprint", None))
+            lease.before_write(self.switch.transport.host_key_fingerprint)
         if port > self.num_ports and not self.switch.scoped_sfp:
             raise ValueError("This SFP port does not have qualified lighting output.")
         if self._identify is not None:

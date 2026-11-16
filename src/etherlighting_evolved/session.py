@@ -386,7 +386,7 @@ class SessionManager:
                     scene = None
                 candidate = PendingSceneChoice(
                     engine, store, host, port, username, password, remember, simulated,
-                    transport.lighting_generation, getattr(transport, "host_key_fingerprint", None))
+                    transport.lighting_generation, transport.host_key_fingerprint)
                 candidate.initial_scene = engine.snapshot()
                 if not simulated and scene is None:
                     # The open switch waits in self._pending until the scene choice or its expiry.
@@ -726,7 +726,7 @@ class SessionManager:
 
     async def sync_offline_lighting(self, engine):
         """Commit the same scene as the ordinary editor, with recovery after a lost acknowledgement."""
-        if not getattr(engine.switch.transport, "desktop_output", None):
+        if not engine.switch.transport.desktop_output:
             return
         async with self._offline_lock:
             if engine is not self.engine or self.handoff_pending or engine.revision == self._offline_revision:
@@ -911,7 +911,7 @@ class SessionManager:
             return self.info()
 
     async def _disconnect_locked(self) -> None:
-        if self.engine and not self.handoff_pending and getattr(self.engine.switch.transport, "desktop_output", None):
+        if self.engine and not self.handoff_pending and self.engine.switch.transport.desktop_output:
             with contextlib.suppress(TimeoutError, OSError, ValueError, TransportError):
                 await asyncio.wait_for(self.sync_offline_lighting(self.engine), timeout=5)
         engine, self.engine = self.engine, None
@@ -976,7 +976,7 @@ class SessionManager:
     async def _autosave(self, engine: Engine, simulated: bool, interval: float = 2.0) -> None:
         while True:
             await asyncio.sleep(interval)
-            if getattr(engine.switch.transport, "desktop_output", None) is not None and engine.connected:
+            if engine.switch.transport.desktop_output is not None and engine.connected:
                 try:
                     await engine.switch.transport.desktop_output.renew()
                     await self.sync_offline_lighting(engine)
