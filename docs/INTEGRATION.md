@@ -53,8 +53,6 @@ The Windows installer launches the Avalonia window and a bundled EE gateway. `Se
 
 The standalone macOS and Linux clients use the same pages with an existing workspace service. Changing the workspace address first verifies the target's workspace response. Quitting a client connected by address leaves that service running. Client startup and packaging commands are in the [desktop guide](../desktop/README.md).
 
-The alternative WPF client remains in the repository as a separate consumer. Its source and build paths are described in [DEVELOPMENT.md](DEVELOPMENT.md#retained-interfaces).
-
 ## Verification
 
 Run the JavaScript and Python suites from the same checkout. Exercise draft, apply, failure, reconnect, and profile persistence through the isolated simulator when changing contracts. Package verification checks source modules, web assets, third-party notices, and private-file exclusions. Physical switch output and installed application lifecycle require their own checks.

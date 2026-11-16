@@ -11,8 +11,6 @@ htmlcov/
 build/
 dist/
 outputs/
-native/bin/
-native/obj/
 *.log
 
 # Local working notes and application state

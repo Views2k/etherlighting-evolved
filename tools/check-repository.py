@@ -48,9 +48,8 @@ def inspect(root):
     version = json.loads((root / "package.json").read_text("utf-8"))["version"]
     python = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]["version"]
     module = (root / "src/etherlighting_evolved/__init__.py").read_text("utf-8")
-    native = (root / "native/EtherlightingEvolved.csproj").read_text("utf-8")
     desktop = (root / "desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj").read_text("utf-8")
-    if (python != version or f'__version__ = "{version}"' not in module or f"<Version>{version}</Version>" not in native
+    if (python != version or f'__version__ = "{version}"' not in module
             or f"<Version>{version}</Version>" not in desktop):
         raise ValueError("Application version values must agree.")
     for name in files:
