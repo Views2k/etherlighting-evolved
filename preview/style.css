@@ -410,10 +410,6 @@ dialog .view-actions { position: static; margin-top: 20px; background: transpare
 .window-brand .wordmark { font-size: 14px; font-weight: 600; }
 .connection-recovery { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 20px; background: var(--recovery-surface); color: var(--recovery-text); font-size: 13px; }
 .connection-recovery[hidden] { display: none; }
-.native-window .titlebar { cursor: default; user-select: none; touch-action: none; }
-.traffic-lights button.traffic-light { padding: 0; min-width: 0; min-height: 0; display: grid; place-items: center; cursor: default; }
-.traffic-lights button.traffic-light:focus-visible::before, .traffic-lights button.traffic-light:focus-visible::after { opacity: .8; }
-.traffic-lights button.traffic-light:active { filter: brightness(.85); }
 .brand-logo { width: 30px; height: 30px; object-fit: contain; }
 .library-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 7px; }
 .count { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
@@ -851,7 +847,6 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
 }
 @media (max-height: 500px) and (min-width: 900px) {
   .app-shell { --rack-brand-gap: 12px; --rack-traffic-size: 12px; --rack-traffic-gap: 8px; }
-  .app-shell:has(.traffic-lights > button) { --rack-traffic-size: 44px; --rack-traffic-gap: 0px; }
   .app-shell:has(> .pending-lighting-bar:not([hidden])) .window-brand .wordmark { visibility: hidden; }
   .app-shell > .pending-lighting-bar { position: absolute; z-index: 3; top: env(safe-area-inset-top, 0px); left: calc(env(safe-area-inset-left, 0px) + 12px + 3 * var(--rack-traffic-size) + 2 * var(--rack-traffic-gap) + var(--rack-brand-gap)); padding: 0; border: 0; background: transparent; min-height: 44px; flex-wrap: nowrap; }
   .pending-lighting-bar > span { position: absolute; width: 1px; height: 1px; min-width: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -1125,13 +1120,6 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
     select option { min-height: 44px; padding-block: 11px; }
     select::picker(select) { max-height: min(320px, calc(100dvh - 24px)); }
   }
-  .traffic-lights:has(button) { gap: 0; padding: 0; }
-  .traffic-lights button.traffic-light { width: 44px; height: 44px; min-width: 44px; min-height: 44px; border: 0; border-radius: 7px; box-shadow: none; background: radial-gradient(circle at center, var(--traffic-color, #787b82) 0 5px, #0003 5px 6px, transparent 6px); }
-  .traffic-light.close { --traffic-color: #ff5f57; }
-  .traffic-light.minimize { --traffic-color: #febc2e; }
-  .traffic-light.maximize { --traffic-color: #28c840; }
-  .traffic-lights button.maximize::before { top: 18px; left: 18px; }
-  .traffic-lights button.maximize::after { bottom: 18px; right: 18px; }
 }
 
 .rack-only { display: none; }

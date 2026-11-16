@@ -262,7 +262,7 @@ internal sealed partial class AutomationPage
 
     /// <summary>
     /// div.condition-row: property, operator, value and Remove in the browser's grid columns. Below 1050px the value
-    /// moves to a second line and Remove spans both (style.css:728-730); below 800px the first two columns share the row.
+    /// moves to a second line and Remove spans both (style.css:724-726); below 800px the first two columns share the row.
     /// </summary>
     static void LayoutCondition(Grid row, int mode)
     {
