@@ -57,6 +57,24 @@ def test_login_fields_and_request_lists_have_size_limits(demo):
     assert refused.status_code == 400 and refused.json()["detail"]["code"] == "invalid"
 
 
+def test_scenes_and_profiles_with_too_many_rules_are_refused(demo):
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    current = demo.get("/api/scene").json()
+    scene = {**current["scene"], "rules": rules}
+    body = {"scene": scene, "expected_revision": current["revision"]}
+    demo.app.state.presets.save("Saved earlier", scene)
+    for response in (
+        demo.put("/api/scene", json=body),
+        demo.post("/api/presets", json={"name": "Many rules", **body}),
+        demo.post("/api/presets/Saved earlier/apply"),
+    ):
+        assert response.status_code == 400 and response.json()["detail"]["code"] == "invalid"
+    assert demo.get("/api/scene").json() == current
+    assert "Many rules" not in demo.get("/api/presets").json()
+    allowed = {**current["scene"], "rules": rules[:256]}
+    assert demo.put("/api/scene", json={"scene": allowed, "expected_revision": current["revision"]}).status_code == 200
+
+
 def test_about_says_unofficial(client):
     about = client.get("/api/about").json()
     assert about["name"] == "Etherlighting Evolved" and about["short_name"] == "EE"

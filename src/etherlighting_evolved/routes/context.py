@@ -17,6 +17,15 @@ from ..schedules import Scheduler, ScheduleStore
 from ..session import SessionManager
 from ..transport import SimulatedTransport, TransportError
 
+# Every rule is evaluated for every port on every frame. The engine itself accepts longer lists, so a saved scene
+# from before this limit still loads at login.
+MAX_RULES = 256
+
+
+def limit_rules(rules: object) -> None:
+    if isinstance(rules, list) and len(rules) > MAX_RULES:
+        raise HTTPException(400, detail={"code": "invalid", "message": f"Use at most {MAX_RULES} rules."})
+
 
 def scene_envelope(scene: dict) -> dict:
     return {"scene": scene, "revision": scene_revision(scene)}
@@ -95,6 +104,7 @@ class ApiContext:
 
     async def commit_scene(self, e: Engine, scene: dict, *, preserve_unchanged: bool, confirm_output: bool) -> dict:
         """Apply a scene, optionally wait for SFP output, and update the switch's offline copy."""
+        limit_rules(scene.get("rules"))
         try:
             affected_sfp = apply(e.apply_snapshot, scene, preserve_unchanged=preserve_unchanged)
         except AttributeError as exc:

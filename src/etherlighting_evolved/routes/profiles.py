@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..presets import ProfileConflict
-from .context import ApiContext, apply, scene_envelope
+from .context import ApiContext, apply, limit_rules, scene_envelope
 
 
 class PresetSave(BaseModel):
@@ -86,6 +86,8 @@ def attach(api: APIRouter, ctx: ApiContext) -> None:
         if body.expected_revision is not None and body.expected_revision != current["revision"]:
             raise HTTPException(409, detail={"code": "scene_changed", "message":
                                             "The lighting setup changed. Review the preview before saving."})
+        if body.scene is not None:
+            limit_rules(body.scene.get("rules"))
         try:
             snapshot = current["scene"] if body.scene is None else apply(e.validate_snapshot, body.scene)
         except AttributeError as exc:
