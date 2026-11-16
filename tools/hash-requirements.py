@@ -4,6 +4,7 @@ Usage: python tools/hash-requirements.py
 
 Each pin keeps its version and marker and lists the hashes of the wheels that the Python version in .python-version
 can install on the CI runners: Windows x64, macOS arm64 and Linux x64. Run it after changing a pin.
+tools/check-toolchain.py reads the pins with read_requirements.
 """
 
 import json
@@ -16,6 +17,13 @@ from packaging.utils import parse_wheel_filename
 
 ROOT = Path(__file__).resolve().parent.parent
 REQUIREMENTS = ROOT / "requirements-ci.txt"
+
+
+def read_requirements():
+    """Yield each line of requirements-ci.txt without its hashes, and its requirement, or None for a comment."""
+    for line in REQUIREMENTS.read_text("utf-8").replace("\\\n", " ").splitlines():
+        spec = line.split(" --hash=")[0].strip()
+        yield spec, Requirement(spec) if spec and not spec.startswith("#") else None
 
 
 def runner_tags():
@@ -42,13 +50,10 @@ def wheel_hashes(requirement, tags):
 if __name__ == "__main__":
     tags = runner_tags()
     output, pins = [], 0
-    for line in REQUIREMENTS.read_text("utf-8").replace("\\\n", " ").splitlines():
-        spec = line.split(" --hash=")[0].strip()
-        if not spec or spec.startswith("#"):
-            output.append(line)
-            continue
-        hashes = wheel_hashes(Requirement(spec), tags)
-        output.append(" \\\n    ".join([spec, *(f"--hash=sha256:{value}" for value in hashes)]))
-        pins += 1
+    for spec, requirement in read_requirements():
+        if requirement:
+            spec = " \\\n    ".join([spec, *(f"--hash=sha256:{value}" for value in wheel_hashes(requirement, tags))])
+            pins += 1
+        output.append(spec)
     REQUIREMENTS.write_text("\n".join(output) + "\n", encoding="utf-8", newline="\n")
     print(f"Hashed {pins} pins.")
