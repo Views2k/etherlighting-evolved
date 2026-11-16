@@ -35,7 +35,7 @@ eectl = "etherlighting_evolved.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-etherlighting_evolved = ["assets/*", "resident/*.sh", "resident/*.awk"]
+etherlighting_evolved = ["resident/*.sh", "resident/*.awk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

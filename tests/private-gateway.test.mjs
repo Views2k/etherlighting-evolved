@@ -69,8 +69,8 @@ test('private gateway rejects encoded management routes before forwarding',async
   const targetPort=await listen(upstream),gateway=createPrivateGateway({targetPort,listenPort:0});
   try{
     const {port}=await gateway.start({authorize:()=>({ok:true})});
-    for(const path of ['/api/desktop/%71uit','/api/%64esktop/show','/api/private-%61ccess',
-      '/api/private-access/%72efresh','/api/private-access/%6cogin','/api/%77orkspace/close','/api/desktop/quit/']){
+    for(const path of ['/api/workspace/%63lose','/api/%70rivate-access','/api/private-%61ccess',
+      '/api/private-access/%72efresh','/api/private-access/%6cogin','/api/%77orkspace/close','/api/workspace/close/']){
       assert.equal((await get(port,path,{method:'POST'})).status,403,path);
     }
     assert.equal(calls,0);
@@ -84,10 +84,10 @@ test('private gateway rejects malformed and ambiguous path encodings',async()=>{
   try{
     const {port}=await gateway.start({authorize:()=>({ok:true})});
     for(const path of ['/api/%','/api/%GG','/api/%c0%af','/api/%ed%a0%80',
-      '/api/desktop%2Fquit','/api/desktop%5cquit','/api/desktop%252fquit',
-      '/api/%252e%252e/desktop/quit','/api/../api/desktop/quit','/api/.%2e/desktop/quit',
-      '/api//desktop/quit','/api/desktop\\quit','/api/desktop/quit%3fextra',
-      '/api/desktop/quit%23extra','/api/desktop/quit%00']){
+      '/api/workspace%2Fclose','/api/workspace%5cclose','/api/workspace%252fclose',
+      '/api/%252e%252e/workspace/close','/api/../api/workspace/close','/api/.%2e/workspace/close',
+      '/api//workspace/close','/api/workspace\\close','/api/workspace/close%3fextra',
+      '/api/workspace/close%23extra','/api/workspace/close%00']){
       assert.equal((await get(port,path,{method:'POST'})).status,403,path);
     }
     assert.equal(calls,0);
@@ -127,7 +127,7 @@ test('device verification gates writes and preserves host-only access restrictio
     const status=JSON.parse((await get(port,'/api/private-access')).text);
     assert.equal(status.can_configure,false);
     assert.equal(status.can_close_workspace,false);
-    for(const path of ['/api/private-access','/api/private-access/login','/api/workspace/close','/api/desktop/quit']){
+    for(const path of ['/api/private-access','/api/private-access/refresh','/api/private-access/login','/api/workspace/close']){
       assert.equal((await get(port,path,{method:'POST'})).status,403);
     }
     assert.equal((await get(port,'/api/presets/Evening',{method:'PUT',headers:{'x-fail':'1'}})).status,403);

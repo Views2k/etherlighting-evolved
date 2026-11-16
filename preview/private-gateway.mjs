@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-const LOCAL_ONLY=new Set(['/api/private-access','/api/private-access/refresh','/api/private-access/login','/api/workspace/close','/api/desktop/quit','/api/desktop/show']);
+const LOCAL_ONLY=new Set(['/api/private-access','/api/private-access/refresh','/api/private-access/login','/api/workspace/close']);
 const FORWARD_HEADERS=new Set(['accept','accept-language','content-type','content-length','x-ee-workspace','if-none-match','if-modified-since','range','sec-websocket-key','sec-websocket-version','sec-websocket-protocol','sec-websocket-extensions']);
 
 function requestPath(value) {
