@@ -40,7 +40,6 @@ AI_MARKER = re.compile(
 RELEASE_NAME = re.compile(r"\bEE (\d+\.\d+\.\d+)\b")
 # Files that must name the markers, private files or allowed text to look for them.
 GUARD_FILES = {"tools/check-repository.py", ".gitignore"}
-BINARY_SUFFIXES = {".png", ".jpg", ".ico", ".bmp"}
 # Text that is accepted where it stands. Each entry is a file and the exact matched text.
 ALLOWED = {
     # The documentation rewrite replaces the codex/ branch convention and the release named in the README.
@@ -128,8 +127,10 @@ def inspect(root):
     version = check_versions(root)
     problems = []
     for name in files:
-        if Path(name).suffix.lower() not in BINARY_SUFFIXES:
-            problems += find_problems(name, (root / name).read_text("utf-8"), version)
+        data = (root / name).read_bytes()
+        # Git's own test: a file with a NUL byte in its first 8000 bytes is binary.
+        if b"\0" not in data[:8000]:
+            problems += find_problems(name, data.decode("utf-8"), version)
     if problems:
         raise ValueError("Private or stale text in the source files:\n" + "\n".join(problems))
     return {
