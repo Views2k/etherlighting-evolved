@@ -22,6 +22,13 @@ internal static class ConnectionsChecks
               && Connections.ConnectionError(JsonValue.Create("auth_failed")) == Connections.DefaultError,
             "connection errors read the code of a refused request or an error object, as the browser does");
 
+        const string newer = "The saved lighting for this switch was saved by a newer version of EE. Update EE to use it.";
+        const string damaged = "The saved lighting for this switch could not be verified.";
+        check(Connections.ConnectionError(new ApiException(newer, "invalid_saved_scene", 422, false, null)) == newer
+              && Connections.ConnectionError(JsonNode.Parse($$"""{"code":"invalid_saved_scene","message":"{{damaged}}"}""")) == damaged
+              && Connections.ConnectionError(JsonNode.Parse("""{"code":"invalid_saved_scene"}""")) == Connections.DefaultError,
+            "an unusable saved scene shows the service message that names its recovery, as the browser does");
+
         var discovery = JsonNode.Parse("""{"code":"controller_error","operation":"sites","upstream_status":502}""");
         check(Connections.ControllerError(discovery) == "UniFi Network could not complete site discovery (HTTP 502). Try connecting again."
               && Connections.ControllerError(new ApiException("", "timeout", 504, false, null)) == "UniFi Network did not respond in time. Check the controller and try again."

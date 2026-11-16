@@ -59,14 +59,22 @@ public static class Connections
         ["switch_not_found"] = "The connected switch was not found in this site. Check the selected site.",
     };
 
+    /// <summary>
+    /// Codes whose message comes from the service. For invalid_saved_scene it says which saved lighting failed (damaged
+    /// behind switch playback, or saved by a newer EE) and how to recover, and it names no host or user.
+    /// </summary>
+    static readonly HashSet<string> ServiceMessages = new(StringComparer.Ordinal) { "invalid_saved_scene" };
+
     /// <summary>The message for a failed connection (connectionError).</summary>
-    public static string ConnectionError(string? code, bool timedOut = false, string fallback = DefaultError) =>
-        code is not null && Messages.TryGetValue(code, out var message) ? message : timedOut ? Messages["timeout"] : fallback;
+    public static string ConnectionError(string? code, bool timedOut = false, string fallback = DefaultError, string? serviceMessage = null) =>
+        code is not null && ServiceMessages.Contains(code) && !string.IsNullOrEmpty(serviceMessage) ? serviceMessage
+        : code is not null && Messages.TryGetValue(code, out var message) ? message : timedOut ? Messages["timeout"] : fallback;
 
     public static string ConnectionError(Exception? error, string fallback = DefaultError) =>
-        ConnectionError((error as ApiException)?.Code, error is TimeoutException, fallback);
+        ConnectionError((error as ApiException)?.Code, error is TimeoutException, fallback, (error as ApiException)?.Message);
 
-    public static string ConnectionError(JsonNode? error, string fallback = DefaultError) => ConnectionError(error.Str("code"), false, fallback);
+    public static string ConnectionError(JsonNode? error, string fallback = DefaultError) =>
+        ConnectionError(error.Str("code"), false, fallback, error.Str("message"));
 
     // ---- Handoff to UniFi
 
