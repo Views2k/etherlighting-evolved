@@ -2,7 +2,25 @@
   {
     "name": "SFP rule replaces master 0",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -128,7 +146,25 @@
   {
     "name": "SFP rule replaces master 20",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -254,7 +290,25 @@
   {
     "name": "SFP follows source override before replacing its brightness",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -385,7 +439,25 @@
   {
     "name": "SFP solid rule retains per-light brightness",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -511,7 +583,25 @@
   {
     "name": "Ungrouped copper starts dark",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -620,7 +710,25 @@
   {
     "name": "Ungrouped ports apply rules and inherited or explicit overrides",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -756,7 +864,25 @@
   {
     "name": "Together uses shared light settings with independently targeted rules",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -882,7 +1008,25 @@
   {
     "name": "Off SFP suppresses targeted rules",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -1008,7 +1152,25 @@
   {
     "name": "Effect-only rule does not acquire unmanaged SFP",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",
@@ -1134,7 +1296,25 @@
   {
     "name": "All-copper rule does not acquire SFP",
     "scene": {
-      "version": 2,
+      "version": 3,
+      "topology": {
+        "version": 1,
+        "model": null,
+        "copper_ports": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "sfp_ports": [
+          9,
+          10
+        ]
+      },
       "zones": [
         {
           "id": "all",

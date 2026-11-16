@@ -1,5 +1,4 @@
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,13 +47,8 @@ def test_player_scene_uses_actual_settings_and_qualified_ports():
     assert player.compile_scene(changed) == (config, palette)
 
 
-def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
-    awk = shutil.which("awk")
-    if not awk:
-        binary = Path("C:/Program Files/Git/usr/bin/awk.exe")
-        if not binary.is_file():
-            pytest.skip("awk is unavailable")
-        awk = str(binary)
+def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path, posix_shell):
+    awk = shutil.which("awk", path=posix_shell.env["PATH"])
     config, palette = player.compile_scene(scene())
     (tmp_path / "config").write_text(config, encoding="ascii")
     (tmp_path / "palette").write_text(palette, encoding="ascii")
@@ -67,7 +61,7 @@ def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
         (tmp_path / "ports").write_text("\n".join(rows) + "\n", encoding="ascii")
         run = subprocess.run([awk, "-v", f"stamp={t}", "-v", "frame=0", "-f", "frames.awk",
                               "config", "palette", "previous", "ports"], cwd=tmp_path,
-                             capture_output=True, text=True, check=True)
+                             capture_output=True, text=True, check=True, env=posix_shell.env)
         (tmp_path / "next").replace(tmp_path / "previous")
         return [list(map(int, line.split())) for line in run.stdout.splitlines()]
 
@@ -93,10 +87,8 @@ def test_actual_device_renderer_handles_traffic_and_counter_reset(tmp_path):
 
 
 @pytest.mark.parametrize("effect", ["traffic", "traffic_trails", "poe_usage", "daylight"])
-def test_offline_sensor_effects_read_their_live_input(tmp_path, effect):
-    awk = shutil.which("awk") or "C:/Program Files/Git/usr/bin/awk.exe"
-    if not Path(awk).exists():
-        pytest.skip("awk unavailable")
+def test_offline_sensor_effects_read_their_live_input(tmp_path, effect, posix_shell):
+    awk = shutil.which("awk", path=posix_shell.env["PATH"])
     config, palette = player.compile_scene(scene(effect))
     runtime = Path(player.__file__).with_name("resident") / "frames.awk"
     script = runtime.read_text().replace("timeout -t 3 swctrl poe show", "cat power").replace(
@@ -105,7 +97,6 @@ def test_offline_sensor_effects_read_their_live_input(tmp_path, effect):
     for name, data in files.items():
         (tmp_path / name).write_text(data, encoding="ascii", newline="\n")
     samples = []
-    env = {**os.environ, "PATH": str(Path(awk).parent) + os.pathsep + os.environ["PATH"]}
     for t in range(1, 5):
         data = "".join(f"{p} U/U 1000F 0 0 {125000000 * (t - 1)} 0\n" for p in range(1, 11))
         (tmp_path / "ports").write_text(data, encoding="ascii", newline="\n")
@@ -113,7 +104,7 @@ def test_offline_sensor_effects_read_their_live_input(tmp_path, effect):
         (tmp_path / "clock").write_text("12 00 00\n" if t >= 2 else "02 00 00\n", encoding="ascii")
         result = subprocess.run([awk, "-v", f"stamp={t}", "-v", "frame=0", "-f", "frames.awk",
                                  "config", "palette", "previous", "ports"], cwd=tmp_path,
-                                capture_output=True, check=True, text=True, env=env)
+                                capture_output=True, check=True, text=True, env=posix_shell.env)
         (tmp_path / "next").replace(tmp_path / "previous")
         ports = [list(map(int, row.split())) for row in result.stdout.splitlines()]
         assert len(ports) == 10 and all(0 <= value <= 65280 for row in ports for value in row[1:])

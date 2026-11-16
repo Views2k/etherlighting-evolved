@@ -1,0 +1,31 @@
+# Weekly update notices for the pinned GitHub Actions, CI Python packages and desktop NuGet packages.
+# Actions stay pinned to full commit SHAs with the release in a comment. pyproject.toml keeps its lower bounds
+# unless an update falls outside them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    versioning-strategy: increase-if-necessary
+    groups:
+      python:
+        patterns: ['*']
+  - package-ecosystem: nuget
+    directories:
+      - /desktop/EtherlightingEvolved.Native
+      - /desktop/EtherlightingEvolved.Native.Check
+    schedule:
+      interval: weekly
+    groups:
+      avalonia:
+        patterns: ['Avalonia*']
+      nuget:
+        patterns: ['*']

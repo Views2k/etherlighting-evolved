@@ -27,13 +27,37 @@ approved-device.json
 known_hosts
 known_switches.json
 desktop.json
+native.json
+preferences.json
 scene.json
 scene-demo.json
+scene-history.json
 presets.json
 schedules.json
 switch-connection-intent.json
+switch-playback.json
+lighting-library.json
+fans.json
+fans-demo.json
+last-session.json
 device-scenes/
 output-ownership/
+port-names/
+
+# Firmware images and extracted vendor files
+*.bin
+*.img
+*.ubi
+*.squashfs
+firmware/
+
+# Compiled device helpers and native test builds
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.pdb
 
 # Generated installer artwork
 packaging/wizard*.bmp
@@ -42,8 +66,8 @@ packaging/wizard*.bmp
 Thumbs.db
 .idea/
 .vscode/
-
-port-names/
+.vs/
+*.user
 
 desktop/*/bin/
 desktop/*/obj/

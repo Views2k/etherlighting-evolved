@@ -7,10 +7,10 @@ licenses come from the local restore record for the selected operating system an
 import ast
 import importlib.metadata
 import json
-from pathlib import Path
 import re
 import shutil
 import sys
+from pathlib import Path
 
 NOTICE_WORDS = ('license', 'licence', 'copying', 'notice')
 
@@ -81,7 +81,8 @@ def collect_dotnet(assets: Path, destination: Path, index: list[str], runtime: s
             continue
         name, version = key.split('/')
         folder = packages_root / record['libraries'][key]['path']
-        files = [path for path in folder.iterdir() if path.is_file() and any(word in path.name.lower() for word in NOTICE_WORDS)]
+        files = [path for path in folder.iterdir()
+                 if path.is_file() and any(word in path.name.lower() for word in NOTICE_WORDS)]
         output = destination / 'dotnet' / name
         output.mkdir(parents=True, exist_ok=True)
         for number, path in enumerate(sorted(files), 1):
@@ -106,7 +107,8 @@ def collect_dotnet(assets: Path, destination: Path, index: list[str], runtime: s
             continue
         version = dependency['version'].strip('[]').split(',')[0].strip()
         folder = packages_root / dependency['name'].lower() / version
-        for source, target_name in [('LICENSE.TXT', 'DotNet-LICENSE.txt'), ('THIRD-PARTY-NOTICES.TXT', 'DotNet-THIRD-PARTY-NOTICES.txt')]:
+        for source, target_name in [('LICENSE.TXT', 'DotNet-LICENSE.txt'),
+                                    ('THIRD-PARTY-NOTICES.TXT', 'DotNet-THIRD-PARTY-NOTICES.txt')]:
             if (folder / source).is_file():
                 shutil.copyfile(folder / source, destination / target_name)
         index.append(f"{dependency['name']} {version} (MIT)")
