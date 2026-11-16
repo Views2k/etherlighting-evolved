@@ -188,8 +188,8 @@ var
   Node, Script: String;
   ResultCode: Integer;
 begin
-  { An uninstall for all users runs elevated and cannot reliably read this user's EE settings. desktop/README.md
-    gives the command to run instead. }
+  { An uninstall for all users runs elevated and cannot reliably read this user's EE settings, so the user runs the
+    same tool by hand. }
   if IsAdminInstallMode then
     Exit;
   Node := ExpandConstant('{app}\runtime\node.exe');
