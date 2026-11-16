@@ -510,7 +510,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   const lifecycle = new AbortController();
   host.replaceChildren();
   const panel = node('section', 'connection-panel panel');
-  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo.png'; logo.alt = '';
+  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo-256.png'; logo.alt = '';
   const heading=node('h1','','Connect your switch');
   const intro=node('p','help-text','Enter the switch’s SSH login to open its lighting workspace.');
   panel.append(logo,heading,intro);
