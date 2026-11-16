@@ -64,9 +64,20 @@ test('API requests reach the engine with its token and without the browser origi
   assert.equal(headers.host,`127.0.0.1:${f.backendPort}`);
 });
 
+test('API calls from another site are refused while links from other sites still open the page',async t=>{
+  const f=await gateway(t);
+  for(const site of ['cross-site','same-site'])
+    assert.equal((await request(f.port,'/api/state',{headers:{'sec-fetch-site':site,'sec-fetch-mode':'no-cors'}})).status,403,site);
+  assert.equal(f.received.length,0);
+  for(const site of ['same-origin','none'])assert.equal((await request(f.port,'/api/state',{headers:{'sec-fetch-site':site}})).status,200,site);
+  assert.equal(f.received.length,2);
+  assert.equal((await request(f.port,'/',{headers:{'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate'}})).status,200);
+});
+
 test('static files are served only from the published folders',async t=>{
   const f=await gateway(t);
   for(const path of ['/','/preview/app.mjs','/src/color.mjs','/assets/favicon.png'])assert.equal((await request(f.port,path)).status,200,path);
+  assert.match((await request(f.port,'/')).headers['content-security-policy'],/object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'/);
   for(const path of ['/preview/..%2fpackage.json','/preview/..%2ftools%2fcheck.mjs','/src/..%5c..%5cpackage.json','/src/..%5ctools%5ccheck.mjs',
     '/assets/%00.png','/preview/%E0%A4%A.mjs','/previewx/app.mjs','/tools/check.mjs','/preview/','/preview/style.css.map'])
     assert.equal((await request(f.port,path)).status,404,path);
@@ -85,10 +96,10 @@ test('a client that resets before the engine accepts its WebSocket leaves the ga
   assert.equal((await request(f.port,'/api/workspace')).status,200);
 });
 
-test('WebSocket upgrades from another host or origin never reach the engine',async t=>{
+test('WebSocket upgrades from another host, origin or site never reach the engine',async t=>{
   const f=await gateway(t);
   let upgrades=0;f.backend.on('upgrade',(_req,socket)=>{upgrades++;socket.destroy();});
-  for(const headers of [{Origin:'http://evil.test'},{Origin:`http://${host}`,Host:'evil.test:4180'}]){
+  for(const headers of [{Origin:'http://evil.test'},{Origin:`http://${host}`,Host:'evil.test:4180'},{Origin:`http://${host}`,'Sec-Fetch-Site':'cross-site'}]){
     const client=openSocket(f.port,headers);
     await once(client,'close');
   }

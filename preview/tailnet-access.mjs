@@ -3,7 +3,8 @@ import {canonicalTailnetAddress} from './approved-device.mjs';
 const SAFE_METHODS=new Set(['GET','HEAD','OPTIONS']);
 const LOOPBACK=new Set(['127.0.0.1','::1','::ffff:127.0.0.1']);
 const IDENTITY_HEADERS=new Set(['host','origin','x-forwarded-host','x-forwarded-proto','x-forwarded-for',
-  'tailscale-user-login','tailscale-funnel-request','authorization','forwarded']);
+  'tailscale-user-login','tailscale-funnel-request','authorization','forwarded','sec-fetch-site','sec-fetch-mode']);
+const SAME_SITE_FETCH=new Set(['same-origin','none']);
 export const ACCESS_AUDIENCES=Object.freeze(['owner','accounts']);
 const DENIED=Object.freeze({ok:false,status:403,code:'private_access_denied'});
 const ALLOWED=Object.freeze({ok:true});
@@ -62,6 +63,11 @@ export function createTailnetAccess({origin,ownerLogin,audience='owner',verifyDe
     if(suppliedOrigin!==undefined&&suppliedOrigin!==origin)return DENIED;
     if(typeof request.method!=='string'||(!SAFE_METHODS.has(request.method)||websocket)&&suppliedOrigin!==origin)return DENIED;
     if(typeof request.url!=='string'||!request.url.startsWith('/')||request.url.startsWith('//'))return DENIED;
+    // A simple cross-site GET, such as an <img> source on another page, carries no Origin but still names its site.
+    // Only a top-level navigation to a workspace page may come from elsewhere, so links from other apps still open.
+    const site=headers.get('sec-fetch-site');
+    if(site!==undefined&&!SAME_SITE_FETCH.has(site)&&(websocket||request.method!=='GET'
+        ||headers.get('sec-fetch-mode')!=='navigate'||request.url.startsWith('/api/')))return DENIED;
     if(headers.has('tailscale-user-login')){
       const login=decodeLogin(headers.get('tailscale-user-login'));
       if(!login||/[\s\x00-\x1f\x7f]/u.test(login)||audience==='owner'&&login!==ownerLogin)return DENIED;

@@ -21,7 +21,15 @@ const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8'
 // the engine is shutting down.
 export function createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,closeWorkspace,keepAvailable=keepPrivateAccessAvailable}) {
   const allowed = new Set([`127.0.0.1:${port}`,`localhost:${port}`]);
-  function permitted(req) {return allowed.has(req.headers.host) && (!req.headers.origin || [...allowed].some(host=>req.headers.origin===`http://${host}`));}
+  // Browsers omit Origin on simple cross-site GETs such as an <img> source, but they still send Sec-Fetch-Site, and
+  // some engine GET routes have side effects. API calls are accepted only from the workspace page or from clients
+  // that send no fetch metadata (the desktop client and the private gateway). Links from other sites still open
+  // the page itself.
+  function permitted(req,api) {
+    const site=req.headers['sec-fetch-site'];
+    return allowed.has(req.headers.host) && (!req.headers.origin || [...allowed].some(host=>req.headers.origin===`http://${host}`))
+      && (!api || site===undefined || site==='same-origin' || site==='none');
+  }
   let closing,workspaceClosing=false;
   const privateRetry=keepAvailable({manager:privateAccess,active:()=>!workspaceClosing,
     restored:({attempts})=>diagnostics.record('private_access_restored',{attempts})});
@@ -34,7 +42,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   function readmit(){if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;}
   function stop(){workspaceClosing=true;privateRetry.stop();void privateAccess.close();server.close();child.stdin.end('quit\n');}
   const server=http.createServer(async(req,res)=>{
-    if (!permitted(req)) {res.writeHead(403);res.end();return;}
+    if (!permitted(req,req.url.startsWith('/api/'))) {res.writeHead(403);res.end();return;}
     if(['/api/private-access','/api/private-access/refresh','/api/private-access/login'].includes(req.url)){
       const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
       if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing});return;}
@@ -86,7 +94,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
       const file=path.resolve(root,relative);
       if(!['preview','assets','src'].some(folder=>file.startsWith(path.join(root,folder)+path.sep))||!types[path.extname(file)])throw new Error();
       const bytes=await readFile(file);
-      res.writeHead(200,{'Content-Type':types[path.extname(file)],...(relative==='preview/sw.mjs'?{'Service-Worker-Allowed':'/'}:{}),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"});
+      res.writeHead(200,{'Content-Type':types[path.extname(file)],...(relative==='preview/sw.mjs'?{'Service-Worker-Allowed':'/'}:{}),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});
       res.end(req.method==='HEAD'?undefined:bytes);
     } catch {res.writeHead(404);res.end('Not found');}
   });
@@ -94,7 +102,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   // before the engine answers would otherwise raise an unhandled error and stop the gateway.
   server.on('upgrade',(req,socket,head)=>{
     socket.on('error',()=>socket.destroy());
-    if(!permitted(req)||req.url!=='/api/ws'){socket.destroy();return;}
+    if(!permitted(req,true)||req.url!=='/api/ws'){socket.destroy();return;}
     const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`}; delete headers.origin;
     const upstream=http.request({host:'127.0.0.1',port:backendPort,path:'/api/ws',headers});
     upstream.setTimeout(10000,()=>upstream.destroy());
