@@ -1,8 +1,8 @@
-; Inno Setup script for the Windows installer. The workspace build script supplies the packaged app path;
-; it passes the version with /DAppVersion=...
+; Inno Setup script for the Windows installer. The workspace build script supplies the packaged app path and
+; passes the application version with /DAppVersion=... The default below is kept equal to it by tools/set-version.py.
 
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #define AppVersion "0.5.1"
 #endif
 
 #ifndef AppSourceDir
