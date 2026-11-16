@@ -18,6 +18,11 @@ const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8'
 // Engine requests are small JSON documents, and the engine reads each body fully into memory.
 const MAX_BODY_BYTES=1048576;
 
+// The gateway's own refusals use the engine's error shape, so clients read the same codes whichever one answers.
+function refuse(res,status,code,message){
+  res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:{code,message}}));
+}
+
 // The returned server is not listening yet. Every way the workspace closes (the close request, the desktop parent
 // exiting, a signal or a listen failure) goes through the same state, so private access cannot be reopened while
 // the engine is shutting down.
@@ -50,7 +55,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     workspaceClosing=true;privateRetry.stop();server.close();exit(1);
   }
   const server=http.createServer(async(req,res)=>{
-    if (!permitted(req,req.url.startsWith('/api/'))) {res.writeHead(403);res.end();return;}
+    if (!permitted(req,req.url.startsWith('/api/'))) {refuse(res,403,'forbidden','Requests from other websites are not allowed.');return;}
     if(['/api/private-access','/api/private-access/refresh','/api/private-access/login'].includes(req.url)){
       const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
       if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing});return;}
@@ -92,7 +97,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     if (req.url.startsWith('/api/')) {
       // The answer does not ask to close the connection, so on a kept-alive connection Node reads and discards the rest
       // of the body. Closing a socket that still has unread data makes Windows reset it before the client reads the 413.
-      if(Number(req.headers['content-length'])>MAX_BODY_BYTES){res.writeHead(413,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The request is too large.'}));return;}
+      if(Number(req.headers['content-length'])>MAX_BODY_BYTES){refuse(res,413,'too_large','The request is too large.');return;}
       const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`}; delete headers.origin;
       const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});
       upstream.on('error',()=>{if(!res.headersSent)res.writeHead(503,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The EE service is unavailable.'}));});
