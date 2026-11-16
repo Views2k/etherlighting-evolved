@@ -42,7 +42,7 @@ public sealed class AppShell : UserControl
     int navigationVersion;
     readonly List<string> history = [];
     int historyIndex = -1;
-    bool startedOnce;
+    bool startedOnce, serviceStopped;
 
     public AppShell(Workspace workspace)
     {
@@ -299,7 +299,9 @@ public sealed class AppShell : UserControl
 
     public void UpdateConnection()
     {
-        var (label, tone) = SwitchStatus(Workspace.Session, Workspace.Disconnected, Workspace.Busy > 0, Workspace.State.Truthy("reconnect_required"));
+        var (label, tone) = serviceStopped
+            ? ("EE service stopped", "error")
+            : SwitchStatus(Workspace.Session, Workspace.Disconnected, Workspace.Busy > 0, Workspace.State.Truthy("reconnect_required"));
         connection.Set(label, tone);
         recovery.IsVisible = Workspace.Ready && Workspace.State.Bool("reconnect_required") == true;
         controller.IsVisible = Workspace.Ready && Workspace.Session.Bool("simulated") != true;
@@ -424,17 +426,17 @@ public sealed class AppShell : UserControl
 
     /// <summary>
     /// The bundled service stopped after it started: stop reconnecting, keep an unapplied preview for the next start,
-    /// and offer to start the service again.
+    /// and offer to start the service again. The status bar says the service stopped for as long as this window shows;
+    /// starting the service again opens a new window.
     /// </summary>
     public void ShowServiceStopped(string message, Func<Task> retry)
     {
+        serviceStopped = true;
         Workspace.Closing = true;
         Workspace.StopFrames();
         Studio.SaveUiState(PageName);
         ResetWorkspace();
         UpdateConnection();
-        connection.Set("EE service stopped", "error");
-        controller.IsVisible = false;
         ShowServiceFailure(message, retry);
     }
 

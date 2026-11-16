@@ -121,10 +121,14 @@ internal static class ShellChecks
                     image?.Save(Path.Combine(output, "native-workspace.png"));
                     shell.ShowServiceStopped("The EE service stopped.", () => Task.CompletedTask);
                     await Task.Delay(1800);
+                    bool StoppedShown() => window.GetLogicalDescendants().OfType<StateLine>().Any(line => line.Label == "EE service stopped" && line.Tone == "error");
                     check(!workspace.Ready && !workspace.StreamOpen && shell.CurrentPage is null
-                          && window.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Try again"))
-                          && window.GetLogicalDescendants().OfType<StateLine>().Any(line => line.Label == "EE service stopped" && line.Tone == "error"),
+                          && window.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Try again")) && StoppedShown(),
                         "a stopped service ends reconnecting and offers to start it again");
+                    await shell.SetHidden(true);
+                    await shell.SetHidden(false);
+                    await Task.Delay(1800);
+                    check(StoppedShown() && !workspace.StreamOpen, "the status bar still says the service stopped after the window is hidden and shown again");
                 }
                 finally
                 {

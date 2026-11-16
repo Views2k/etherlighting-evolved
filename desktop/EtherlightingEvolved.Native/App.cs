@@ -331,7 +331,8 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         forceArmed = true;
         quitting = false;
         quitTask = null;
-        if (workspace is not null)
+        // After the service has stopped, reconnecting cannot succeed; the window keeps offering to start it again.
+        if (workspace is not null && service is { Running: true })
         {
             workspace.Closing = false;
             workspace.ConnectFrames();
