@@ -186,6 +186,11 @@ These requests are local-only:
 | `POST /api/controller/disconnect` | UniFi Network setup: disconnects the controller |
 | `PUT /api/controller/preferences` | UniFi Network setup: saves or removes the controller login |
 | `PUT /api/fps` | Output tuning outside the scene; no client sends it |
+| `GET /api/lan-access` | LAN access status, pairing code and paired devices on the computer running EE |
+| `PUT /api/lan-access` | LAN access settings |
+| `POST /api/lan-access/code` | Shows a new pairing code on the computer running EE |
+| `DELETE /api/lan-access/devices/{device_id}` | Removes a paired LAN device |
+| `POST /api/lan-access/pair` | Answered by the LAN gateway before route checks; never forwarded |
 | `PUT /api/output` | Output tuning outside the scene; no client sends it |
 | `PUT /api/private-access` | Tailscale settings |
 | `POST /api/private-access/login` | Starts Tailscale sign-in on the host computer |

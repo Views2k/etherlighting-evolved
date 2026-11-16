@@ -39,13 +39,14 @@ test('the cookie grants access under its own name only, and a decoy cannot hide 
   assert.notEqual(value,KEY);
 });
 
-test('a code redeems once for two path-limited session cookies',()=>{
+test('a code redeems once for three path-limited session cookies',()=>{
   const {access}=fixture(),code=access.issueCode(LINK_TTL_MS);
   assert.match(code,/^[0-9a-f]{64}$/);
   const cookies=access.redeem(code);
   const value=cookies[0].split(';')[0].slice('ee_admin_4180='.length);
   assert.match(value,/^[0-9a-f]{64}$/);
   assert.deepEqual(cookies,[`ee_admin_4180=${value}; Path=/api/private-access; HttpOnly; SameSite=Strict`,
+    `ee_admin_4180=${value}; Path=/api/lan-access; HttpOnly; SameSite=Strict`,
     `ee_admin_4180=${value}; Path=/api/workspace/close; HttpOnly; SameSite=Strict`]);
   assert.doesNotMatch(cookies.join(' '),/Expires|Max-Age/i);
   assert.equal(access.redeem(code),null);

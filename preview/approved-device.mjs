@@ -60,21 +60,29 @@ export function matchesApprovedNode(node,expectedStableID,sourceIp){
     &&prefix.endsWith(suffix)&&canonicalTailnetAddress(prefix.slice(0,-suffix.length))===address);
 }
 
-async function approvedPeer(configPath,hostStableID,sourceIp){
+// The text of a settings file that only this user can have written: a regular file, not a link, from 1 to maxBytes
+// bytes, unchanged between the check and the read, and on Unix owned by this user with no group or other permissions.
+// Null when it is not; a file that cannot be read throws, so ENOENT tells a missing file apart.
+export async function readOwnedFile(configPath,maxBytes){
   const entry=await lstat(configPath);
-  if(!entry.isFile()||entry.size===0||entry.size>MAX_RECORD_BYTES)return null;
+  if(!entry.isFile()||entry.size===0||entry.size>maxBytes)return null;
   const flags=constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0);
   const file=await open(configPath,flags);
   try{
     const info=await file.stat();
-    if(!info.isFile()||info.ino!==entry.ino||info.dev!==entry.dev||info.size===0||info.size>MAX_RECORD_BYTES)return null;
+    if(!info.isFile()||info.ino!==entry.ino||info.dev!==entry.dev||info.size===0||info.size>maxBytes)return null;
     if(process.platform!=='win32'&&(info.uid!==process.getuid()||(info.mode&0o077)!==0))return null;
-    const buffer=Buffer.alloc(MAX_RECORD_BYTES+1);
+    const buffer=Buffer.alloc(maxBytes+1);
     const {bytesRead}=await file.read(buffer,0,buffer.length,0);
-    if(bytesRead!==info.size)return null;
-    const devices=parseApprovedDevices(JSON.parse(buffer.toString('utf8',0,bytesRead)),hostStableID);
-    return devices?.find(device=>device.addresses.includes(sourceIp))?.deviceStableID??null;
+    return bytesRead===info.size?buffer.toString('utf8',0,bytesRead):null;
   }finally{await file.close();}
+}
+
+async function approvedPeer(configPath,hostStableID,sourceIp){
+  const text=await readOwnedFile(configPath,MAX_RECORD_BYTES);
+  if(text===null)return null;
+  const devices=parseApprovedDevices(JSON.parse(text),hostStableID);
+  return devices?.find(device=>device.addresses.includes(sourceIp))?.deviceStableID??null;
 }
 
 export function createApprovedDeviceVerifier({configPath,hostStableID,runTailscale}){

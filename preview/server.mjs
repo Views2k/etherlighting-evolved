@@ -8,6 +8,7 @@ import {createAdminAccess,ADMIN_CODE_PARAM,ADMIN_HEADER,ADMIN_MESSAGES,LINK_TTL_
 import {isEntryScript} from './entry-script.mjs';
 import {createPrivateGateway} from './private-gateway.mjs';
 import {createPrivateAccessManager} from './private-access.mjs';
+import {createLanAccessManager,LAN_DEFAULT_PORT,MAX_SETTING_BYTES,readLimited} from './lan-access.mjs';
 import {keepPrivateAccessAvailable} from './private-access-retry.mjs';
 import {resolveRuntimeConfig} from './runtime-config.mjs';
 import {createWorkspaceCloser} from './workspace-close.mjs';
@@ -18,16 +19,25 @@ const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8'
 // Engine requests are small JSON documents, and the engine reads each body fully into memory.
 const MAX_BODY_BYTES=1048576;
 const PRIVATE_ACCESS_PATHS=['/api/private-access','/api/private-access/refresh','/api/private-access/login'];
+const LAN_DEVICE_PATH=/^\/api\/lan-access\/devices\/([0-9a-f]{16})$/;
+const LAN_SETTING_INVALID='Choose a valid LAN access setting and a port between 1024 and 65535.';
 
 // The gateway's own refusals use the engine's error shape, so clients read the same codes whichever one answers.
 function refuse(res,status,code,message){
-  res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({detail:{code,message}}));
+  res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify({detail:{code,message}}));
+}
+
+// The methods each LAN access route accepts on this gateway. The pairing route exists only on the LAN listener.
+function lanRoute(url){
+  if(url==='/api/lan-access')return ['GET','PUT'];
+  if(url==='/api/lan-access/code')return ['POST'];
+  return LAN_DEVICE_PATH.test(url)?['DELETE']:null;
 }
 
 // The returned server is not listening yet. Every way the workspace closes (the close request, the desktop parent
 // exiting, a signal or a listen failure) goes through the same state, so private access cannot be reopened while
 // the engine is shutting down.
-export function createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,admin,closeWorkspace,keepAvailable=keepPrivateAccessAvailable,exit=code=>process.exit(code)}) {
+export function createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,lanAccess,admin,closeWorkspace,keepAvailable=keepPrivateAccessAvailable,exit=code=>process.exit(code)}) {
   const allowed = new Set([`127.0.0.1:${port}`,`localhost:${port}`]);
   // Browsers omit Origin on simple cross-site GETs such as an <img> source, but they still send Sec-Fetch-Site, and
   // some engine GET routes have side effects. API calls are accepted only from the workspace page or from clients
@@ -49,11 +59,11 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   }
   function readmit(){if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;}
   // In live mode, ending private access also removes EE's Tailscale Serve route, within the manager's own time limit.
+  // The LAN listener closes too; both keep their saved settings for the next start.
   async function closePrivate(){
     privateRetry.stop();
-    if(!live){await privateAccess.close();return;}
-    const result=await privateAccess.shutdown();
-    if(result.route==='unconfirmed')diagnostics.record('private_route_cleanup_unconfirmed');
+    const [result]=await Promise.all([live?privateAccess.shutdown():privateAccess.close(),lanAccess.close()]);
+    if(live&&result.route==='unconfirmed')diagnostics.record('private_route_cleanup_unconfirmed');
   }
   function stop(){workspaceClosing=true;void closePrivate().catch(()=>{});server.close();child.stdin.end('quit\n');}
   // The engine never receives the administration key or the browser's cookies.
@@ -71,8 +81,8 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   const server=http.createServer(async(req,res)=>{
     if (!permitted(req,req.url.startsWith('/api/'))) {refuse(res,403,'forbidden','Requests from other websites are not allowed.');return;}
     // A browser opened by the desktop app or with the printed link trades its code for the cookies, and the redirect
-    // takes the code out of the address bar. The private gateway always sends an Origin header, so a request from a
-    // device on Tailscale never redeems a code.
+    // takes the code out of the address bar. The Tailscale and LAN gateways always send an Origin header, so a request
+    // from a remote device never redeems a code.
     if(req.method==='GET'&&!req.headers.origin&&req.url.startsWith('/?')){
       const codes=new URLSearchParams(req.url.slice(2)).getAll(ADMIN_CODE_PARAM);
       if(codes.length){
@@ -111,6 +121,39 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
         }
         respond(405,{detail:'This action is not supported.'});
       }catch{privateRetry.observe();respond(409,{detail:{code:'private_access_failed',message:'Private access could not be updated. Refresh status and try again.'},status:privateAccess.status()});}
+      return;
+    }
+    // Every URL under this prefix is answered here, so none reaches the engine, including the pairing route that only
+    // the LAN listener answers.
+    if(req.url.startsWith('/api/lan-access')){
+      const methods=lanRoute(req.url);
+      if(!methods){refuse(res,404,'not_found','This LAN access request does not exist.');return;}
+      if(!methods.includes(req.method)){res.writeHead(405);res.end();return;}
+      const access=admin.allows(req);
+      if(req.method!=='GET'&&!access){refuse(res,403,'admin_required',ADMIN_MESSAGES.lanAccess);return;}
+      const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(body));};
+      if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,admin_required:!access});return;}
+      const current=()=>lanAccess.status({admin:access,closing:workspaceClosing});
+      if(req.method==='GET'){respond(200,current());return;}
+      const closingRefusal=()=>refuse(res,503,'workspace_closing','EE is closing. Reopen EE to change LAN access.');
+      if(workspaceClosing){closingRefusal();return;}
+      try{
+        if(req.method==='PUT'){
+          const text=Number(req.headers['content-length'])>MAX_SETTING_BYTES?null:await readLimited(req,MAX_SETTING_BYTES);
+          if(text===null){refuse(res,413,'too_large','The request is too large.');return;}
+          let value;
+          try{value=JSON.parse(text);}catch{}
+          if(!value||typeof value!=='object'||Array.isArray(value)||typeof value.enabled!=='boolean'||Object.keys(value).some(key=>!['enabled','port'].includes(key))
+            ||value.port!==undefined&&(!Number.isSafeInteger(value.port)||value.port<1024||value.port>65535)){refuse(res,400,'invalid',LAN_SETTING_INVALID);return;}
+          if(workspaceClosing){closingRefusal();return;}
+          await lanAccess.configure(value.enabled,{port:value.port});
+        }else if(req.method==='POST')await lanAccess.issueCode();
+        else await lanAccess.revoke(LAN_DEVICE_PATH.exec(req.url)[1]);
+        respond(200,current());
+      }catch(error){
+        if(Number.isInteger(error?.status))refuse(res,error.status,error.code,error.message);
+        else respond(409,{detail:{code:'lan_access_failed',message:'LAN access could not be updated. Refresh status and try again.'},status:current()});
+      }
       return;
     }
     if(req.url==='/api/last-session'){
@@ -213,6 +256,12 @@ export async function startWorkspace() {
   diagnostics.record('engine_started');
   const privateGateway=createPrivateGateway({targetPort:port,status:()=>privateAccess.status()});
   const privateAccess=createPrivateAccessManager({configPath:path.join(directory,'private-access.json'),startListener:(gate,listenPort)=>privateGateway.start(gate,listenPort),stopListener:()=>privateGateway.stop()});
+  // A browser keeps up to six connections to a host plus one WebSocket per tab, so 16 per address leaves room for
+  // several tabs while one device cannot hold every connection.
+  const lanGateway=createPrivateGateway({targetPort:port,listenHost:'0.0.0.0',listenPort:LAN_DEFAULT_PORT,status:()=>privateAccess.status(),
+    serverOptions:{maxHeaderSize:8192},maxConnections:64,maxConnectionsPerAddress:16});
+  const lanAccess=createLanAccessManager({configPath:path.join(directory,'lan-access.json'),startListener:(gate,listenPort)=>lanGateway.start(gate,listenPort),
+    stopListener:()=>lanGateway.stop(),recheck:()=>lanGateway.recheck()});
   const closeWorkspace = createWorkspaceCloser({child, closePrivate:()=>workspace.closePrivate(), release:()=>
     new Promise((resolve,reject)=>{
       const upstream=http.request({host:'127.0.0.1',port:backendPort,path:'/api/session/logout',method:'POST',headers:{authorization:`Bearer ${token}`}},response=>{
@@ -221,7 +270,7 @@ export async function startWorkspace() {
       upstream.setTimeout(20000,()=>upstream.destroy(new Error('release_timeout')));upstream.on('error',reject);upstream.end();
     })
   });
-  const workspace=createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,admin,closeWorkspace});
+  const workspace=createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,lanAccess,admin,closeWorkspace});
   const {server}=workspace;
   // 'close' follows the end of the engine's output, so its last diagnostics are recorded before the gateway exits.
   child.once('close',workspace.engineExited);
@@ -236,7 +285,11 @@ export async function startWorkspace() {
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,workspace.stop);
   server.listen(port,'127.0.0.1',()=>{
     for(const line of startupLines({port,desktopHost:process.env.EE_DESKTOP_HOST,admin}))console.log(line);
-    if(live)void privateAccess.initialize().catch(()=>{}).then(()=>workspace.privateRetry.observe());
+    if(live){
+      void privateAccess.initialize().catch(()=>{}).then(()=>workspace.privateRetry.observe());
+      // A failure is reported in the LAN access status, where Settings offers Retry LAN access.
+      void lanAccess.initialize().catch(()=>{});
+    }
   });
 }
 
