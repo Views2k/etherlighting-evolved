@@ -229,6 +229,21 @@ public static class Connections
         session.Bool("connected") == false && session.Bool("connecting") != true && session.Bool("automatic_connect_paused") == true &&
         !HandoffNeedsReview(session);
 
+    /// <summary>The fan result of a completed handoff as a sentence with its notice tone, or null when there is none (handoffFans).</summary>
+    public static ConnectionNotice? HandoffFans(JsonNode? session) => session.Str("fan_handoff") switch
+    {
+        "returned" => new("The switch’s own controller runs the fans again.", false, "online"),
+        "unconfirmed" => new("EE could not confirm that the switch’s own controller runs the fans again. Connect again and choose Handoff to UniFi to retry, or restart the switch.", true, ""),
+        _ => null,
+    };
+
+    /// <summary>The Handoff to UniFi confirmation; <paramref name="fans"/> is true on a switch with fan control (handoffConfirmation).</summary>
+    public static string HandoffConfirmation(bool fans, bool unsaved) =>
+        (fans
+            ? "Stop EE lighting and its switch helpers, return the fans to the switch’s own controller, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, your lighting setup, and your fan mode are kept. EE will wait until you connect again."
+            : "Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.")
+        + (unsaved ? " Unapplied connection changes will be discarded." : "");
+
     /// <summary>The handoff message for a session, or null when there is none (handoffStatus).</summary>
     public static ConnectionNotice? HandoffStatus(JsonNode? session)
     {
@@ -236,7 +251,10 @@ public static class Connections
         if (session.Str("handoff_state") == "pending") return new("Handing lighting back to UniFi…", false, "waiting");
         if (session.Str("handoff_state") == "unconfirmed") return new(Messages["handoff_unconfirmed"], true, "");
         if (HandoffComplete(session))
-            return new("Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.", false, "online");
+        {
+            const string lighting = "Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.";
+            return HandoffFans(session) is { } fans ? new($"{lighting} {fans.Message}", fans.Error, fans.Tone) : new(lighting, false, "online");
+        }
         if (session.Truthy("automatic_connect_paused") && !session.Truthy("logged_in"))
             return new("Automatic switch connection is paused. Connect when you want EE to control lighting again.", false, "");
         return null;

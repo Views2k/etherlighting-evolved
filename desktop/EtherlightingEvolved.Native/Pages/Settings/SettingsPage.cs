@@ -230,15 +230,15 @@ public sealed class SettingsPage : Page
                 handoff = SettingsKit.ActionButton("Handoff to UniFi", () => gate.Run(async () =>
                 {
                     var unsaved = controller?.HasChanges == true || privateAccess.HasChanges;
-                    var message = "Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again." +
-                                  (unsaved ? " Unapplied connection changes will be discarded." : "");
+                    var message = Connections.HandoffConfirmation(state.Bool("fans.supported") == true, unsaved);
                     if (!await Confirm("Handoff to UniFi?", message, "Handoff to UniFi") || !gate.Active) return;
                     handoff!.SetLabel("Handing off…");
                     Status("Handing lighting back to UniFi…");
                     try
                     {
                         if (await Connections.RequestHandoff(request, () => gate.Active) is not { } result) return;
-                        Status(result.Error ?? "Lighting returned to UniFi.", result.Error is not null);
+                        var fans = result.Error is null ? Connections.HandoffFans(result.Session) : null;
+                        Status(result.Error ?? string.Join(" ", new[] { "Lighting returned to UniFi.", fans?.Message }.OfType<string>()), result.Error is not null || fans?.Error == true);
                         if (result.Session?.Bool("logged_in") == false)
                         {
                             await Shell.AcceptSession(result.Session);

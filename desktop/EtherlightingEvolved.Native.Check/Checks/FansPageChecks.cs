@@ -171,5 +171,35 @@ public static class FansPageChecks
         check(await Click("Switch control") && await Until(async () => (await Fans()) is { } fans
                                                                        && fans.Str("settings.mode") == "switch" && fans.Str("reading.controller") == "absent"),
             "Switch control returns the fans to the switch");
+
+        check(await Fans() is JsonObject reported && reported.ContainsKey("hold") && reported["hold"] is null
+              && All<TextBlock>(Page()).Any(text => (text.Text ?? "").Contains("EE saves the fan mode for each switch", StringComparison.Ordinal)),
+            "the demo switch has no hold and the footer says the fan mode is saved for each switch");
+
+        // While a hold is set, the saved mode is not what runs: no mode, curve or chart shows it.
+        bool Unselected() => !All<Button>(Page()).Any(button => button.IsEffectivelyVisible && button.Classes.Contains("selected"))
+                             && !All<Control>(Page()).Any(control => control.IsEffectivelyVisible && control.GetType().Name == "FanCurveChart");
+        foreach (var (hold, text) in new[]
+                 {
+                     ("other_installation", "Fan control on this switch was not started from the fan settings saved on this PC"),
+                     ("settings_unreadable", "EE could not load the fan mode saved for this switch"),
+                 })
+        {
+            var held = (JsonObject)shell.Workspace.State["fans"]!.DeepClone();
+            held["hold"] = hold;
+            held["settings"]!["mode"] = "curve";
+            held["settings"]!["curve"] = "high";
+            held["reading"]!["controller"] = "running";
+            shell.Workspace.State["fans"] = held;
+            shell.CurrentPage!.Update();
+            check(Shows(text) && Unselected(), $"the hold {hold} shows its reason and no selected mode");
+        }
+        Find(Page(), "Manual")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        check(Find(Page(), "Manual")!.Classes.Contains("selected"), "a mode chosen during a hold shows as selected at once");
+        check(await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "a mode chosen during a hold reaches the switch");
+        if (await Fans() is JsonObject served) shell.Workspace.State["fans"] = served.DeepClone();
+        shell.CurrentPage!.Update();
+        check(await Click("Switch control") && await Until(async () => (await Fans()).Str("settings.mode") == "switch"),
+            "the Fans checks leave the demo switch in Switch control");
     }
 }

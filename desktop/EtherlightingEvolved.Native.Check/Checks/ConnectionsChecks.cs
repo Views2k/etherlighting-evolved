@@ -60,6 +60,28 @@ internal static class ConnectionsChecks
               && Connections.HandoffBlocked(JsonNode.Parse("""{"handoff_state":"unconfirmed"}""")),
             "handoff status distinguishes a completed handoff from one that blocks reconnecting");
 
+        const string lighting = "Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.";
+        ConnectionNotice? WithFans(string fans)
+        {
+            var session = handedOff!.DeepClone();
+            session["fan_handoff"] = JsonNode.Parse(fans);
+            return Connections.HandoffStatus(session);
+        }
+        var returned = WithFans("\"returned\"");
+        var unconfirmed = WithFans("\"unconfirmed\"");
+        check(returned is { Error: false, Tone: "online" } && returned.Message.StartsWith(lighting + " ", StringComparison.Ordinal)
+              && returned.Message.Contains("runs the fans again", StringComparison.Ordinal)
+              && unconfirmed is { Error: true, Tone: "" } && unconfirmed.Message.Contains("choose Handoff to UniFi to retry", StringComparison.Ordinal)
+              && WithFans("null") == new ConnectionNotice(lighting, false, "online") && WithFans("\"not_running\"") == new ConnectionNotice(lighting, false, "online")
+              && Connections.HandoffStatus(handedOff) == new ConnectionNotice(lighting, false, "online")
+              && Connections.HandoffFans(JsonNode.Parse("""{"fan_handoff":"returned"}"""))?.Message == "The switch’s own controller runs the fans again."
+              && Connections.HandoffFans(handedOff) is null,
+            "connections: handoff status names the fan result");
+        check(Connections.HandoffConfirmation(true, false).Contains("return the fans to the switch’s own controller", StringComparison.Ordinal)
+              && !Connections.HandoffConfirmation(false, false).Contains("fan", StringComparison.Ordinal)
+              && Connections.HandoffConfirmation(true, true).EndsWith(" Unapplied connection changes will be discarded.", StringComparison.Ordinal),
+            "connections: the handoff confirmation names the fans only on a switch with fan control");
+
         // Help cards and the controller's setup help use the same disclosure as the connection options.
         var details = new Disclosure("Where do I find these details?", new TextBlock { Text = "Details" });
         void Press(Key key) => details.Summary.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = key });
