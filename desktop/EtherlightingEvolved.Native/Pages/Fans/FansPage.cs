@@ -374,6 +374,8 @@ public sealed class FansPage : Page
         // While EE leaves running fan control alone, the saved mode is not what runs, so no mode shows as selected.
         // A mode chosen here shows at once.
         var held = fans.Str("hold") is not null && chosen is null;
+        // The service refuses every change while a newer EE's fan file is in place, since it never overwrites that file.
+        var locked = fans.Str("hold") == "settings_newer";
         syncing = true;
         try
         {
@@ -390,6 +392,7 @@ public sealed class FansPage : Page
         {
             button.Classes.Set("selected", key == mode && !held);
             AutomationProperties.SetHelpText(button, key == mode && !held ? "Selected" : "");
+            button.IsEnabled = !locked;
         }
         var curves = fans["curves"] as JsonObject;
         foreach (var (name, button) in curveButtons)
@@ -442,6 +445,8 @@ public sealed class FansPage : Page
                 return "Fan control on this switch was not started from the fan settings saved on this PC, for example by EE on another PC. EE leaves it running until you choose a mode here.";
             case "settings_unreadable":
                 return "EE could not load the fan mode saved for this switch, so it does not change fan control that is running. Choose a mode to save it again.";
+            case "settings_newer":
+                return "The fan mode for this switch was saved by a newer version of EE. This version does not change fan control that is running and cannot change the mode. Handoff to UniFi in Settings still returns the fans to the switch’s own controller.";
         }
         var mode = settings.Str("mode");
         if (mode == "switch")

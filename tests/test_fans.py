@@ -349,7 +349,7 @@ def test_device_store_round_trip_keeps_owner(tmp_path):
 
 BAD_FILES = {
     "invalid JSON": "{not json",
-    "version 2": envelope(version=2),
+    "version 0": envelope(version=0),
     "version true": envelope(version=True),
     "another identity": envelope(identity=B),
     "47-character owner": envelope(owner="d" * 47),
@@ -386,12 +386,20 @@ async def test_a_newer_fan_file_is_never_overwritten(tmp_path):
     path = write(fan_file(tmp_path), envelope(version=2, added_by_a_newer_release=True))
     data = path.read_text("utf-8")
     backend = CountingFans()
+    await backend.apply(CURVE_HIGH.config_line())
+    backend.applied = 0
     control = FanControl(backend, DeviceFanStore(path, A), supported=True)
+    await control.poll()
     state = control.to_dict()
-    assert state["hold"] == "settings_unreadable" and "newer version of EE" in state["settings_error"]
-    with pytest.raises(ValueError, match="newer version of EE"):
-        await control.update({"mode": "manual", "manual_percent": 50})
-    assert backend.applied == 0 and path.read_text("utf-8") == data and control.to_dict()["supported"]
+    assert state["hold"] == "settings_newer" and "newer version of EE" in state["settings_error"]
+    # Switch control too: it would have to be saved over the newer file.
+    for change in ({"mode": "manual", "manual_percent": 50}, {"mode": "switch"}):
+        with pytest.raises(ValueError, match="newer version of EE"):
+            await control.update(change)
+    assert (backend.applied, backend.stopped) == (0, 0) and backend.line == CURVE_HIGH.config_line()
+    assert path.read_text("utf-8") == data and control.to_dict()["supported"]
+    assert await control.release(connected=True) == "returned" and backend.line is None
+    assert path.read_text("utf-8") == data
 
 
 async def test_hold_still_cleans_a_stopped_controller(tmp_path):

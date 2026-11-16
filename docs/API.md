@@ -1023,8 +1023,8 @@ response.
 }
 ```
 
-- `settings` is the mode saved for the connected switch. With `hold` `settings_unreadable` it is `switch`, which is
-  not enforced.
+- `settings` is the mode saved for the connected switch. With `hold` `settings_unreadable` or `settings_newer` it is
+  `switch`, which is not enforced.
 - `reading` is `null` until the first sample. `port_celsius` is the hottest port chip. `daemon` is the switch's own
   fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`. `config`
   is the setting line of EE's controller, without the owner line.
@@ -1038,7 +1038,10 @@ response.
 - `hold` is `null` when the check follows `settings`. `other_installation`: EE fan control from other settings, for
   example EE on another PC, is running; EE reads it and leaves it running. `settings_unreadable`: the fan file for
   this switch could not be read or created; EE does not change running fan control and only cleans up a stopped EE
-  controller. A successful `PUT /api/fans` clears either hold. `hold` is `null` when fan control is not supported.
+  controller. A successful `PUT /api/fans` clears either of these holds. `settings_newer`: the fan file for this
+  switch was saved by a newer version of EE. The check behaves as with `settings_unreadable`, but `PUT /api/fans`
+  refuses every change, `switch` included, so the hold stays until EE is updated; Handoff to UniFi still returns the
+  fans to the switch's own controller. `hold` is `null` when fan control is not supported.
 
 ### `PUT /api/fans`
 
@@ -1049,13 +1052,13 @@ replaces EE fan control started from other settings, and `switch` stops any EE f
 
 An invalid value returns `400 invalid`; a change the switch does not confirm returns `409 fans_unconfirmed` and
 keeps the previous settings, including an unreadable fan file and its `hold`. A model without fan control returns
-`400 invalid` with the reason. So does a change while the fan file for this switch was saved by a newer version of
-EE; nothing is sent to the switch and the file is not overwritten. A change that arrives while Handoff to UniFi stops
-fan control returns `409 fans_unconfirmed` with the message "Fan control is stopping for Handoff to UniFi.". When
-the switch runs the new setting but EE cannot write the fan file, the response is `500 fan_settings_save_failed` with
-the message "The switch runs the new fan setting, but EE could not save it on this PC. Check the data folder and
-choose the setting again." The new setting stays in effect for the session, and the same message stays in `error`
-until a later save succeeds.
+`400 invalid` with the reason. So does any change, `switch` included, while the fan file for this switch was saved
+by a newer version of EE (`hold` `settings_newer`); nothing is sent to the switch and the file is not overwritten. A
+change that arrives while Handoff to UniFi stops fan control returns `409 fans_unconfirmed` with the message "Fan
+control is stopping for Handoff to UniFi.". When the switch runs the new setting but EE cannot write the fan file, the
+response is `500 fan_settings_save_failed` with the message "The switch runs the new fan setting, but EE could not
+save it on this PC. Check the data folder and choose the setting again." The new setting stays in effect for the
+session, and the same message stays in `error` until a later save succeeds.
 
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
@@ -1073,10 +1076,10 @@ The same object is `fans` in `GET /api/state` and WebSocket state messages, and 
 
 Each switch's fan mode is saved in `device-fans/<identity>.json` in the data directory as
 `{"version": 1, "identity": "<64 hex>", "owner": "<48 hex>", "settings": {...}}`. A file that holds no JSON object
-is moved aside as `<identity>.json.corrupt-<UTC time>`. A file that cannot be read, or that has another format
-version, another identity, an invalid owner or invalid settings, stays where it is until the next successful
-`PUT /api/fans` replaces it; a file saved by a newer version of EE is never replaced. Each of these sets `hold` to
-`settings_unreadable`. The demo keeps `fans-demo.json`.
+is moved aside as `<identity>.json.corrupt-<UTC time>`. A file that cannot be read, or that has an invalid format
+version, another identity, an invalid owner or invalid settings, sets `hold` to `settings_unreadable` and stays where
+it is until the next successful `PUT /api/fans` replaces it. A file with a newer format version sets `hold` to
+`settings_newer` and is never replaced. The demo keeps `fans-demo.json`.
 
 Releases up to 0.5.1 saved one fan mode for every switch in `fans.json`. When no switch has a fan file yet, the first
 USW-Pro-XG-8-PoE that EE connects to receives that mode. Saving it sends nothing to the switch, and the fan control

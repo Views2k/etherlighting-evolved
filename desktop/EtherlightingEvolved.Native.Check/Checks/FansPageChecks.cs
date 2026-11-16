@@ -179,8 +179,11 @@ public static class FansPageChecks
         // While a hold is set, the saved mode is not what runs: no mode, curve or chart shows it.
         bool Unselected() => !All<Button>(Page()).Any(button => button.IsEffectivelyVisible && button.Classes.Contains("selected"))
                              && !All<Control>(Page()).Any(control => control.IsEffectivelyVisible && control.GetType().Name == "FanCurveChart");
+        // The service refuses every change while a newer EE's fan file is in place, so the modes cannot be chosen then.
+        bool Choosable(bool enabled) => new[] { "Switch control", "Curve", "Manual", "Thermal target" }.All(label => Find(Page(), label)?.IsEnabled == enabled);
         foreach (var (hold, text) in new[]
                  {
+                     ("settings_newer", "The fan mode for this switch was saved by a newer version of EE. This version does not change fan control"),
                      ("other_installation", "Fan control on this switch was not started from the fan settings saved on this PC"),
                      ("settings_unreadable", "EE could not load the fan mode saved for this switch"),
                  })
@@ -192,7 +195,9 @@ public static class FansPageChecks
             held["reading"]!["controller"] = "running";
             shell.Workspace.State["fans"] = held;
             shell.CurrentPage!.Update();
-            check(Shows(text) && Unselected(), $"the hold {hold} shows its reason and no selected mode");
+            var locked = hold == "settings_newer";
+            check(Shows(text) && Unselected() && Choosable(!locked),
+                $"the hold {hold} shows its reason and no selected mode, and the modes {(locked ? "cannot" : "can")} be chosen");
         }
         Find(Page(), "Manual")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         check(Find(Page(), "Manual")!.Classes.Contains("selected"), "a mode chosen during a hold shows as selected at once");

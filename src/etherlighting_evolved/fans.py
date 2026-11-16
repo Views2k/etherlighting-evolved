@@ -10,7 +10,8 @@ Each switch has its own saved choice in `device-fans/<identity>.json`, keyed lik
 holds an owner token, which EE writes as a second line of the controller's `config` beside every setting it sends.
 The automatic check leaves running fan control alone when it cannot account for it (the hold): another
 installation's owner token is on the switch, or this switch's fan file cannot be used. Only an explicit change or a
-handoff replaces such fan control.
+handoff replaces such fan control. When a newer release saved the fan file, no change is accepted, because that file
+is never overwritten, and only a handoff stops EE's control loop.
 
 The Python step function below mirrors the shell controller exactly. Tests compare the two, and the simulator
 uses the Python version.
@@ -636,7 +637,8 @@ class FanControl:
         if not self.supported or self.unsupported:
             return None
         if isinstance(self.store, DeviceFanStore) and self.store.hold:
-            return "settings_unreadable"
+            # Told apart because no change can clear it: a newer release's file is never overwritten.
+            return "settings_newer" if self.store.newer else "settings_unreadable"
         return "other_installation" if self._foreign(self.reading) else None
 
     def to_dict(self) -> dict[str, Any]:
