@@ -93,19 +93,58 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 401 | `auth_failed` | Wrong SSH username or password |
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
 | 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
+| 403 | `local_access_required` | The route works only on the computer running EE: through the private gateway, or for SSH host keys from a caller whose address is not a loopback address |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
-| 409 | `host_key_changed` | The switch's SSH host key doesn't match the saved one |
+| 409 | `host_key_untrusted` | EE has no saved SSH key for the switch; nothing but the SSH key exchange was sent |
+| 409 | `host_key_changed` | The switch's SSH key differs from the saved key; nothing but the SSH key exchange was sent |
+| 409 | `host_key_stale` | The SSH key in a host-key request is not the key EE last saw at that address |
+| 409 | `host_key_in_use` | EE still has an open switch connection, so a changed SSH key cannot be accepted yet |
+| 409 | `switch_playback_reserved` | Switch playback is saved for a switch; also returned by `POST /api/session/host-key/replace` |
 | 409 | `not_simulated` | Simulator controls require a demo login |
 | 413 | `too_large` | The request body is larger than 1 MiB |
+| 422 | `invalid_credentials` | The fields of a connection or SSH host-key request were not accepted |
 | 422 | `no_etherlighting` | Logged in, but the device has no Etherlighting |
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
+| 500 | `host_key_save_failed` | The saved SSH keys could not be read or updated |
 | 502 | `unreachable`, `ssh_error` | The switch couldn't be reached, or SSH failed |
 
-`host_key_changed` means the switch's SSH host key differs from the one saved at the first login. This happens
-when the switch is replaced or reset, or when a different device answers at that address. To accept the new key,
-call `POST /api/session/forget-host-key` with `{"host": "...", "port": 22}` and log in again.
+### SSH host keys
+
+EE sends the SSH username and password only to a switch whose SSH key is saved. When an address has no saved key,
+or the switch presents a different one, EE ends the connection during the SSH key exchange and the login, the
+restore, `GET /api/session` `error` and the WebSocket `session` message report the key with HTTP 409:
+
+```json
+{ "code": "host_key_untrusted",
+  "message": "Check this switch's SSH key fingerprint before signing in.",
+  "host": "192.168.1.2", "port": 22,
+  "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
+  "ssh_host_key_type": "ssh-ed25519" }
+```
+
+```json
+{ "code": "host_key_changed",
+  "message": "The switch's SSH key changed. Check the new fingerprint before signing in.",
+  "host": "192.168.1.2", "port": 22,
+  "ssh_host_key": "SHA256:Zt4Wc8Hn1Lq6Rv3Xb9Me2Kd7Pj0Ys5Ug8Fa1Ni4Ow7E",
+  "ssh_host_key_type": "ssh-rsa",
+  "saved_ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ" }
+```
+
+`host` is the trimmed host of the attempt and `port` an integer. Fingerprints have the form that `ssh` and
+`ssh-keygen -l` print. `ssh_host_key_type` is `null` when the type is not known. `ssh_host_key` is `null` only
+when the SSH library refused the key without asking EE, for example a host certificate; there is then nothing to
+accept. `saved_ssh_host_key` appears only on `host_key_changed`. A changed key happens after the switch is reset or
+replaced, or when another device answers at that address.
+
+To approve the key, a client shows the fingerprints and echoes them back to
+[`POST /api/session/host-key/accept`](#post-apisessionhost-keyaccept) or
+[`POST /api/session/host-key/replace`](#post-apisessionhost-keyreplace), then repeats the login or the restore. That
+attempt checks the newly saved key during the key exchange. Keys saved by earlier releases are used as they are.
+A switch set in the [switch] configuration or EE_HOST connects at the next start after its key is accepted. For a
+headless setup, accept the key with `eectl probe` and `--accept-host-key`.
 
 If the server has an API token, send `Authorization: Bearer <token>` with every request. The browser UI uses
 authenticated REST polling for these connections so the token stays out of URLs and access logs.
@@ -144,6 +183,13 @@ with more than 256 rules. In `POST /api/session/login`, a
 
 `connected` can become false while logged in, for example when the switch reboots. EE reconnects automatically,
 and `error` holds the last connection error until it does.
+
+`error` is the engine's message while a switch is logged in and its engine has one; otherwise it is the error
+object of the last failed attempt. That object can be an [SSH host key](#ssh-host-keys) error with its fingerprints,
+also while another switch is logged in, so a client opens a key review only when `logged_in` is false. The WebSocket
+`session` message carries the same object. When a reconnect is refused because the switch's key changed or is not
+saved, the engine's message asks the user to quit EE, open it again and review the key on the Connect page; the
+startup connection then reports the key with its fingerprints.
 
 `connecting` is true during automatic startup login and returns to false after success, failure or cancellation.
 The server publishes both transitions as session messages. Clients must keep listening when their initial
@@ -189,6 +235,54 @@ returned to the browser.
 
 Deletes the saved login, returns the updated session and publishes a session message. The current switch
 connection keeps running. This also removes an unreadable record when the user explicitly chooses Forget.
+
+### `POST /api/session/host-key/accept`
+
+```json
+{ "host": "192.168.1.2", "port": 22, "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ" }
+```
+
+Saves the first SSH key of an address, after a `host_key_untrusted` error. `host` is 1 to 253 characters, `port` a
+JSON integer from 1 to 65535 (default 22) and `ssh_host_key` matches `^SHA256:[A-Za-z0-9+/]{43}$`. Other fields
+and values of another JSON type return `422 invalid_credentials`. The route does not contact the switch: the
+retried login or restore verifies the saved key during the SSH key exchange. Returns the session, clears a
+host-key `error` for that address and publishes a session message.
+
+| Status | Code | When |
+|---|---|---|
+| 200 | | The key is saved, or was already the saved key |
+| 400 | `missing_host` | `host` is empty after trimming |
+| 403 | `local_access_required` | The caller's address is not a loopback address (127.0.0.0/8 or ::1) |
+| 409 | `host_key_stale` | A different key is saved for the address, or `ssh_host_key` is not the key EE last saw there |
+| 500 | `host_key_save_failed` | The saved keys could not be read or written; nothing changed |
+
+### `POST /api/session/host-key/replace`
+
+```json
+{ "host": "192.168.1.2", "port": 22,
+  "saved_ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
+  "ssh_host_key": "SHA256:Zt4Wc8Hn1Lq6Rv3Xb9Me2Kd7Pj0Ys5Ug8Fa1Ni4Ow7E" }
+```
+
+Replaces a changed SSH key, after a `host_key_changed` error. The fields follow the accept route, and
+`saved_ssh_host_key` must be the key saved now. The route does not contact the switch. It also deletes the switch
+playback record of the replaced key, as a confirmed handoff does, because that player ran in the previous switch's
+memory. Lighting, schedules and port names saved for the previous key stay saved but are not used with the new
+key. Returns the session and publishes a session message.
+
+| Status | Code | When |
+|---|---|---|
+| 200 | | The key is replaced, or was already the saved key |
+| 400 | `missing_host` | `host` is empty after trimming |
+| 403 | `local_access_required` | The caller's address is not a loopback address (127.0.0.0/8 or ::1) |
+| 409 | `host_key_in_use` | EE still has an open switch connection, a lighting choice waiting, or a shutdown it has not confirmed |
+| 409 | `host_key_stale` | No key is saved, the saved key is not `saved_ssh_host_key`, the two keys are equal, or `ssh_host_key` is not the key EE last saw there |
+| 409 | `switch_playback_reserved` | The switch playback record cannot be read, waits for a handoff, or belongs to another switch |
+| 500 | `host_key_save_failed` | The saved keys or the playback record could not be updated; the saved key and the record are unchanged |
+
+Both routes refuse a caller whose address is not a loopback address before they read the request body, and the
+private gateway refuses them, so SSH keys are accepted only on the computer running EE. The desktop app, the
+browser workspace and the gateway reach the service from 127.0.0.1.
 
 ### `POST /api/session/logout`
 
