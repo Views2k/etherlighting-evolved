@@ -46,6 +46,16 @@ def test_a_fan_setting_that_cannot_be_saved_reports_fans_not_saved(demo, config,
     assert engine.fans.settings.mode == "manual"
 
 
+def test_an_unreadable_fan_choice_reaches_clients_as_settings_error(client, config):
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    (config.data_dir / "fans-demo.json").write_text("{not json", "utf-8")
+    assert client.post("/api/session/login", json={"host": "demo"}).status_code == 200
+    fans = client.get("/api/fans").json()
+    assert fans["settings_error"] == ("Saved fan settings could not be read. "
+                                      "The switch controls the fans until you choose a mode.")
+    assert fans["error"] is None
+
+
 def test_login_fields_and_request_lists_have_size_limits(demo):
     refused = demo.post("/api/session/login", json={"host": "h" * 254, "username": "fixture"})
     assert refused.status_code == 422 and refused.json()["detail"]["code"] == "invalid_credentials"
