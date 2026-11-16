@@ -996,11 +996,11 @@ Fan control is available on the USW-Pro-XG-8-PoE. EE saves the fan mode for each
 identity as the switch's saved lighting. A switch EE has not controlled before starts in `switch`. The chosen mode
 runs on the switch from RAM (`/tmp/ee-fan-control-v1`), so it continues while EE is closed, after logout and after
 Quit. The engine checks it every 5 seconds and starts it again after a switch restart, and at the next connection
-after a handoff. In `switch` mode
-the check stops EE fan control that has no owner line (started by releases up to 0.5.1) or that was started from
-this PC's saved settings, and returns the fans to the switch's own controller. It leaves other fan control alone;
-see `hold`. EE writes an owner line with each setting it sends (the second line of the controller's `config` file);
-the value is saved with the switch's fan file on this PC and never appears in an API response.
+after a handoff. In `switch` mode the check stops EE fan control that has no owner line (started by releases up to
+0.5.1) or that was started from this PC's saved settings, and returns the fans to the switch's own controller. It
+leaves other fan control alone; see `hold`. EE writes an owner line with each setting it sends (the second line of
+the controller's `config` file); the value is saved with the switch's fan file on this PC and never appears in an API
+response.
 
 ### `GET /api/fans`
 
@@ -1079,10 +1079,13 @@ version, another identity, an invalid owner or invalid settings, stays where it 
 `settings_unreadable`. The demo keeps `fans-demo.json`.
 
 Releases up to 0.5.1 saved one fan mode for every switch in `fans.json`. When no switch has a fan file yet, the first
-USW-Pro-XG-8-PoE that EE connects to receives that mode, with no change on the switch. `fans.json` stays in place and
-is no longer read, so release 0.5.1 still finds its own setting after a downgrade; it ignores `device-fans/`. When
-`fans.json` or `device-fans/` cannot be read, or the new file cannot be written, the switch gets `hold`
-`settings_unreadable` and the next connection tries again.
+USW-Pro-XG-8-PoE that EE connects to receives that mode. Saving it sends nothing to the switch, and the fan control
+that 0.5.1 started there has no owner line, so EE adopts it. Because `fans.sh` changed after 0.5.1 (`script_current`
+is `false`), the first check on that switch restarts fan control once with the same mode and adds the owner line;
+while it restarts, the switch's own controller runs the fans. `fans.json` stays in place and is no longer read, so
+release 0.5.1 still finds its own setting after a downgrade; it ignores `device-fans/`. When `fans.json` or
+`device-fans/` cannot be read, or the new file cannot be written, the switch gets `hold` `settings_unreadable` and
+the next connection tries again.
 
 ## Presets
 

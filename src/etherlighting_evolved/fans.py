@@ -297,9 +297,10 @@ class DeviceFanStore:
         """Save the fan choice of releases up to 0.5.1 for this switch, when no switch has a fan file yet.
 
         Those releases saved one choice for every switch in `legacy`. The file stays in place and is no longer read,
-        so a downgrade still finds it. Nothing is sent to the switch: the controller those releases started has no
-        owner line, so the automatic check adopts it as it runs. When the folder or `legacy` cannot be read or the new
-        file cannot be written, `hold` is set and the next connection tries again.
+        so a downgrade still finds it. This sends nothing to the switch. The controller those releases started has no
+        owner line, so the automatic check adopts it. Because fans.sh changed after 0.5.1, that check restarts it once
+        with the same setting and this switch's owner line. When the folder or `legacy` cannot be read or the new file
+        cannot be written, `hold` is set and the next connection tries again.
         """
         try:
             names = [entry.name for entry in self.path.parent.iterdir()]

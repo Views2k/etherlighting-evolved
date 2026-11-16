@@ -82,16 +82,33 @@ async def test_fan_mode_is_saved_per_switch(sessions, switches, config):
     assert fan_files(config) == [sessions.engine.fans.store.path]
 
 
-async def test_legacy_fans_json_carries_over_without_a_switch_write(sessions, switches, config):
+class ReleasedFans(CountingFans):
+    """A controller started by EE 0.5.1, which runs that release's fans.sh until EE installs its own."""
+
+    current = False
+
+    async def read(self):
+        return {**await super().read(), "script_current": self.current}
+
+    async def apply(self, line, owner=None):
+        self.current = True
+        return await super().apply(line, owner)
+
+
+async def test_legacy_fans_json_carries_over_and_restarts_fan_control_once(sessions, switches, config):
     legacy = write_legacy(config, CURVE_MEDIUM)
-    sim_a = switches["a.invalid"].fans
+    sim_a = switches["a.invalid"].fans = ReleasedFans()
     await sim_a.apply(CURVE_MEDIUM.config_line())
-    sim_a.applied = 0
+    sim_a.applied, sim_a.current = 0, False
     await connect(sessions, "a.invalid")
     saved = saved_fans(sessions)
     assert legacy.exists() and saved["settings"] == asdict(CURVE_MEDIUM) and len(saved["owner"]) == 48
-    await sessions.engine.fans.poll()
-    assert (sim_a.applied, sim_a.stopped) == (0, 0) and sessions.engine.fans.to_dict()["hold"] is None
+    # fans.sh changed after 0.5.1, so the first check replaces the running controller with this version's, with the
+    # same setting and the new owner line. Later checks leave it running.
+    for _ in range(2):
+        await sessions.engine.fans.poll()
+    assert (sim_a.applied, sim_a.stopped) == (1, 0) and sim_a.line == CURVE_MEDIUM.config_line()
+    assert sim_a.owner == saved["owner"] and sessions.engine.fans.to_dict()["hold"] is None
     await sessions.disconnect()
     await connect(sessions, "b.invalid")
     assert sessions.engine.fans.settings == FanSettings()
