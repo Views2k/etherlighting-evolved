@@ -351,6 +351,8 @@ class LocalTransport:
                                          env=self.switch["env"], timeout=timeout + 10)
         return result.stdout.decode()
 
+    run_isolated = run
+
 
 class ChannelTransport:
     """One long-running shell fed each command and an end marker, the way SSHTransport uses a switch channel.
@@ -366,10 +368,9 @@ class ChannelTransport:
                                         stderr=subprocess.STDOUT, env=switch["env"])
         self.lines = queue.Queue()
         self.sequence = 0
-        # SSHTransport.run ends a command with "echo marker"; run_isolated starts the marker on a new line.
+        # SSHTransport.run_isolated starts the marker on a new line; a transport without isolated shells ends a
+        # command with "echo marker".
         self.isolated = isolated
-        if not isolated:
-            self.run_isolated = None
 
         def pump():
             for line in iter(self.process.stdout.readline, b""):
@@ -400,9 +401,6 @@ class ChannelTransport:
                 text = "".join(output)
                 return text[:-1] if self.isolated and text.endswith("\n") else text
             output.append(line)
-
-    async def run(self, command, *, channel="main", timeout=10.0):
-        return await asyncio.to_thread(self._send, command, timeout)
 
     async def run_isolated(self, command, *, channel, timeout=10.0):
         return await asyncio.to_thread(self._send, command, timeout)

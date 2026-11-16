@@ -26,6 +26,7 @@ READ_CPU = 'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "
 # Status polls refused in a row because an earlier status shell has not exited. At the limit the connection is
 # dropped, so the engine reconnects and shows the error instead of driving lighting from frozen status values.
 UNFINISHED_PORT_READ_LIMIT = 3
+MAX_RESPONSE = 262144
 
 
 class TransportError(RuntimeError):
@@ -118,6 +119,11 @@ class HostKeyStore:
 
 
 class Transport(ABC):
+    # Set on SSH connections: the authenticated host key, and the lease that lets desktop output override the
+    # switch-resident player while that player is installed.
+    host_key_fingerprint: str | None = None
+    desktop_output = None
+
     def revoke_lighting_profile(self) -> None:
         return None
 
@@ -177,6 +183,10 @@ class Transport(ABC):
     async def run(self, command: str, *, channel: str = "main", timeout: float = 10.0) -> str:
         """Run shell command(s) on the switch and return their combined output."""
 
+    async def run_isolated(self, command: str, *, channel: str, timeout: float = 10.0) -> str:
+        """Run a command whose failure must not end the other channels."""
+        return await self.run(command, channel=channel, timeout=timeout)
+
     async def read_health(self) -> str:
         from .health import HEALTH_COMMAND, HEALTH_TIMEOUT
         return await self.run(HEALTH_COMMAND, channel="health", timeout=HEALTH_TIMEOUT)
@@ -192,8 +202,8 @@ class _Channel:
 
 
 def _process_exited(process) -> bool:
-    status = getattr(process, "exit_status", None)
-    return isinstance(status, int) and status >= 0 or getattr(process, "exit_signal", None) is not None
+    status = process.exit_status
+    return isinstance(status, int) and status >= 0 or process.exit_signal is not None
 
 
 class SSHTransport(Transport):
@@ -221,8 +231,6 @@ class SSHTransport(Transport):
         self.key_file = key_file or None
         self.host_keys = host_keys
         self.connect_timeout = connect_timeout
-        self.desktop_output = None
-        self.host_key_fingerprint: str | None = None
         self.host_key_pinned_now = False
         self._conn = None
         self._channels: dict[str, _Channel] = {}
@@ -457,28 +465,50 @@ class SSHTransport(Transport):
         self._unfinished_port_reads = 0
         self._rgb_checked = self._rgb_failed = False
 
+    async def _open_shell(self, conn, name: str) -> _Channel:
+        """Start the `sh` for a channel. Its tag lets helper recovery find and stop exactly this shell."""
+        import asyncssh
+
+        self._opening_started(conn)
+        try:
+            tag = 'ee_' + secrets.token_hex(16)
+            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
+            self._process_tags[id(process)] = tag
+            if self._conn is not conn:
+                self._retire_process(conn, process)
+                raise TransportError("the SSH session closed while opening a channel")
+            channel = self._channels[name] = _Channel(process)
+            return channel
+        finally:
+            self._opening_finished(conn)
+
+    async def _exchange(self, channel: _Channel, command: str, *, prefix: str = "__EE_DONE_",
+                        limit: int = MAX_RESPONSE, own_line: bool = False) -> str:
+        """Send a command and a unique end marker, and return the output written before the marker."""
+        self._seq += 1
+        marker = f"{prefix}{self._seq}__"
+        # With own_line the marker starts on its own line even when the output does not end with one.
+        end = f"printf '\\n%s\\n' {marker}" if own_line else f"echo {marker}"
+        channel.process.stdin.write(f"{command}\n{end}\n")
+        lines, size = [], 0
+        while True:
+            line = await channel.process.stdout.readline()
+            if line == "":
+                raise TransportError("the switch closed the shell")
+            if line.strip() == marker:
+                output = "".join(lines)
+                return output[:-1] if own_line and output.endswith("\n") else output
+            size += len(line)
+            if size > limit:
+                raise TransportError("the switch returned an oversized response")
+            lines.append(line)
+
     async def _channel(self, name: str, *, connection=None) -> _Channel:
         async with self._channel_lock:
             conn = self._conn if connection is None else connection
             if conn is None or self._conn is not conn:
                 raise TransportError("the SSH session closed before opening a channel")
-            channel = self._channels.get(name)
-            if channel is None:
-                import asyncssh
-
-                self._opening_started(conn)
-                try:
-                    tag = 'ee_' + secrets.token_hex(16)
-                    process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                    self._process_tags[id(process)] = tag
-                    if self._conn is not conn:
-                        self._retire_process(conn, process)
-                        raise TransportError("the SSH session closed while opening a channel")
-                    channel = _Channel(process)
-                    self._channels[name] = channel
-                finally:
-                    self._opening_finished(conn)
-            return channel
+            return self._channels.get(name) or await self._open_shell(conn, name)
 
     async def _port_channel(self, conn) -> _Channel:
         previous = self._channels.get("links")
@@ -532,29 +562,16 @@ class SSHTransport(Transport):
             await self._close_failed_connection(conn)
             raise TransportError(f"could not open a shell on the switch: {exc}") from exc
         async with ch.lock:
-            self._seq += 1
-            marker = f"__EE_DONE_{self._seq}__"
             try:
                 async with asyncio.timeout(timeout):
                     if self._conn is not conn:
                         raise TransportError("the SSH session closed before sending a command")
                     if ch.sample_failed:
                         raise TransportError("the switch status shell is finishing")
-                    ch.process.stdin.write(f"{command}\necho {marker}\n")
-                    lines: list[str] = []
-                    size = 0
-                    while True:
-                        line = await ch.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the switch closed the shell")
-                        if line.strip() == marker:
-                            if port_sample:
-                                self._unfinished_port_reads = 0
-                            return "".join(lines)
-                        size += len(line)
-                        if size > 262144:
-                            raise TransportError("the switch returned an oversized response")
-                        lines.append(line)
+                    output = await self._exchange(ch, command)
+                if port_sample:
+                    self._unfinished_port_reads = 0
+                return output
             except (asyncio.CancelledError, TransportError) as exc:
                 await self._command_failed(conn, ch, port_sample, exc)
                 raise
@@ -585,37 +602,8 @@ class SSHTransport(Transport):
                 async with asyncio.timeout(timeout):
                     if self._conn is not conn:
                         raise TransportError("the SSH session changed before the command")
-                    shell = self._channels.get(channel)
-                    if shell is None:
-                        import asyncssh
-                        self._opening_started(conn)
-                        try:
-                            tag = 'ee_' + secrets.token_hex(16)
-                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                            self._process_tags[id(process)] = tag
-                            if self._conn is not conn:
-                                self._retire_process(conn, process)
-                                raise TransportError("the SSH session changed while opening a shell")
-                            shell = _Channel(process)
-                            self._channels[channel] = shell
-                        finally:
-                            self._opening_finished(conn)
-                    self._seq += 1
-                    marker = f"__EE_DONE_{self._seq}__"
-                    # The marker starts on its own line even when the output does not end with one.
-                    shell.process.stdin.write(f"{command}\nprintf '\\n%s\\n' {marker}\n")
-                    lines, size = [], 0
-                    while True:
-                        line = await shell.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the switch closed the shell")
-                        if line.strip() == marker:
-                            output = "".join(lines)
-                            return output[:-1] if output.endswith("\n") else output
-                        size += len(line)
-                        if size > 262144:
-                            raise TransportError("the switch returned an oversized response")
-                        lines.append(line)
+                    shell = self._channels.get(channel) or await self._open_shell(conn, channel)
+                    return await self._exchange(shell, command, own_line=True)
             except (Exception, asyncio.CancelledError) as exc:
                 if shell is not None:
                     if self._channels.get(channel) is shell:
@@ -639,35 +627,10 @@ class SSHTransport(Transport):
                 async with self._health_lock:
                     if self._conn is not conn:
                         raise TransportError("the connection changed before the health probe")
-                    channel = self._channels.get("health")
-                    if channel is None:
-                        import asyncssh
-                        self._opening_started(conn)
-                        try:
-                            tag = 'ee_' + secrets.token_hex(16)
-                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                            self._process_tags[id(process)] = tag
-                            if self._conn is not conn:
-                                self._retire_process(conn, process)
-                                raise TransportError("the connection changed while opening the health probe")
-                            channel = _Channel(process)
-                            self._channels["health"] = channel
-                        finally:
-                            self._opening_finished(conn)
-                    self._seq += 1
-                    marker = f"__EE_HEALTH_DONE_{self._seq}__"
-                    channel.process.stdin.write(f"{HEALTH_COMMAND}\necho {marker}\n")
-                    lines, size = [], 0
-                    while True:
-                        line = await channel.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the health shell closed")
-                        if line.strip() == marker:
-                            return "".join(lines)
-                        size += len(line)
-                        if size > MAX_HEALTH_RESPONSE:
-                            raise TransportError("the health response exceeded its limit")
-                        lines.append(line)
+                    channel = self._channels.get("health") or await self._open_shell(conn, "health")
+                    # The probe prints __EE_HEALTH_DONE__ itself; the numbered marker ends the exchange.
+                    return await self._exchange(channel, HEALTH_COMMAND, prefix="__EE_HEALTH_DONE_",
+                                                limit=MAX_HEALTH_RESPONSE)
         except (Exception, asyncio.CancelledError) as exc:
             if channel is not None:
                 if self._channels.get("health") is channel:

@@ -261,8 +261,7 @@ class SwitchFans:
 
     async def _run(self, command: str, timeout: float = 10) -> str:
         # Fan commands use their own shell: a failure there must not close the lighting connection.
-        run = getattr(self.transport, "run_isolated", None) or self.transport.run
-        return (await run("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
+        return (await self.transport.run_isolated("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
 
     async def read(self) -> dict[str, Any]:
         digest = self.digest
