@@ -23,8 +23,10 @@ if (-not $SkipInstaller) {
 }
 & $PythonExe -c "import PyInstaller, fastapi, uvicorn, asyncssh, PIL"
 if ($LASTEXITCODE) { throw 'A build dependency is missing. No dependencies were downloaded.' }
-# A package is reproducible only from a committed tree and the tool versions CI uses. -AllowUnpinned accepts other
-# tools and uncommitted changes for a local test build; package-verification.json still records the tree state.
+# A strict build needs a committed tree and the Python, Node and package versions that CI pins. It accepts any Inno
+# Setup 6.7 release, so package-verification.json records the one that compiled the installer. -AllowUnpinned
+# accepts other tools and uncommitted changes for a local test build; package-verification.json still records the
+# tree state.
 if (-not $AllowUnpinned) {
     $changes = & git -C $workspace status --porcelain --untracked-files=all
     if ($LASTEXITCODE) { throw 'The source tree state could not be read.' }
@@ -77,13 +79,16 @@ if ($LASTEXITCODE) { throw 'Dependency notice collection failed.' }
 & $node -p 'process.versions.node' | Set-Content -LiteralPath (Join-Path $OutputRoot 'node-version.txt')
 if ($LASTEXITCODE) { throw 'The Node.js version could not be read.' }
 if (-not $SkipInstaller) {
-    $compilerOptions = @('/Q', "/DAppVersion=$version", "/DAppSourceDir=$app", "/O$dist")
+    $compilerRecord = Join-Path $OutputRoot 'installer-compiler.ini'
+    $compilerOptions = @('/Q', "/DAppVersion=$version", "/DAppSourceDir=$app", "/DCompilerRecord=$compilerRecord", "/O$dist")
     if ($AllowUnpinned) { $compilerOptions += '/DAnyCompiler' }
     & $compiler @compilerOptions (Join-Path $backend 'packaging\installer.iss') *> (Join-Path $OutputRoot 'installer-build.log')
     if ($LASTEXITCODE) { throw 'Installer compilation failed. See installer-build.log.' }
 }
 $verificationArgs = @('--app', $app, '--node', $node, '--output', (Join-Path $OutputRoot 'package-verification.json'))
-if (-not $SkipInstaller) { $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe")) }
+if (-not $SkipInstaller) {
+    $verificationArgs += @('--installer', (Join-Path $dist "EtherlightingEvolved-Setup-$version.exe"), '--compiler-record', $compilerRecord)
+}
 & $PythonExe (Join-Path $PSScriptRoot 'verify-package.py') @verificationArgs *> (Join-Path $OutputRoot 'package-verification.log')
 if ($LASTEXITCODE) { throw 'Package verification failed. See package-verification.log.' }
 if ($SkipInstaller) { Write-Output (Join-Path $app 'EtherlightingEvolved.exe') }

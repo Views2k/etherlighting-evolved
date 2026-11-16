@@ -1,6 +1,7 @@
 """Compare a Windows workspace package, or the folder it was installed to, with this checkout."""
 
 import argparse
+import configparser
 import hashlib
 import json
 import marshal
@@ -39,7 +40,7 @@ def check_contents(app):
             raise ValueError(f'Missing application file: {name}')
 
 
-def verify(root, app, node, installer=None):
+def verify(root, app, node, installer=None, compiler_record=None):
     version = REPOSITORY['check_versions'](root)
     try:
         CArchiveReader(str(app / 'EtherlightingEvolved.exe'))
@@ -118,7 +119,11 @@ def verify(root, app, node, installer=None):
               'engine_sha256': digest(app / 'engine/EEEngine.exe'), 'node_sha256': digest(node),
               'source_hashes': dict(sorted(sources.items()))}
     if installer:
-        result.update(installer_sha256=digest(installer), installer_bytes=installer.stat().st_size)
+        # packaging/installer.iss accepts any Inno Setup 6.7 release, so the record names the one that built it.
+        compiler = configparser.ConfigParser()
+        compiler.read_string(compiler_record.read_text('ascii'))
+        result.update(installer_sha256=digest(installer), installer_bytes=installer.stat().st_size,
+                      installer_compiler='Inno Setup ' + compiler['Compiler']['Release'])
     return result
 
 
@@ -127,9 +132,12 @@ if __name__ == '__main__':
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--node', type=Path, required=True)
     parser.add_argument('--installer', type=Path)
+    parser.add_argument('--compiler-record', type=Path, help='the Inno Setup release file that installer.iss writes')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    result = verify(ROOT, args.app.resolve(), args.node.resolve(), args.installer)
+    if args.installer and not args.compiler_record:
+        parser.error('--installer requires --compiler-record')
+    result = verify(ROOT, args.app.resolve(), args.node.resolve(), args.installer, args.compiler_record)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({key: value for key, value in result.items() if key != 'source_hashes'}, indent=2))

@@ -15,6 +15,11 @@
   #error Compile with Inno Setup 6.7 (CI uses 6.7.4), or build with -AllowUnpinned.
 #endif
 
+; The build script names this file so that package-verification.json records which release compiled the installer.
+#ifdef CompilerRecord
+  #expr WriteIni(CompilerRecord, "Compiler", "Release", DecodeVer(Ver, 4))
+#endif
+
 #define AppName "Etherlighting Evolved"
 #define AppExe "EtherlightingEvolved.exe"
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
