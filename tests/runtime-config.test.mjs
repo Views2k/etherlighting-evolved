@@ -119,6 +119,19 @@ test('child environment cannot inherit switch credentials, tokens or Python inje
   }
 });
 
+test('the administration key is validated, returned to the gateway and kept from the engine', async context => {
+  const f = await fixture(context);
+  await f.file('engine/EEEngine.exe');
+  const key = '0123456789abcdef'.repeat(4);
+  const keyed = f.config({EE_ADMIN_KEY: key});
+  assert.equal(keyed.adminKey, key);
+  assert.equal(keyed.env.EE_ADMIN_KEY, undefined);
+  assert.equal(f.config({}).adminKey, null);
+  for (const value of ['', key.slice(1), key.toUpperCase(), 'g'.repeat(64)]) {
+    assert.throws(() => f.config({EE_ADMIN_KEY: value}), {code: 'runtime_admin_key_invalid', message: 'The local administration key is invalid.'});
+  }
+});
+
 test('invalid modes, ports and relative override paths reject before starting anything', async context => {
   const f = await fixture(context);
   await f.file('engine/EEEngine.exe');

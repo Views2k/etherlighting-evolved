@@ -3,7 +3,8 @@
 This document describes the API used by the EE workspace and other clients.
 
 - `npm start` serves the workspace at `http://127.0.0.1:4180` and forwards `/api` and `/api/ws` to its private
-  engine service. See [INTEGRATION.md](INTEGRATION.md) for the gateway and session flow.
+  engine service. See [INTEGRATION.md](INTEGRATION.md) for the gateway and session flow. It also prints a one-use
+  administration link (see [Local gateway administration](#local-gateway-administration)).
 - The separate CLI server defaults to `http://localhost:8787` and serves interactive OpenAPI documentation
   at `/docs`. That documentation route belongs to the CLI server, not the workspace gateway.
 - Request and response bodies are JSON. Colors are `"#rrggbb"` strings. The server also accepts `"f0f"`, names
@@ -93,7 +94,8 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 401 | `auth_failed` | Wrong SSH username or password |
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
 | 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
-| 403 | `local_access_required` | Only the computer running EE can make this request |
+| 403 | `admin_required` | This local gateway action needs the per-launch administration key, or a browser opened from the desktop app or from the printed administration link |
+| 403 | `local_access_required` | Only the computer running EE can make this request; the private gateway refuses it |
 | 403 | `private_access_denied` | The Tailscale identity is not approved, or the path cannot be opened through private access |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
@@ -104,6 +106,7 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
 | 502 | `unreachable`, `ssh_error` | The switch couldn't be reached, or SSH failed |
+| 503 | `workspace_closing` | `POST /api/workspace/admin-link` while EE is closing |
 
 `host_key_changed` means the switch's SSH host key differs from the one saved at the first login. This happens
 when the switch is replaced or reset, or when a different device answers at that address. To accept the new key,
@@ -162,6 +165,7 @@ These requests are local-only:
 | `PUT /api/simulator/anomaly/{port}` | Demo simulator test control; the demo starts only from a local login |
 | `PUT /api/simulator/links/{port}` | Demo simulator test control; the demo starts only from a local login |
 | `PUT /api/simulator/poe/{port}` | Demo simulator test control; the demo starts only from a local login |
+| `POST /api/workspace/admin-link` | Issues a one-use administration link to the desktop app that started the gateway |
 | `POST /api/workspace/close` | Stops the service on the host computer |
 
 The private gateway answers `GET /api/private-access` itself, with `can_configure` and `can_close_workspace` false,
@@ -180,6 +184,124 @@ for the demo. `remote` is true when the request came through private access:
 
 Through private access the answer is always `{"live": true, "remote": true}`. When `remote` is true, clients leave out
 switch login, Forget saved login and UniFi Network setup.
+
+## Local gateway administration
+
+The gateway at `http://127.0.0.1:4180` answers the Tailscale settings and workspace close requests itself. Changing
+Tailscale settings and closing the workspace need administration access. Every other request, including
+`GET /api/private-access`, works without it.
+
+A request has administration access when it carries one of these:
+
+- The header `X-EE-Admin-Key: <key>`. The key is 64 lowercase hexadecimal characters and changes each time the
+  gateway starts. The desktop app creates it and passes it to the gateway in the `EE_ADMIN_KEY` environment variable.
+  Without that variable the gateway creates its own key. The key is kept in memory only.
+- A cookie named `ee_admin_<port>`, for example `ee_admin_4180`, with the value the gateway set for this launch. A
+  browser gets it by opening an administration link (`GET /?admin_code=<code>`). Every `ee_admin_<port>` entry in the
+  `Cookie` header is checked.
+
+The administration link sets two cookies with the same name and value, one for each path that reads them:
+
+```
+Set-Cookie: ee_admin_4180=<value>; Path=/api/private-access; HttpOnly; SameSite=Strict
+Set-Cookie: ee_admin_4180=<value>; Path=/api/workspace/close; HttpOnly; SameSite=Strict
+```
+
+`<value>` is a random value created once per launch, separate from the key. The cookies have no expiry date, so they
+last until the browser session ends, and a gateway started later does not accept them. The port is part of the name
+so the demo gateway (4190) and the live gateway (4180) do not replace each other's cookie.
+
+The gateway removes `Cookie` and `X-EE-Admin-Key` from every request and WebSocket upgrade it forwards to the engine.
+The private gateway forwards neither header and removes `Set-Cookie` from its answers.
+
+### `GET /?admin_code=<code>`
+
+Opens the workspace and gives the browser administration access. The gateway handles it only for a `GET` without an
+`Origin` header, which is how browsers navigate to a page; a `HEAD` request, a request with `Origin`, and requests
+through the private gateway open the workspace without redeeming the code.
+
+When the query has exactly one `admin_code` and it is a valid code that has not been used or expired, the code is
+used up and the answer is `303 See Other` with `Location: /`, the two cookies, `Cache-Control: no-store`,
+`Referrer-Policy: no-referrer` and an empty body. Any other `admin_code` (unknown, used, expired, malformed or
+repeated) gets the same answer without `Set-Cookie`, and no code is used. Other query parameters are ignored.
+
+A code is 64 lowercase hexadecimal characters. A code from `POST /api/workspace/admin-link` expires after 120 seconds.
+The code in the link that `npm start` prints has no time limit; it ends when it is used or when the gateway stops. At
+most eight codes are outstanding; a ninth replaces the oldest.
+
+### `POST /api/workspace/admin-link`
+
+Takes no request body and requires the `X-EE-Admin-Key` header; the cookies do not count. The desktop app uses it for
+Open in browser:
+
+```json
+{ "code": "<64 lowercase hexadecimal characters>" }
+```
+
+The browser then opens `http://127.0.0.1:<port>/?admin_code=<code>`. Errors:
+
+| Status | Answer |
+|---|---|
+| 403 | `admin_required`: "This request needs the administration key of the EE app that started this workspace." |
+| 405 | Empty body, for any method other than `POST` |
+| 503 | `workspace_closing`: "EE is closing. Open EE again to use the browser workspace." |
+
+### `GET /api/private-access`
+
+Always answers 200:
+
+```json
+{
+  "available": true, "enabled": true, "ready": true, "url": "https://host.example.ts.net:8444", "error": null,
+  "setup_action": null, "action_url": null, "audience": "owner", "https_port": 8444, "can_change_port": false,
+  "can_configure": true, "can_close_workspace": true, "admin_required": false
+}
+```
+
+`admin_required` is false with administration access. Without it, the answer is the read-only form that the private
+gateway gives: `setup_action` and `action_url` are null, `can_change_port`, `can_configure` and `can_close_workspace`
+are false, and `admin_required` is true. A pending Tailscale sign-in link therefore never reaches another local user.
+
+The demo gateway answers `{"available": false, "enabled": false, "ready": false, "can_configure": false,
+"can_close_workspace": <access and not closing>, "admin_required": <no access>}`. The private gateway's answer has no
+`admin_required` field; clients treat a missing field as false.
+
+Clients show their read-only help for a local tab without administration access when `admin_required` is true and
+either `available` is true or `error` is an object. They show the close help in place of Close web session when
+`can_close_workspace` is not true and `admin_required` is true.
+
+### `PUT /api/private-access`, `POST /api/private-access/refresh`, `POST /api/private-access/login`
+
+`PUT` takes `{"enabled": true, "https_port": 8444, "audience": "owner"}`; `https_port` (1024–65535) and `audience`
+(`owner` or `accounts`) are optional. The other two take no body. Without administration access each answers 403
+before the body is read:
+
+```json
+{ "detail": { "code": "admin_required", "message": "To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started." } }
+```
+
+With administration access the answer is the status above with `can_configure` true and `admin_required` false. An
+invalid setting returns 400, a body over 1 KB returns 413, another method returns 405, a request while EE is closing
+returns 503, and a failed change returns 409 `private_access_failed`.
+
+Refresh and sign-in repeat the startup check. When private access is on and its HTTPS port has no Tailscale Serve
+configuration, that check adds EE's route again, so a refresh after the Tailscale HTTPS approval completes a saved
+setup.
+
+### `POST /api/workspace/close`
+
+Returns the switch lighting, stops the engine, ends private access and closes the gateway. In live mode, ending private
+access also removes EE's Tailscale Serve route; private access stays on in its settings, and the route is added again
+when EE next starts. A removal that cannot be confirmed does not make the close fail.
+
+| Status | Answer |
+|---|---|
+| 200 | `{"closed": true}` |
+| 403 | `admin_required`: "To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started." |
+| 405 | Empty body, for any method other than `POST` |
+| 409 | `{"detail": "The service has not confirmed shutdown. Wait and try again."}` |
+
+A refused request changes nothing, so lighting and private access keep working.
 
 ## Session
 

@@ -81,6 +81,7 @@ export const ROUTE_ACCESS = {
     {"method": "PUT", "path": "/api/simulator/poe/{port}", "source": "engine", "remote": false, "reason": "Demo simulator test control; the demo starts only from a local login."},
     {"method": "GET", "path": "/api/state", "source": "engine", "remote": true, "reason": "Read-only lighting and switch status."},
     {"method": "GET", "path": "/api/workspace", "source": "gateway", "remote": true, "reason": "Answered by the private gateway with remote true; never forwarded."},
+    {"method": "POST", "path": "/api/workspace/admin-link", "source": "gateway", "remote": false, "reason": "Issues a one-use administration link to the desktop app that started the gateway."},
     {"method": "POST", "path": "/api/workspace/close", "source": "gateway", "remote": false, "reason": "Stops the service on the host computer."},
     {"method": "WS", "path": "/api/ws", "source": "engine", "remote": true, "reason": "Live state and the lighting commands in WS_COMMANDS."},
     {"method": "GET", "path": "/api/zones", "source": "engine", "remote": true, "reason": "Lighting: zones."},

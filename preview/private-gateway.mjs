@@ -88,7 +88,9 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
       if(pathname==='/api/workspace'&&request.method==='GET'){json(response,200,REMOTE_WORKSPACE);return;}
       if(!remoteRoutes.allowed(request.method,pathname)){json(response,403,LOCAL_ACCESS);return;}
       const upstream=http.request({host:'127.0.0.1',port:targetPort,path:request.url,method:request.method,headers:headers(request)},remote=>{
-        response.writeHead(remote.statusCode,remote.headers);remote.pipe(response);
+        // Administration cookies belong to the computer running EE and never reach a device on Tailscale.
+        const forwarded={...remote.headers};delete forwarded['set-cookie'];
+        response.writeHead(remote.statusCode,forwarded);remote.pipe(response);
       });
       upstream.setTimeout(30000,()=>upstream.destroy());
       upstream.on('error',()=>{if(!response.headersSent)json(response,503,{detail:'EE is reconnecting. Try again shortly.'});else response.destroy();});

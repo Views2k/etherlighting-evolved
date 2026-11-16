@@ -29,7 +29,7 @@ OWNER_LOCAL = {
     ("POST", "/api/controller/connect"), ("POST", "/api/controller/consoles"), ("POST", "/api/controller/disconnect"),
     ("POST", "/api/controller/cancel"), ("PUT", "/api/controller/preferences"),
     ("PUT", "/api/private-access"), ("POST", "/api/private-access/refresh"), ("POST", "/api/private-access/login"),
-    ("POST", "/api/workspace/close"),
+    ("POST", "/api/workspace/close"), ("POST", "/api/workspace/admin-link"),
 }
 CLIENT_ROUTES = {
     ("GET", "/api/effects"), ("GET", "/api/session"), ("GET", "/api/state"), ("GET", "/api/ports"),

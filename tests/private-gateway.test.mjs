@@ -58,6 +58,31 @@ test('private gateway strips identity headers and keeps host-management actions 
   }finally{await gateway.stop();await new Promise(done=>upstream.close(done));}
 });
 
+test('administration secrets never pass the private gateway in either direction',async context=>{
+  let received;
+  const upstream=http.createServer((req,res)=>{
+    received=req.headers;
+    res.setHeader('Set-Cookie',['ee_admin_4180=fixture; Path=/api/private-access; HttpOnly; SameSite=Strict']);
+    res.setHeader('X-Fixture','kept');res.end('ok');
+  });
+  const targetPort=await listen(upstream),gateway=createPrivateGateway({targetPort,listenPort:0});
+  context.after(async()=>{await gateway.stop();await new Promise(done=>upstream.close(done));});
+  const {port}=await gateway.start({authorize:()=>({ok:true})});
+  const response=await new Promise((resolve,reject)=>{
+    const req=http.request({host:'127.0.0.1',port,path:'/api/state',headers:{cookie:'ee_admin_4180=fixture','x-ee-admin-key':'a'.repeat(64)}},resolve);
+    req.on('error',reject);req.end();
+  });
+  response.resume();
+  assert.equal(received.cookie,undefined);assert.equal(received['x-ee-admin-key'],undefined);
+  assert.equal(response.headers['set-cookie'],undefined);assert.equal(response.headers['x-fixture'],'kept');
+});
+
+test('a device on Tailscale cannot request an administration link',async context=>{
+  const {port,received}=await recordingGateway(context);
+  for(const path of ['/api/workspace/admin-link','/api/workspace/admin%2Dlink'])refusedLocally(await get(port,path,{method:'POST'}));
+  assert.deepEqual(received,[]);
+});
+
 test('closing private access closes existing connections',async()=>{
   const gateway=createPrivateGateway({targetPort:1,listenPort:0});
   const {port}=await gateway.start({authorize:()=>({ok:true})});
