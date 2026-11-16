@@ -1,21 +1,20 @@
-# Repository workflow
+# Development workflow
 
-This repository is the source of truth for EE. All application changes, tests, assets, build scripts, and developer documentation belong here. Each update is committed and pushed before its installer is delivered.
+This document describes how changes reach `main` and how releases are built. EE has a single author; [CONTRIBUTING.md](../CONTRIBUTING.md) explains how others can report problems. [DEVELOPMENT.md](DEVELOPMENT.md) covers the source setup and the individual commands.
 
-## Change process
+## Branches and pull requests
 
-1. Start from the current `main` revision. Use a `codex/` work branch and an isolated worktree when another change is in progress.
-2. Record the problem, intended behavior, affected files, and acceptance checks in the pull request. Keep unrelated work separate.
-3. Implement the change in this checkout. Update the API and workflow documentation when behavior or contracts change.
-4. Run the relevant checks locally. Run `tools/verify.ps1` for a complete source, backend, contract, and browser check. Reuse evidence only when its recorded source inputs are unchanged.
-5. Push the branch and open a pull request. Review the diff and the EE Quality result for that revision before merging.
-6. For a private build, run `packaging/build.ps1` from the merged checkout and give the tester a direct link to the local Setup EXE. Full release packaging is a separate manual run.
+1. Create a topic branch from `main`, such as `fix/<topic>` or `feature/<topic>`. Keep unrelated changes on separate branches.
+2. Make the change. Update `CHANGELOG.md` under `## Unreleased` for anything users notice, and `docs/API.md` when an API contract changes.
+3. Run `tools/verify.ps1` (below) and the checks the change needs.
+4. Open a pull request to `main` and fill in the template: the change, the checks and their results, and the effect on stored data and compatibility.
+5. Merge after the EE Quality checks pass for the last commit.
 
-Keep the configured repository author. Public releases and live deployments require a separate owner instruction. A successful simulator check establishes the tested software behavior; physical lighting and rack-screen acceptance are recorded separately.
+Commits use the repository's configured author. EE Quality fails a pull request that contains commits by another author. Simulator checks do not replace a test on a physical switch; name the hardware checks that were run, or that are still needed, in the pull request.
 
-## Verification
+## Local verification
 
-With the existing tools installed, run from the repository root:
+With the dependencies from [DEVELOPMENT.md](DEVELOPMENT.md) installed and the desktop packages restored, run from the repository root:
 
 [WINDOWS POWERSHELL]
 
@@ -23,29 +22,56 @@ With the existing tools installed, run from the repository root:
 & .\tools\verify.ps1 -BrowserExe 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
 ```
 
-The script uses `.venv/Scripts/python.exe` by default. Use `-PythonExe` for another existing environment and `-OutputRoot` for an empty results directory. It does not install dependencies or connect to a switch. It records an exact source manifest, step results, logs, browser captures, and simulator results.
+The script uses `.venv\Scripts\python.exe` unless `-PythonExe` names another environment, and writes to `outputs\verification\<time>` unless `-OutputRoot` names an empty folder. It does not install anything or connect to a switch. It runs these steps in order and stops at the first failure:
 
-EE Quality verifies source and simulator workflows on pull requests. The GitHub-hosted Windows runner uses the versions in `requirements-ci.txt`, Python 3.12.10, and Node 22.23.1. Workflow actions are pinned to commit IDs. Browser checks use a separate simulator data directory and browser profile.
-
-The native desktop checks exercise the editor against a separate simulator on Windows, macOS and Linux. The macOS and Linux jobs build both x64 and arm64 clients, inspect both archives, and launch the package that matches the runner. Each successful job keeps its private client archives under the workflow run.
-
-To prepare a release candidate, select **Run workflow** on `main` in EE Quality. The hosted runner verifies the pinned Inno Setup compiler and publisher, builds with `-ReleaseCandidate`, compares the package with the checkout, and tests the packaged simulator. Private builds use existing local tools. Updating a tool or dependency requires updating its pin and checking the affected build and tests together.
-
-## Artifacts and records
-
-| Location | Contents |
+| Step | Command |
 | --- | --- |
-| `preview/`, `src/`, `assets/` | Application source and artwork |
-| `tests/` | Automated checks and deterministic fixtures |
-| `packaging/`, `tools/` | Installer and verification entry points |
-| `docs/` | API, hardware, development, and workflow documentation |
-| `outputs/releases/` | Local installers and package provenance |
-| `outputs/verification/` | Local verification results |
-| `outputs/audits/` | Local engineering evidence and historical reports |
-| GitHub Actions artifacts | Revision-specific verification and verified installers |
+| `repository` | `tools/check-repository.py`: source inventory, matching version numbers, and no private files, home folder paths, private network addresses, tailnet names or attribution text |
+| `syntax` | `tools/check.mjs` |
+| `javascript` | `node --test tests/*.test.mjs` |
+| `lint` | `ruff check` |
+| `python` | `pytest` |
+| `contract` | `tests/backend_contract.py`, the browser and engine contract against an in-process simulator |
+| `fixtures` | `tools/check-fixtures.py`: the generated fixtures and `src/catalog.mjs` match the current engine |
+| `desktop-build`, `desktop` | Builds the desktop check program and runs its window and simulator checks |
+| `browser` | `tools/smoke-workspace.mjs`: the browser workspace against the simulator |
 
-Generated output, credentials, live application state, browser profiles, firmware images, and private diagnostics stay outside version control. Preserve existing releases and data. Do not move saved logins or scenes merely because a checkout changes. Historical working copies are archives; current work uses this repository.
+The output folder holds a log for each step, `result.json` and `source-manifest.json`, which lists the hash of every source file.
 
-## Optional staging host
+## Pull request checks
 
-A staging VM runs the repository's simulator from a recorded revision, with its own data directory. It can provide a persistent review URL. Live switch access remains an explicit handoff to one EE instance. A staging environment does not receive saved hardware credentials by default.
+The EE Quality workflow (`.github/workflows/quality.yml`) runs on every pull request to `main` and can be started by hand. Its actions are pinned to commit SHAs.
+
+The `Verify EE` job runs on Windows. It checks the commit authors and messages, installs the hash-pinned Python packages, restores the locked desktop packages and runs `tools/verify.ps1`. It then builds the installer with `packaging/build.ps1` and the Inno Setup release that `tools/ci-inno.ps1` downloads and checks, runs the packaged simulator in a browser, and installs, checks and uninstalls the package. A run started by hand on `main` keeps the verified installer as a workflow artifact for 90 days.
+
+The `Native client (macos-15)` and `Native client (ubuntu-24.04)` jobs build the desktop check program and run it against the simulator, package the client for x64 and arm64, check both archives, and open the packaged client against a local simulator.
+
+## Toolchain
+
+| File | What it pins |
+| --- | --- |
+| `.python-version` | Python 3.14, used by CI and bundled in the Windows package |
+| `.node-version` | Node.js 24.18.0, used by CI and bundled in the Windows package |
+| `global.json` | The .NET 10 SDK (10.0.100 or a later feature band) |
+| `requirements-ci.txt` | Python packages with the SHA-256 hashes of their wheels for the CI runners |
+| `desktop/*/packages.lock.json` | The desktop NuGet packages, restored with `--locked-mode` |
+| `tools/ci-inno.ps1` | Inno Setup 6.7.4 with its SHA-256 hash and publisher; `packaging/installer.iss` accepts any 6.7 release |
+
+After changing a pin in `requirements-ci.txt`, run `python tools/hash-requirements.py` to write the new hashes from PyPI. The Windows package bundles the Python in `.python-version`. Move it to the next minor version when the current one stops receiving binary releases from python.org, then regenerate the hashes.
+
+Dependabot (`.github/dependabot.yml`) opens weekly update pull requests for the workflow actions, the Python packages and the NuGet packages. They fail the commit author check, so make each update again on your own branch. Dependabot does not update `.python-version`, `.node-version`, `global.json` or Inno Setup; check those by hand at each release.
+
+`packaging/build.ps1` builds the installer from pinned tools only. Without `-AllowUnpinned`, it stops when the source tree has uncommitted changes, when `tools/check-toolchain.py` finds a Python, Node.js or bundled package version other than the pinned one, or when the compiler is not Inno Setup 6.7. `-AllowUnpinned` is for local test builds. Every build compares the package with the checkout and writes `package-verification.json`, which records the tree state and the Inno Setup release that compiled the installer.
+
+## Releases
+
+1. On a branch, run `python tools/set-version.py <major.minor.patch>`. It renames `## Unreleased` in `CHANGELOG.md` to the version and writes the version into `pyproject.toml`, `package.json`, `src/etherlighting_evolved/__init__.py`, the desktop project and `packaging/installer.iss`. Merge it through a pull request.
+2. Tag the merge commit on `main` as `v<major.minor.patch>` and push the tag.
+3. The EE Release workflow (`.github/workflows/release.yml`) checks that the tag names the application version, builds the installer and the macOS and Linux clients for x64 and arm64, writes `SHA256SUMS`, adds build provenance attestations and creates a draft GitHub Release with these files and `package-verification.json`.
+4. Review the draft and its files, then publish it by hand.
+
+The installer and the clients are not code-signed yet. The [README](../README.md#verify-a-download) describes how to verify a download.
+
+## Local output
+
+`outputs/` is ignored by Git and holds local results: `outputs/verification/` for `tools/verify.ps1`, `outputs/releases/<version>/` for `packaging/build.ps1`, `outputs/native/` for `desktop/publish.ps1`, and `outputs/browser-preview-data/` for the simulator data of a source gateway. Credentials, application data, browser profiles, firmware images and diagnostics from a real switch stay out of the repository. `.gitignore` excludes the file names EE uses for them, and `tools/check-repository.py` checks that it does.
