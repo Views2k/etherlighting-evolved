@@ -4,57 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
 import html
-import logging
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
-from weakref import ref
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import DISCLAIMER, PROJECT_NAME, SHORT_NAME, TAGLINE, __version__
-from .color import NAMED_COLORS, Color
+from . import DISCLAIMER, PROJECT_NAME, TAGLINE, __version__
 from .config import Config
 from .controller import ControllerError
 from .controller_api import ControllerIntegration
-from .effects import list_effects
-from .engine import Engine, NotFound
+from .engine import Engine
 from .guard import LOOPBACK_BINDS, RequestGuard
 from .lighting_library import attach_library_routes
 from .port_names import attach_port_name_routes
 from .presets import PresetStore, ProfileConflict, ProfileStoreError
-from .rules import FIELDS, STYLES, TEMPLATES
+from .routes import about as about_routes
+from .routes import session as session_routes
+from .routes import ws as ws_routes
+from .routes.context import ApiContext, apply, await_output, scene_envelope
 from .scene_history import attach_routes as attach_history_routes
-from .scene_history import scene_revision
 from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
 from .session import LoginError, SessionManager
-from .transport import SimulatedTransport, TransportError
-
-log = logging.getLogger(__name__)
+from .transport import TransportError
 
 ColorValue = str | list[int] | dict[str, int]
-
-
-class LoginRequest(BaseModel):
-    host: str = Field(description='Switch IP or hostname. "demo" logs in to the built-in simulator.')
-    username: str = ""
-    password: str = ""
-    port: int = 22
-    remember: bool = False
-
-
-class SceneChoiceRequest(BaseModel):
-    connection_id: str = Field(min_length=1, max_length=128)
-    choice: str
-    legacy_revision: str = Field(default="", max_length=128)
 
 
 class EffectRequest(BaseModel):
@@ -144,51 +124,6 @@ class FanChange(BaseModel):
     target_celsius: int | None = None
 
 
-class HostKeyForget(BaseModel):
-    host: str
-    port: int = 22
-
-
-def scene_envelope(scene: dict) -> dict:
-    return {"scene": scene, "revision": scene_revision(scene)}
-
-
-def token_matches(authorization: str | None, token: str) -> bool:
-    # Header values arrive decoded as latin-1, and the configured token is printable ASCII.
-    return hmac.compare_digest((authorization or "").encode("latin-1"), f"Bearer {token}".encode("ascii"))
-
-
-def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
-    """The quick, high-frequency controls. Everything else goes through REST."""
-    kind = msg.get("type")
-    if kind == "ping":
-        return {"type": "pong", "id": msg.get("id")}
-    if kind == "set_port":
-        engine.set_override(msg["port"], msg["color"], msg.get("brightness"))
-    elif kind == "set_ports":
-        engine.set_overrides({int(k): v for k, v in msg["ports"].items()})
-    elif kind == "clear_port":
-        engine.clear_override(msg.get("port"))
-    elif kind == "set_effect":
-        clear = msg.get("clear_overrides", False)
-        if not isinstance(clear, bool):
-            raise ValueError("clear_overrides must be true or false")
-        engine.set_effect(msg["id"], msg.get("params"), zone=msg.get("zone"), clear_overrides=clear)
-    elif kind == "set_params":
-        engine.update_params(msg["params"], zone=msg.get("zone"))
-    elif kind == "update_rule":
-        engine.update_rule(msg["id"], msg["changes"])
-    elif kind == "set_brightness":
-        engine.set_brightness(msg["value"])
-    elif kind == "release":
-        engine.release()
-    elif kind == "resume":
-        engine.resume()
-    else:
-        raise ValueError(f"unknown message type {kind!r}")
-    return {"type": "ack", "id": msg["id"]} if msg.get("id") is not None else None
-
-
 def create_app(config: Config | None = None, *, demo: bool = False, autoconnect: bool = True,
                transport_factory=None) -> FastAPI:
     """Build the API. demo=True logs straight in to the simulator (no switch needed)."""
@@ -199,6 +134,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     presets = PresetStore(config.data_dir / "presets.json")
     schedules = ScheduleStore(config.data_dir / "schedules.json")
     scheduler = Scheduler(schedules, presets, sessions)
+    ctx = ApiContext(config, sessions, controller, presets, schedules, scheduler)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -233,15 +169,14 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         description=f"{TAGLINE}\n\n**{DISCLAIMER}**",
         lifespan=lifespan,
     )
-    expected_workspace: ContextVar[str | None] = ContextVar("ee_expected_workspace", default=None)
 
     @app.middleware("http")
     async def workspace_context(request, call_next):
-        marker = expected_workspace.set(request.headers.get("X-EE-Workspace"))
+        marker = ctx.expected_workspace.set(request.headers.get("X-EE-Workspace"))
         try:
             return await call_next(request)
         finally:
-            expected_workspace.reset(marker)
+            ctx.expected_workspace.reset(marker)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -278,146 +213,15 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         RequestGuard, allowed_origins=config.api.cors_origins, local_only=config.api.host in LOOPBACK_BINDS
     )
 
-    token = config.api.token
+    engine, require_workspace = ctx.engine, ctx.require_workspace
+    apply_port_change, commit_scene, simulator = ctx.apply_port_change, ctx.commit_scene, ctx.simulator
 
-    def require_token(authorization: str | None = Header(default=None)) -> None:
-        if token and not token_matches(authorization, token):
-            raise HTTPException(401, detail={"code": "bad_token", "message": "missing or wrong API token"})
-
-    def require_workspace() -> None:
-        expected = expected_workspace.get()
-        if expected is not None and expected != sessions.workspace_id():
-            raise HTTPException(409, detail={"code": "workspace_changed", "message":
-                                            "The connected switch changed. Review your changes before applying."})
-
-    def engine() -> Engine:
-        require_workspace()
-        if sessions.handoff_pending:
-            raise HTTPException(409, detail={"code": "handoff_unconfirmed", "message":
-                                            "Finish the pending handoff before changing lighting."})
-        if sessions.engine is None:
-            raise HTTPException(409, detail={"code": "not_logged_in", "message": "log in to a switch first"})
-        return sessions.engine
-
-    def apply(fn, *args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except NotFound as exc:
-            raise HTTPException(404, detail={"code": "not_found", "message": str(exc)}) from exc
-        except TransportError as exc:
-            raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
-        except (ValueError, KeyError, TypeError, OverflowError) as exc:
-            raise HTTPException(400, detail={"code": "invalid", "message": str(exc).strip("'\"")}) from exc
-
-    async def await_output(fn, *args):
-        try:
-            return await fn(*args)
-        except (TransportError, ValueError) as exc:
-            raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
-
-    async def apply_port_change(e, fn, *args, **kwargs):
-        previous = e.sfp_revisions()
-        apply(fn, *args, **kwargs)
-        current = e.sfp_revisions()
-        await await_output(e.confirm_sfp_output, {port: current[port] for port in e.switch.sfp_ports
-                                                  if current[port] != previous[port]})
-        return e.state()
-
-    async def commit_scene(e, scene, *, preserve_unchanged: bool, confirm_output: bool) -> dict:
-        """Apply a scene, optionally wait for SFP output, and update the switch's offline copy."""
-        try:
-            affected_sfp = apply(e.apply_snapshot, scene, preserve_unchanged=preserve_unchanged)
-        except AttributeError as exc:
-            raise HTTPException(400, detail={
-                "code": "invalid", "message": "The lighting setup has invalid settings.",
-            }) from exc
-        accepted = scene_envelope(e.snapshot())
-        if confirm_output:
-            revisions = e.sfp_revisions()
-            await await_output(e.confirm_sfp_output, {port: revisions[port] for port in affected_sfp})
-        if getattr(e.switch.transport, "desktop_output", None):
-            sessions.save_current_scene(e)
-            try:
-                await sessions.sync_offline_lighting(e)
-            except (OSError, ValueError, TransportError) as exc:
-                raise HTTPException(503, detail={"code": "offline_scene_unconfirmed",
-                    "message": "Lighting applied in EE. The switch has not confirmed its offline copy."}) from exc
-        return accepted
-
-    def simulator() -> SimulatedTransport:
-        transport = engine().switch.transport
-        if not isinstance(transport, SimulatedTransport):
-            raise HTTPException(409, detail={"code": "not_simulated", "message": "only available after a demo login"})
-        return transport
-
-    api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+    api = APIRouter(prefix="/api", dependencies=[Depends(ctx.require_token)])
     controller.routes(api)
     attach_library_routes(api, engine, sessions, config)
     attach_port_name_routes(api, engine, sessions, controller.port_names)
-
-    # About and login
-
-    @api.get("/health")
-    async def health():
-        return {"ok": True, "name": PROJECT_NAME, "version": __version__, "logged_in": sessions.engine is not None}
-
-    @api.get("/about")
-    async def about():
-        return {"name": PROJECT_NAME, "short_name": SHORT_NAME, "version": __version__, "tagline": TAGLINE,
-                "disclaimer": DISCLAIMER}
-
-    @api.get("/session")
-    async def session_info():
-        return sessions.info()
-
-    @api.post("/session/login")
-    async def login(body: LoginRequest):
-        return await sessions.connect(body.host, body.username, body.password, port=body.port,
-                                      remember=body.remember)
-
-    @api.post("/session/scene-choice")
-    async def scene_choice(body: SceneChoiceRequest):
-        return await sessions.choose_scene(body.connection_id, body.choice, body.legacy_revision)
-
-    @api.post("/session/logout")
-    async def logout(forget: bool = False):
-        require_workspace()
-        return await sessions.disconnect(forget=forget)
-
-    @api.post("/session/restore")
-    async def restore_saved_login(resume: bool = False):
-        return await sessions.restore_saved(resume=resume)
-
-    @api.post("/session/handoff")
-    async def handoff_to_unifi():
-        require_workspace()
-        return await sessions.handoff()
-
-    @api.post("/session/forget")
-    async def forget_saved_login():
-        return await sessions.forget_saved_login()
-
-    @api.post("/session/forget-host-key")
-    async def forget_host_key(body: HostKeyForget):
-        return {"forgotten": sessions.forget_host_key(body.host, body.port)}
-
-    # Catalogs: what the UI can offer (no login needed)
-
-    @api.get("/effects")
-    async def effects():
-        return list_effects()
-
-    @api.get("/rules/fields")
-    async def rule_fields():
-        return {"fields": [f.schema() for f in FIELDS.values()], "styles": list(STYLES)}
-
-    @api.get("/rules/templates")
-    async def rule_templates():
-        return TEMPLATES
-
-    @api.get("/colors")
-    async def colors():
-        return {name: Color(*rgb).to_hex() for name, rgb in NAMED_COLORS.items()}
+    about_routes.attach(api, ctx)
+    session_routes.attach(api, ctx)
 
     # Live state
 
@@ -593,13 +397,6 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         e = engine()
         apply(e.resume)
         return e.state()
-
-    @api.post("/session/recover")
-    async def recover_connection():
-        async with sessions.exclusive():
-            e = engine()
-            await await_output(e.recover_connection)
-            return e.state()
 
     # Scene history
 
@@ -812,71 +609,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         return {"port": port, "class": body.pd_class}
 
     app.include_router(api)
-
-    @app.websocket("/api/ws")
-    async def websocket(ws: WebSocket):
-        if token and not token_matches(ws.headers.get("authorization"), token):
-            await ws.close(code=4401)
-            return
-        bound_engine = (ref(sessions.engine) if sessions.engine is not None and sessions.engine.connected
-                        and not sessions.handoff_pending else None)
-        bound_workspace = sessions.workspace_id()
-        handshake_workspace = ws.headers.get("X-EE-Workspace")
-        await ws.accept()
-        mailbox = sessions.listen()
-        mailbox.put({"type": "session", "session": sessions.info()})
-        if sessions.engine is not None:
-            mailbox.put(sessions.engine.state_message())
-            mailbox.put(sessions.engine.frame_message())
-
-        async def sender() -> None:
-            while True:
-                await ws.send_json(controller.message(await mailbox.get()))
-
-        send_task = asyncio.create_task(sender())
-        try:
-            while True:
-                msg = await ws.receive_json()
-                if not isinstance(msg, dict):
-                    mailbox.put({"type": "error", "code": "invalid", "message": "messages must be objects"})
-                    continue
-                current = None if sessions.handoff_pending else sessions.engine
-                if current is None and msg.get("type") != "ping":
-                    mailbox.put({"type": "error", "id": msg.get("id"), "code": "not_logged_in",
-                                         "message": "log in to a switch first"})
-                    continue
-                if msg.get("type") != "ping" and (
-                    bound_engine is None or current is not bound_engine()
-                    or sessions.workspace_id() != bound_workspace
-                    or handshake_workspace is not None and handshake_workspace != bound_workspace
-                    or "workspace_id" in msg and msg["workspace_id"] != bound_workspace
-                ):
-                    mailbox.put({"type": "error", "id": msg.get("id"), "code": "workspace_changed",
-                                 "message": "The switch session changed. Reopen this connection before "
-                                            "changing lighting."})
-                    continue
-                try:
-                    reply = handle_ws_command(current, msg) if current else {"type": "pong", "id": msg.get("id")}
-                    if current and msg.get("type") == "release":
-                        await current.wait_for_output_idle()
-                except NotFound as exc:
-                    reply = {"type": "error", "id": msg.get("id"), "code": "not_found", "message": str(exc)}
-                except TransportError as exc:
-                    reply = {"type": "error", "id": msg.get("id"), "code": "output_unconfirmed", "message": str(exc)}
-                except (ValueError, KeyError, TypeError) as exc:
-                    reply = {"type": "error", "id": msg.get("id"), "code": "invalid",
-                             "message": str(exc).strip("'\"")}
-                if reply:
-                    mailbox.put(reply)
-        except WebSocketDisconnect:
-            pass
-        except Exception:
-            log.debug("websocket closed", exc_info=True)
-        finally:
-            send_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await send_task
-            sessions.unlisten(mailbox)
+    ws_routes.attach(app, ctx)
 
     # The server provides the API only. The desktop app and the browser workspace start their own service.
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
