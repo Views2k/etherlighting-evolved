@@ -20,6 +20,7 @@ if ((Test-Path -LiteralPath $OutputRoot) -and @(Get-ChildItem -LiteralPath $Outp
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 $node = @(Get-Command node -CommandType Application)[0].Source
 $steps = [Collections.Generic.List[object]]::new()
+$previousPython = $env:EE_PREVIEW_PYTHON
 function Invoke-Check([string]$Name, [string]$Executable, [string[]]$Arguments) {
     # A step passes or fails on its exit code alone. Windows PowerShell turns each line a program writes to stderr
     # into an error record, which would stop the script under the 'Stop' preference.
@@ -54,10 +55,13 @@ try {
     }
     $env:AVALONIA_TELEMETRY_OPTOUT = '1'
     Invoke-Check 'desktop-build' 'dotnet' @('build',(Join-Path $check 'EtherlightingEvolved.Native.Check.csproj'),'-c','Release','--no-restore')
+    # Without it the simulator would run on the checkout's .venv instead of the Python this run checks.
+    $env:EE_PREVIEW_PYTHON = $PythonExe
     Invoke-Check 'desktop' 'dotnet' @((Join-Path $check 'bin\Release\net10.0\EtherlightingEvolved.Native.Check.dll'),'--output',(Join-Path $OutputRoot 'desktop'),'--service')
     Invoke-Check 'browser' $node @('tools/smoke-workspace.mjs','--root',$root,'--python',$PythonExe,'--browser',$BrowserExe,'--output',(Join-Path $OutputRoot 'browser'),'--port','4198')
     $passed = $true
 } finally {
+    $env:EE_PREVIEW_PYTHON = $previousPython
     @{passed=$passed;steps=$steps.ToArray()} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputRoot 'result.json') -Encoding utf8
     Pop-Location
 }

@@ -103,11 +103,15 @@ public sealed class ServiceHost
             WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
+        // In a source checkout EE_PREVIEW_PYTHON chooses the Python that runs the engine, as it does for a gateway
+        // started by hand. tools/verify.ps1 sets it so the desktop check runs the simulator on the Python it checks.
+        start.Environment.TryGetValue("EE_PREVIEW_PYTHON", out var python);
         foreach (var key in start.Environment.Keys.ToList())
             if (key.StartsWith("EE_", StringComparison.OrdinalIgnoreCase) || key.StartsWith("PYTHON", StringComparison.OrdinalIgnoreCase)
                 || key is "NODE_OPTIONS" or "NODE_PATH")
                 start.Environment.Remove(key);
         if (packaged) start.Environment["EE_RUNTIME_MODE"] = "packaged";
+        else if (python is not null) start.Environment["EE_PREVIEW_PYTHON"] = python;
         start.Environment["EE_PREVIEW_LIVE"] = demo ? "0" : "1";
         start.Environment["EE_PREVIEW_PORT"] = port.ToString();
         start.Environment["EE_WORKSPACE_DATA_DIR"] = dataDirectory;
