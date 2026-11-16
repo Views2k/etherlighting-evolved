@@ -63,20 +63,19 @@ Name: "autostart"; Description: "Start the app when I sign in to Windows"; Flags
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [InstallDelete]
-; The Python runtime of the 0.4 desktop program. The native desktop program does not use it.
+; An upgrade replaces the whole application, so no file from an earlier version stays behind. The app keeps no
+; user data in {app}, and the uninstaller (unins000.*) is left alone. Setup has already asked a running copy to
+; quit. Cancelling setup after this step leaves an incomplete app that needs a new install.
+; The Python runtime of the 0.4 desktop program.
 Type: filesandordirs; Name: "{app}\_internal"
-; Files of the retired standalone web interface and the 0.4 window controls that earlier versions installed.
-Type: files; Name: "{app}\src\app.mjs"
-Type: files; Name: "{app}\src\api.mjs"
-Type: files; Name: "{app}\src\state.mjs"
-Type: files; Name: "{app}\src\views.mjs"
-Type: files; Name: "{app}\src\rule-editor.mjs"
-Type: files; Name: "{app}\src\groups.mjs"
-Type: files; Name: "{app}\src\group-views.mjs"
-Type: files; Name: "{app}\src\window-chrome.mjs"
-Type: files; Name: "{app}\assets\style.css"
-Type: files; Name: "{app}\preview\desktop-chrome.mjs"
-Type: files; Name: "{app}\preview\titlebar-drag.mjs"
+Type: filesandordirs; Name: "{app}\engine"
+Type: filesandordirs; Name: "{app}\preview"
+Type: filesandordirs; Name: "{app}\src"
+Type: filesandordirs; Name: "{app}\assets"
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\licenses"
+Type: filesandordirs; Name: "{app}\tools"
+Type: files; Name: "{app}\*.dll"
 
 [Files]
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
