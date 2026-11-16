@@ -11,6 +11,7 @@ uses the Python version.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import json
@@ -173,13 +174,11 @@ class FanStore:
             return FanSettings()
         except ValueError:
             data = None
-        try:
-            if not isinstance(data, dict):
-                raise ValueError("saved fan settings must be an object")
-            return FanSettings.from_dict(data)
-        except (ValueError, TypeError):
-            quarantine(self.path, "The saved fan settings could not be used, so the switch controls the fans")
-            return FanSettings()
+        if isinstance(data, dict):
+            with contextlib.suppress(ValueError, TypeError):
+                return FanSettings.from_dict(data)
+        quarantine(self.path, "The saved fan settings could not be used, so the switch controls the fans")
+        return FanSettings()
 
     def save(self, settings: FanSettings) -> None:
         atomic_write_json(self.path, asdict(settings))
