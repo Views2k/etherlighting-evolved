@@ -7,7 +7,6 @@
 - Fan control runs on the switch and continues while EE is closed. A switch restart returns the fans to the switch's own control; EE restores the chosen mode when it connects again.
 - A fan change takes effect within about a second and goes straight to the new mode's speed. Thermal target starts at the speed estimated to hold the target instead of running the fans up to full speed first. Choosing Manual starts at the fans' current speed.
 - In a rack window such as 1280 × 400, Fans fills the screen with large readings and controls, including − and + buttons beside the slider.
-- On a touch screen, tooltips no longer appear and stay on screen after a tap. They still appear for a mouse or pen. Sliders take a touch up to 7px above or below the track, and the title bar's window buttons take a touch around their circles.
 - In narrow windows the title bar leaves out the app name so every page button fits.
 
 ## 0.5.0

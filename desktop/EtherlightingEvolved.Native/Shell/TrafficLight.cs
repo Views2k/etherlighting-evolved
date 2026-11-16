@@ -7,8 +7,7 @@ namespace EtherlightingEvolved.Native.Shell;
 
 /// <summary>
 /// One of the title bar's window buttons: a 12px circle (close red, minimize amber, maximize green) whose glyph
-/// shows while the pointer is over the group, drawn as in style.css. The button itself is 20 × 30, with the circle
-/// centered, so a touch near the circle still presses it; the group uses no spacing so the circles stay 8px apart.
+/// shows while the pointer is over the group, drawn as in style.css.
 /// </summary>
 public sealed class TrafficLight : Control
 {
@@ -26,8 +25,7 @@ public sealed class TrafficLight : Control
     {
         this.kind = kind;
         this.action = action;
-        Width = 20;
-        Height = 30;
+        Width = Height = 12;
         Cursor = Cursor.Default;
         Focusable = true;
         Avalonia.Automation.AutomationProperties.SetName(this, label);
@@ -71,9 +69,6 @@ public sealed class TrafficLight : Control
     {
         var color = kind switch { Kind.Close => Color.Parse("#ff5f57"), Kind.Minimize => Color.Parse("#febc2e"), _ => Color.Parse("#28c840") };
         if (pressed) color = Color.FromRgb((byte)(color.R * 0.85), (byte)(color.G * 0.85), (byte)(color.B * 0.85));
-        // The whole button takes presses; the circle is drawn in a 12px square at its center.
-        context.FillRectangle(Brushes.Transparent, new Rect(Bounds.Size));
-        using var _ = context.PushTransform(Matrix.CreateTranslation((Bounds.Width - 12) / 2, (Bounds.Height - 12) / 2));
         var center = new Point(6, 6);
         context.DrawEllipse(new SolidColorBrush(color), new Pen(Rim, 1), center, 5.5, 5.5);
         context.DrawLine(new Pen(Gloss, 1), new Point(3.5, 1.2), new Point(8.5, 1.2));

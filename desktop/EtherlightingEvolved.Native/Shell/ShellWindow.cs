@@ -1,10 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Platform;
-using Avalonia.VisualTree;
 
 namespace EtherlightingEvolved.Native.Shell;
 
@@ -40,11 +38,6 @@ public sealed class ShellWindow : Window
             e.Handled = true;
             await shell.MoveHistory(e.Key == Key.Left ? -1 : 1);
         };
-        // A tap on a touch screen counts as hovering that never ends, so a tooltip would stay up with no way to
-        // dismiss it. While touch is in use a tooltip is cancelled before its popup opens. The input handlers only
-        // note the pointer type, so they cost nothing per touch.
-        AddHandler(PointerPressedEvent, FollowPointerType, RoutingStrategies.Tunnel, handledEventsToo: true);
-        AddHandler(PointerMovedEvent, FollowPointerType, RoutingStrategies.Tunnel, handledEventsToo: true);
         PointerPressed += async (_, e) =>
         {
             if (shell.Overlay.HasDialog) return;
@@ -56,41 +49,6 @@ public sealed class ShellWindow : Window
     }
 
     public AppShell Shell { get; }
-
-    bool touch;
-    Control? openTip;
-
-    static ShellWindow()
-    {
-        ToolTip.ToolTipOpeningEvent.AddClassHandler<Control>((control, e) =>
-        {
-            if (TopLevel.GetTopLevel(control) is ShellWindow { touch: true }) e.Cancel = true;
-        });
-        ToolTip.IsOpenProperty.Changed.AddClassHandler<Control>((control, _) =>
-        {
-            if (TopLevel.GetTopLevel(control) is ShellWindow window)
-                window.openTip = ToolTip.GetIsOpen(control) ? control : window.openTip == control ? null : window.openTip;
-        });
-    }
-
-    /// <summary>True while the most recent pointer input came from a touch screen.</summary>
-    public bool TouchInput => touch;
-
-    long lastTouch = long.MinValue / 2;
-
-    void FollowPointerType(object? sender, PointerEventArgs e)
-    {
-        var now = Environment.TickCount64;
-        if (e.Pointer.Type == PointerType.Touch)
-        {
-            touch = true;
-            lastTouch = now;
-            // A tooltip opened by the mouse before a tap closes with that tap.
-            if (openTip is { } tip) ToolTip.SetIsOpen(tip, false);
-        }
-        // Windows can follow a tap with mouse messages for the same touch; only a later mouse movement counts.
-        else if (now - lastTouch > 1500) touch = false;
-    }
 
     /// <summary>Closing the window keeps EE running in the notification area unless the app is quitting.</summary>
     public bool AllowClose { get; set; }

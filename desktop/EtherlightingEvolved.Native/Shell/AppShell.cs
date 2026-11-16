@@ -132,9 +132,7 @@ public sealed class AppShell : UserControl
     {
         // Title bar: traffic lights and wordmark, centered navigation, Help, Settings and the logo.
         titlebar.Bind(Border.BackgroundProperty, "chrome").Bind(Border.BorderBrushProperty, "line");
-        // Each light is a 20px-wide touch target around its 12px circle, so the circles stay 8px apart with no
-        // spacing, and the group starts 4px further left to keep the circles where they were.
-        var lights = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(-4, 0, 0, 0) };
+        var lights = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         var lightButtons = new[]
         {
             new TrafficLight(TrafficLight.Kind.Close, "Hide to notification area", () => HideRequested?.Invoke()),
@@ -144,7 +142,7 @@ public sealed class AppShell : UserControl
         foreach (var light in lightButtons) lights.Children.Add(light);
         lights.PointerEntered += (_, _) => { foreach (var light in lightButtons) light.ShowGlyph = true; };
         lights.PointerExited += (_, _) => { foreach (var light in lightButtons) light.ShowGlyph = false; };
-        var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, VerticalAlignment = VerticalAlignment.Center };
         brand.Children.Add(lights);
         var brandName = new TextBlock { Text = "Etherlighting Evolved", FontSize = 14, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.15, VerticalAlignment = VerticalAlignment.Center }.Bind(TextBlock.ForegroundProperty, "text");
         brand.Children.Add(brandName);

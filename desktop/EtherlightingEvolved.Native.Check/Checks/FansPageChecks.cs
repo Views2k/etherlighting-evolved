@@ -108,46 +108,17 @@ public static class FansPageChecks
                     "+ raises the fan speed by 5%");
                 check(await Until(() => Task.FromResult(Fits(6))), "the rack layout still fits with the slider shown");
 
-                // Touch targets: a fingertip a little off a slider or a window button still lands on it.
-                window.UpdateLayout();
-                static bool Within(IInputElement? hit, Control target) =>
-                    hit is Visual visual && (ReferenceEquals(visual, target) || visual.GetVisualAncestors().Contains(target));
-                var slider = Visible(30)!;
-                var mid = slider.TranslatePoint(new Point(slider.Bounds.Width / 2, slider.Bounds.Height / 2), window)!.Value;
-                check(Within(window.InputHitTest(mid + new Point(0, 13)), slider) && Within(window.InputHitTest(mid - new Point(0, 13)), slider),
-                    "a touch 13px above or below a slider's track lands on the slider");
-                var light = window.GetVisualDescendants().OfType<TrafficLight>().First();
-                var dot = light.TranslatePoint(new Point(light.Bounds.Width / 2, light.Bounds.Height / 2), window)!.Value;
-                check(light.Bounds.Width >= 20 && light.Bounds.Height >= 28 && Within(window.InputHitTest(dot + new Point(0, 10)), light),
-                    "a touch below a window button's circle presses it");
-
-                // Touch input: a tap must not leave a tooltip on screen, and a mouse brings tooltips back.
+                // Pointer input stays cheap: switching between touch and mouse does no work across the window.
                 var plus = Find(Page(), "+")!;
-                ToolTip.SetTip(plus, "Higher");
-                ToolTip.SetIsOpen(plus, true);
                 void Press(PointerType type)
                 {
                     var pointer = new Pointer(Pointer.GetNextFreeId(), type, true);
                     var properties = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.Other);
                     window.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, plus, pointer, window, new Point(10, 10), 0, properties, KeyModifiers.None));
                 }
-                Press(PointerType.Touch);
-                var closed = !ToolTip.GetIsOpen(plus);
-                ToolTip.SetIsOpen(plus, true);
-                check(closed && !ToolTip.GetIsOpen(plus), "touch input closes tooltips and keeps them from opening");
-                // Windows can follow a tap with mouse messages for the same touch; those do not bring tooltips back.
-                Press(PointerType.Mouse);
-                ToolTip.SetIsOpen(plus, true);
-                check(!ToolTip.GetIsOpen(plus), "mouse messages that follow a tap do not reopen tooltips");
-                // Pointer input must stay cheap: switching between touch and mouse does no work across the window.
                 var clock = Stopwatch.StartNew();
                 for (var i = 0; i < 1000; i++) Press(i % 2 == 0 ? PointerType.Touch : PointerType.Mouse);
                 check(clock.ElapsedMilliseconds < 250, $"1,000 alternating touch and mouse events take {clock.ElapsedMilliseconds} ms");
-                await Task.Delay(1600);
-                Press(PointerType.Mouse);
-                ToolTip.SetIsOpen(plus, true);
-                check(ToolTip.GetIsOpen(plus), "a later mouse movement shows tooltips again");
-                ToolTip.SetIsOpen(plus, false);
             }
             finally
             {
