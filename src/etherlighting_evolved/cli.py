@@ -31,6 +31,7 @@ from .engine import to_output
 from .ownership import OutputJournal, device_identity
 from .switch import EtherlightSwitch
 from .transport import (
+    SSH_FINGERPRINT,
     HostKeyMismatchError,
     HostKeyStore,
     HostKeyUntrustedError,
@@ -244,7 +245,7 @@ def _forget_host(args: argparse.Namespace) -> int:
 
 
 def _fingerprint(value: str) -> str:
-    if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", value):
+    if not re.fullmatch(SSH_FINGERPRINT, value):
         raise argparse.ArgumentTypeError("enter the SHA256 fingerprint EE printed")
     return value
 

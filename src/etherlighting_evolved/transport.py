@@ -75,6 +75,9 @@ class HostKeyUntrustedError(TransportError):
 
 
 KEY_TYPE = re.compile(r"[A-Za-z0-9@._+-]{1,64}")
+# A fingerprint as `ssh-keygen -l` prints it. The API and eectl both take one back to accept a key, so both use this
+# pattern; it is anchored for Pydantic, which searches rather than matches.
+SSH_FINGERPRINT = r"^SHA256:[A-Za-z0-9+/]{43}$"
 # Addresses whose presented key is kept for approval. A client that probes many addresses cannot grow it further.
 PRESENTED_LIMIT = 32
 

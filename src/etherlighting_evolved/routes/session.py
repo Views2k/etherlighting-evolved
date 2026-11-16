@@ -5,9 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..transport import SSH_FINGERPRINT
 from .context import ApiContext, await_output, require_local_caller
-
-SSH_FINGERPRINT = r"^SHA256:[A-Za-z0-9+/]{43}$"
 
 
 class LoginRequest(BaseModel):
