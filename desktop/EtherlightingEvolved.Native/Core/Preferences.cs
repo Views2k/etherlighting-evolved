@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 
 namespace EtherlightingEvolved.Native.Core;
@@ -17,33 +18,42 @@ public static class Preferences
 
     internal static string File => Path.Combine(App.Options.Demo ? Locations.Workspace(true) : Locations.AppData, "preferences.json");
 
+    /// <summary>
+    /// The saved values, read once. A file that cannot be opened now, for example while another program holds it, is
+    /// not taken as empty: the error is thrown and the next use reads it again.
+    /// </summary>
     static Dictionary<string, string> Local
     {
         get
         {
             if (local is not null) return local;
-            local = new Dictionary<string, string>(StringComparer.Ordinal);
-            try
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            string text;
+            try { text = System.IO.File.ReadAllText(File); }
+            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return local = values; }
+            if (Json.Parse(text) is JsonObject saved)
             {
-                if (Json.Parse(System.IO.File.ReadAllText(File)) is JsonObject saved)
-                {
-                    foreach (var (key, value) in saved)
-                        if (value?.Str() is { } text) local[key] = text;
-                }
-                else unreadable = true;
+                foreach (var (key, value) in saved)
+                    if (value?.Str() is { } item) values[key] = item;
             }
-            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { unreadable = true; }
-            return local;
+            else unreadable = true;
+            return local = values;
         }
     }
 
     public static string? GetItem(string key)
     {
-        lock (Gate) return Local.TryGetValue(key, out var value) ? value : null;
+        lock (Gate)
+        {
+            try { return Local.TryGetValue(key, out var value) ? value : null; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+        }
     }
 
-    /// <summary>Saves a value. Throws when it cannot be written, as localStorage.setItem does.</summary>
+    /// <summary>
+    /// Saves a value. Throws when it cannot be written, as localStorage.setItem does, and when the saved file cannot be
+    /// opened now, so its other values are never replaced by this one alone.
+    /// </summary>
     public static void SetItem(string key, string value)
     {
         lock (Gate)
@@ -66,8 +76,9 @@ public static class Preferences
         Directory.CreateDirectory(Path.GetDirectoryName(File)!);
         if (unreadable && System.IO.File.Exists(File))
         {
-            // A file that could not be read may still hold saved palettes, so it is set aside instead of replaced.
-            System.IO.File.Move(File, File + ".unreadable", overwrite: true);
+            // A file that could not be parsed may still hold saved palettes, so it is set aside under the time it was
+            // found instead of replaced, next to any copy set aside earlier.
+            System.IO.File.Move(File, $"{File}.{DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture)}.unreadable");
         }
         unreadable = false;
         var json = new JsonObject();
