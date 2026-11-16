@@ -119,10 +119,17 @@ public static class FansPageChecks
                 var clock = Stopwatch.StartNew();
                 for (var i = 0; i < 1000; i++) Press(i % 2 == 0 ? PointerType.Touch : PointerType.Mouse);
                 check(clock.ElapsedMilliseconds < 250, $"1,000 alternating touch and mouse events take {clock.ElapsedMilliseconds} ms");
+
+                // A tap that arrives as a mouse click leaves the pointer in place, so the rack window shows no hover
+                // tooltips: the tooltip service is off for the window and every control in it.
+                check(!ToolTip.GetServiceEnabled(window) && !ToolTip.GetServiceEnabled(plus),
+                    $"a rack-sized window shows no tooltips (window {ToolTip.GetServiceEnabled(window)}, control {ToolTip.GetServiceEnabled(plus)}, client {window.ClientSize})");
             }
             finally
             {
                 window.Width = width; window.Height = height;
+                await Until(() => Task.FromResult(ToolTip.GetServiceEnabled(window)));
+                check(ToolTip.GetServiceEnabled(window), "a full-size window shows tooltips again");
             }
         }
         else check(false, "the Fans checks find their window");
