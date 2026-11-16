@@ -24,7 +24,7 @@ The desktop app has Lighting, Effects, Automation, Profiles, Fans, Settings and 
 
 ## Requirements
 
-- A computer with 64-bit Windows 10 or later. Only the Windows app connects to a switch.
+- A computer with 64-bit Windows 10 or later. EE controls switches from Windows only.
 - A switch from the [hardware list](docs/HARDWARE.md), its IP address, and the SSH username and password set for your devices in UniFi Network.
 - UniFi Network, if you want device names and port telemetry.
 - Tailscale on the Windows computer and on each other device, if you want to open EE from elsewhere.
@@ -118,7 +118,7 @@ On Windows, EE keeps its data in two folders. The uninstaller removes the progra
 | `%USERPROFILE%\.etherlighting-evolved` | Saved switch and UniFi Network logins (encrypted with Windows DPAPI for your account), pinned SSH host keys, lighting, profiles, schedules, port names, fan settings, the switch playback record and the output ownership records in `output-ownership` |
 | `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`. `workspace` holds the private access settings, approved Tailscale devices and `service-diagnostics.log`. `demo` holds the demo's data. |
 
-The macOS and Linux clients keep their settings and `desktop.log` in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`.
+The macOS and Linux clients keep their settings and `desktop.log` in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, delete the app or its extracted folder and that data folder.
 
 To remove EE and its data from Windows, choose **Handoff to UniFi** for each switch, uninstall EE in Windows Settings → Apps, then delete both folders. Delete `output-ownership` only after Handoff to UniFi has finished: it records the switches whose lighting EE has to return at the next login. EE removes its Tailscale Serve route when it quits and when it is uninstalled. An installation for all users does not remove the route at uninstall; check it with `tailscale serve status`.
 
