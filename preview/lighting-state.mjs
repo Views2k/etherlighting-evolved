@@ -223,12 +223,3 @@ export function lightingSnapshot(baseScene, state, draft) {
   }
   return scene;
 }
-
-export async function applyLightingPlan(pending, send, confirmed = () => {}) {
-  while (pending.length) {
-    const item = pending[0];
-    await send(item.path,item.method,item.body);
-    pending.shift();
-    await confirmed(item);
-  }
-}
