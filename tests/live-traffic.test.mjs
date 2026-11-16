@@ -15,6 +15,7 @@ test('Live Traffic has automatic capacity and opt-in uplink customization',() =>
   assert.equal(defaultConfig('traffic').params.custom_uplink,false);
 });
 
+// live-traffic-frames.json is written by tools/live_traffic_fixtures.py and checked by tools/check-fixtures.py.
 const cases = JSON.parse(await readFile(new URL('./fixtures/live-traffic-frames.json',import.meta.url),'utf8'));
 test('Live Traffic preview matches automatic capacities, smoothing, offline and uplink behavior',() => {
   for (const sequence of cases) {

@@ -15,6 +15,7 @@ from etherlighting_evolved.links import PortLink
 from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import SimulatedTransport
 
+# fixed_effects.json records earlier engine output on purpose. It has no generator and must not be regenerated.
 BASELINE = json.loads((Path(__file__).parent / "fixtures" / "fixed_effects.json").read_text("utf-8"))
 
 
