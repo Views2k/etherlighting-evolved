@@ -44,6 +44,7 @@
     <EmbeddedResource Include="../../preview/theme-catalog.mjs" LogicalName="theme-catalog.mjs" />
     <EmbeddedResource Include="../../src/icons.mjs" LogicalName="icons.mjs" />
     <EmbeddedResource Include="../../src/catalog.mjs" LogicalName="catalog.mjs" />
-    <AvaloniaResource Include="../../assets/logo.png" Link="Assets/logo.png" />
+    <!-- The app decodes the logo at 104 px or less, so the 256 px copy is enough. -->
+    <AvaloniaResource Include="../../assets/logo-256.png" Link="Assets/logo-256.png" />
   </ItemGroup>
 </Project>

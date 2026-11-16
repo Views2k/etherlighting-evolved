@@ -21,7 +21,7 @@ public static class ConnectionUi
         var logo = new Image { Width = size, Height = size, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left };
         try
         {
-            using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo.png"));
+            using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo-256.png"));
             logo.Source = Avalonia.Media.Imaging.Bitmap.DecodeToWidth(stream, (int)(size * 2), Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality);
         }
         catch (Exception) { }

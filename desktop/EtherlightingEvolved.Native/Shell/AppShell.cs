@@ -161,7 +161,7 @@ public sealed class AppShell : UserControl
         var logo = new Image { Width = 30, Height = 30, Margin = new Thickness(6, 0, 0, 0), Stretch = Stretch.Uniform };
         try
         {
-            using var stream = AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo.png"));
+            using var stream = AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo-256.png"));
             logo.Source = Bitmap.DecodeToWidth(stream, 60, BitmapInterpolationMode.HighQuality);
         }
         catch (Exception) { }
