@@ -473,7 +473,7 @@ def test_manager_enriches_only_matching_fresh_switch_and_clears_on_failure():
         result = await manager.connect(url="https://controller.test", username="user", password="secret",
                                        switch_host="192.0.2.1")
         assert result["connected"] and result["site"] == "default"
-        ports =[{"port": 1, "display_rgb": [1.0, 2.0, 3.0], "poe": {"power_w": 8}, "traffic_bps": 900}]
+        ports = [{"port": 1, "display_rgb": [1.0, 2.0, 3.0], "poe": {"power_w": 8}, "traffic_bps": 900}]
         enriched = manager.enrich_ports(ports, "192.0.2.1")
         assert enriched[0]["name"] == "Desk"
         assert "name" not in ports[0]

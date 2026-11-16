@@ -45,7 +45,7 @@ def _serve(args: argparse.Namespace) -> int:
     print(f"{PROJECT_NAME} {__version__}  ·  {TAGLINE}")
     print(DISCLAIMER)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
-    print(f"\nThe API is at http://{shown}:{port}/api. Its documentation is at http://{shown}:{port}/docs.")
+    print(f"\nThe API documentation is at http://{shown}:{port}/docs.")
     if args.demo:
         print("Demo mode: logged in to the simulator, no switch needed.")
     print()
