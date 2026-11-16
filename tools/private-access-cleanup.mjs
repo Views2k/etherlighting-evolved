@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {isEntryScript} from '../preview/entry-script.mjs';
 import {createPrivateAccessManager, runInstalledTailscale} from '../preview/private-access.mjs';
 
 // The uninstaller runs this as the user who runs EE, after EE has quit. It removes EE's Tailscale Serve route and
@@ -25,7 +25,7 @@ function finish(exitCode, message) {
   (exitCode === 0 ? process.stdout : process.stderr).write(message + '\n', () => process.exit(exitCode));
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isEntryScript(import.meta.url)) {
   if (process.platform !== 'win32' || !path.isAbsolute(process.env.LOCALAPPDATA ?? '') || process.argv.length > 2) {
     finish(2, 'Run this command without arguments as the user who runs EE on Windows.');
   } else {

@@ -1,12 +1,11 @@
 import http from 'node:http';
 import {readFile, mkdir} from 'node:fs/promises';
-import {realpathSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomBytes} from 'node:crypto';
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {createAdminAccess,ADMIN_CODE_PARAM,ADMIN_HEADER,ADMIN_MESSAGES,LINK_TTL_MS} from './admin-access.mjs';
+import {isEntryScript} from './entry-script.mjs';
 import {createPrivateGateway} from './private-gateway.mjs';
 import {createPrivateAccessManager} from './private-access.mjs';
 import {keepPrivateAccessAvailable} from './private-access-retry.mjs';
@@ -233,6 +232,4 @@ export async function startWorkspace() {
   });
 }
 
-// Node resolves the entry script through symbolic links and junctions before naming the module, so the path is
-// compared the same way.
-if(process.argv[1]&&pathToFileURL(realpathSync(process.argv[1])).href===import.meta.url)await startWorkspace();
+if(isEntryScript(import.meta.url))await startWorkspace();

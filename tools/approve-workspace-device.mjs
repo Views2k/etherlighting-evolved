@@ -4,8 +4,8 @@ import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {pathToFileURL} from 'node:url';
 import {canonicalTailnetAddress, matchesApprovedNode, MAX_APPROVED_DEVICES, parseApprovedDevices} from '../preview/approved-device.mjs';
+import {isEntryScript} from '../preview/entry-script.mjs';
 import {createTailscaleRunner} from '../preview/tailscale-cli.mjs';
 
 class ApprovalError extends Error {}
@@ -187,7 +187,7 @@ async function readSelection() {
   return {dnsName: selection.dnsName, deviceStableID: selection.deviceStableID};
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isEntryScript(import.meta.url)) {
   try {
     const [action, selection, ...rest] = process.argv.slice(2);
     if (process.platform !== 'win32' || !path.isAbsolute(process.env.LOCALAPPDATA ?? '')) {
