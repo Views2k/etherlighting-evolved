@@ -70,7 +70,9 @@ foreach ($folder in @('preview','src','assets')) {
     }
 }
 New-Item -ItemType Directory -Path (Join-Path $app 'runtime'),(Join-Path $app 'licenses'),(Join-Path $app 'tools') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'approve-workspace-device.mjs') -Destination (Join-Path $app 'tools')
+foreach ($tool in @('approve-workspace-device.mjs','private-access-cleanup.mjs')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $tool) -Destination (Join-Path $app 'tools')
+}
 Copy-Item -LiteralPath $node -Destination (Join-Path $app 'runtime\node.exe')
 Copy-Item -LiteralPath (Join-Path $backend 'LICENSE') -Destination (Join-Path $app 'LICENSE.txt')
 Copy-Item -LiteralPath $nodeLicense -Destination (Join-Path $app 'licenses\Node-LICENSE.txt')

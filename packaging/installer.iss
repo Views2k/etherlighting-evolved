@@ -171,19 +171,47 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if not QuitRunningCopy() then
-    Result := 'EE is still running. Quit the desktop app from its notification area menu, or choose Settings > Close web session in the web workspace. Then reopen setup.';
+    Result := 'EE is still running. Quit the desktop app from its notification area menu, then reopen setup.';
 end;
 
 function InitializeUninstall(): Boolean;
 begin
   Result := QuitRunningCopy();
   if not Result then
-    MsgBox('EE is still running. Quit the desktop app from its notification area menu, or choose Settings > Close web session in the web workspace. Then retry uninstalling.', mbError, MB_OK);
+    MsgBox('EE is still running. Quit the desktop app from its notification area menu, then retry uninstalling.', mbError, MB_OK);
+end;
+
+{ EE removes its Tailscale Serve route each time it quits. This removes one left by an unclean stop. The tool exits
+  with the route's HTTPS port when it cannot confirm the removal, and the uninstall continues either way. }
+procedure RemovePrivateAccessRoute();
+var
+  Node, Script: String;
+  ResultCode: Integer;
+begin
+  { An uninstall for all users runs elevated and cannot reliably read this user's EE settings. desktop/README.md
+    gives the command to run instead. }
+  if IsAdminInstallMode then
+    Exit;
+  Node := ExpandConstant('{app}\runtime\node.exe');
+  Script := ExpandConstant('{app}\tools\private-access-cleanup.mjs');
+  if (not FileExists(Node)) or (not FileExists(Script)) then
+    Exit;
+  if not Exec(Node, AddQuotes(Script), ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    ResultCode := -1;
+  if UninstallSilent or (ResultCode = 0) then
+    Exit;
+  if (ResultCode >= 1024) and (ResultCode <= 65535) then
+    MsgBox(Format('EE could not confirm that its Tailscale private address was removed. If you use Tailscale on this computer, open PowerShell and run "tailscale serve status". If port %d forwards to http://127.0.0.1, remove it with "tailscale serve --https=%d off".', [ResultCode, ResultCode]), mbInformation, MB_OK)
+  else
+    MsgBox('EE could not confirm that its Tailscale private address was removed. If you use Tailscale on this computer, open PowerShell and run "tailscale serve status" to review its routes.', mbInformation, MB_OK);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  { The app's own "Start with Windows" switch can add this value even if the installer didn't. }
   if CurUninstallStep = usUninstall then
+  begin
+    RemovePrivateAccessRoute();
+    { The app's own "Start with Windows" switch can add this value even if the installer didn't. }
     RegDeleteValue(HKCU, '{#RunKey}', '{#AppName}');
+  end;
 end;
