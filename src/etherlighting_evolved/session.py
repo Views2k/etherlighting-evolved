@@ -344,7 +344,6 @@ class SessionManager:
                     gamma=e.gamma,
                     link_poll=e.link_poll,
                     brightness=e.brightness,
-                    dimming=e.dimming,
                     effect=e.effect,
                     effect_params=e.effect_params,
                 )

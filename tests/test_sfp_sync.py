@@ -14,6 +14,11 @@ from etherlighting_evolved.sfp import SfpSync
 from etherlighting_evolved.transport import TransportError
 
 
+async def wait_for_every_sfp(engine):
+    for port in engine.switch.sfp_ports:
+        await engine.wait_for_sfp(port)
+
+
 def test_sync_defaults_preserve_existing_independent_behavior():
     engine = engine_for_sfp(gamma=1)
     engine.set_sfp(9, {"mode": "color", "color": "red"})
@@ -54,7 +59,7 @@ def test_ethernet_follows_final_composed_source_and_applies_gamma_and_brightness
     engine.set_sfp(10, {"mode": "unmanaged", "brightness": 3})
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 4})
     engine.compose(t=0)
-    expected = to_output(*engine._shown[3], engine.dimming, engine.gamma, precise=True)
+    expected = to_output(*engine._shown[3], engine.gamma, precise=True)
     for output in engine.sfp_outputs().values():
         assert output.color == expected.color
         assert output.level == expected.level
@@ -95,7 +100,7 @@ def test_ethernet_follower_keeps_fractional_intensity_in_precise_sfp_output(gamm
     engine.set_effect("static", {"color": "#1983bd", "brightness_color": 11})
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 2})
     engine.compose(t=0)
-    expected = to_output(*engine._shown[1], engine.dimming, gamma, precise=True)
+    expected = to_output(*engine._shown[1], gamma, precise=True)
     for output in engine.sfp_outputs().values():
         assert output.precise_rgb == expected.precise_rgb
         assert output.level == expected.level
@@ -178,7 +183,7 @@ async def test_sync_waits_for_both_matching_acknowledgments_and_release_is_confi
     start_renderer(engine)
     try:
         await asyncio.wait_for(engine.switch.write_started.wait(), 1)
-        waiting = asyncio.create_task(engine.wait_for_sfp_sync())
+        waiting = asyncio.create_task(wait_for_every_sfp(engine))
         await asyncio.sleep(0)
         assert not waiting.done()
         engine.switch.write_gate.set()
@@ -186,7 +191,7 @@ async def test_sync_waits_for_both_matching_acknowledgments_and_release_is_confi
         assert all(engine._sfp_acknowledged[p] == engine._sfp_revisions[p] for p in (9, 10))
         assert engine.switch.sfp_applied[9] == engine.switch.sfp_applied[10]
         engine.set_sfp_sync({"mode": "independent"})
-        await asyncio.wait_for(engine.wait_for_sfp_sync(), 1)
+        await asyncio.wait_for(wait_for_every_sfp(engine), 1)
         assert 10 not in engine.switch.sfp_applied
         assert 9 in engine.switch.sfp_applied
         assert "release-sfp-10" in engine.switch.calls and "release-sfp-9" not in engine.switch.calls
@@ -203,7 +208,7 @@ async def test_sync_cleanup_failure_retains_existing_fail_closed_behavior():
     engine.switch.fail_sfp_release = True
     engine.set_sfp_sync({"mode": "independent"})
     with pytest.raises(TransportError, match="SFP release"):
-        await engine.wait_for_sfp_sync()
+        await wait_for_every_sfp(engine)
     assert engine.mode == "released" and engine._native_blocked
     with pytest.raises(TransportError, match="Reconnect"):
         engine.resume()
@@ -214,7 +219,7 @@ async def test_new_sync_request_cannot_be_acknowledged_by_an_older_inflight_fram
     engine = engine_for_sfp()
     engine.switch.write_gate.clear()
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 1})
-    waiting = asyncio.create_task(engine.wait_for_sfp_sync())
+    waiting = asyncio.create_task(wait_for_every_sfp(engine))
     start_renderer(engine)
     try:
         await asyncio.wait_for(engine.switch.write_started.wait(), 1)
@@ -223,7 +228,7 @@ async def test_new_sync_request_cannot_be_acknowledged_by_an_older_inflight_fram
             await asyncio.wait_for(waiting, 1)
         assert all(engine._sfp_acknowledged[p] != engine._sfp_revisions[p] for p in (9, 10))
         engine.switch.write_gate.set()
-        await asyncio.wait_for(engine.wait_for_sfp_sync(), 1)
+        await asyncio.wait_for(wait_for_every_sfp(engine), 1)
         assert all(engine._sfp_acknowledged[p] == engine._sfp_revisions[p] for p in (9, 10))
     finally:
         engine.switch.write_gate.set()

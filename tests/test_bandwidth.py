@@ -7,6 +7,7 @@ from etherlighting_evolved.bandwidth import UplinkBandwidth
 from etherlighting_evolved.engine import Engine
 from etherlighting_evolved.hardware import PRO_XG8
 from etherlighting_evolved.links import PortLink, parse_port_show
+from etherlighting_evolved.mailbox import Mailbox
 from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import PortSampleUnavailable, SimulatedTransport, TransportError
 
@@ -245,7 +246,8 @@ async def test_released_lighting_delivers_bandwidth_in_regular_frames(monkeypatc
     engine.connected = True
     engine.mode = "released"
     engine._bandwidth = ready_meter()
-    subscriber = engine.subscribe()
+    subscriber = Mailbox()
+    engine.attach(subscriber)
     ticks = 0
 
     async def tick(delay, event=None):

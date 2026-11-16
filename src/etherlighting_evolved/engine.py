@@ -75,14 +75,12 @@ def percent(value: Any) -> int:
     return round(bounded_number(value, 0, 100, "brightness"))
 
 
-def to_output(color: Color, brightness: float, dimming: str = "rgb", gamma: float = 2.2,
-              *, precise: bool = False) -> PortOutput:
+def to_output(color: Color, brightness: float, gamma: float = 2.2, *, precise: bool = False) -> PortOutput:
     """Turn a color and a brightness into what the LED controller receives.
 
     Apply the configured gamma curve to both color and effective brightness. gamma=1 disables the curve.
-
-    "level" dimming normalizes the color to full strength and puts its brightness in the hardware level.
-    "rgb" carries all brightness changes in the color bytes and keeps the hardware level at 100, including black.
+    All brightness changes are carried in the color bytes; the hardware level stays at 100, including black.
+    Level-only updates did not reproduce effect fades on the Pro XG 8 PoE.
     """
     if precise:
         scale = (max(0.0, min(100.0, brightness)) / 100) ** gamma
@@ -91,16 +89,9 @@ def to_output(color: Color, brightness: float, dimming: str = "rgb", gamma: floa
         return PortOutput(preview, 100, channels)
     if brightness <= 0 or color.is_off:
         return PortOutput.off()
-    linear = [(c / 255) ** gamma for c in (color.r, color.g, color.b)]
     scale = (min(100.0, brightness) / 100) ** gamma
-    if dimming == "rgb":
-        rgb = Color(*(round(255 * v * scale) for v in linear))
-        return PortOutput.off() if rgb.is_off else PortOutput(rgb, 100)
-    peak = max(linear)
-    level = round(100 * peak * scale)
-    if level <= 0:
-        return PortOutput.off()
-    return PortOutput(Color(*(round(255 * v / peak) for v in linear)), level)
+    rgb = Color(*(round(255 * (c / 255) ** gamma * scale) for c in (color.r, color.g, color.b)))
+    return PortOutput.off() if rgb.is_off else PortOutput(rgb, 100)
 
 
 def ease(x: float) -> float:
@@ -162,14 +153,11 @@ class Engine:
         gamma: float = 2.2,
         link_poll: float = 1.0,
         brightness: int = 100,
-        dimming: str = "rgb",
         effect: str = "static",
         effect_params: dict | None = None,
         rules: list[dict] | None = None,
         reconnect_delay: float = 3.0,
     ) -> None:
-        if dimming not in ("level", "rgb"):
-            raise ValueError("dimming must be 'level' or 'rgb'")
         self.switch = switch
         self.num_ports = switch.num_ports
         self._profile_model = getattr(getattr(switch, "hardware_profile", None), "key", None)
@@ -180,9 +168,6 @@ class Engine:
         self.gamma = bounded_number(gamma, 1, 3, "gamma")
         self.link_poll = bounded_number(link_poll, 0.5, 3600, "status interval")
         self.brightness = percent(brightness)
-        # Keep accepting older configurations while encoding effect fades in RGB.
-        # Level-only updates did not reproduce those fades on the Pro XG 8 PoE.
-        self.dimming = "rgb"
         self.reconnect_delay = bounded_number(reconnect_delay, 1, 300, "reconnect interval")
         self._reconnect_failures = 0
         self._reconnect_blocked = False
@@ -332,7 +317,7 @@ class Engine:
         if (cleanup_error is not None and lease is not None
                 and (self.switch.native_uncertain or
                      (desktop_output is not None and lease.keep_for_player and self._sfp_release_pending))):
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            outputs = [to_output(color, brightness, self.gamma, precise=True)
                        for color, brightness in self._shown]
             try:
                 await self.switch.recover_output(outputs)
@@ -774,10 +759,6 @@ class Engine:
         self._sync_sfp_rules()
         self._changed()
 
-    async def wait_for_sfp_sync(self) -> None:
-        for port in self.switch.sfp_ports:
-            await self.wait_for_sfp(port)
-
     @property
     def _sfp_leader(self) -> int:
         return min(self.sfp)
@@ -827,7 +808,7 @@ class Engine:
                 continue
             self._sfp_playback.discard(port)
             color, brightness = self._sfp_color(port, elapsed)
-            outputs[port] = to_output(color, brightness, self.dimming, self.gamma,
+            outputs[port] = to_output(color, brightness, self.gamma,
                                       precise=self.switch.sfp_precise and (port in self._sfp_zones
                                                                            or self._sfp_port_animating(port)))
         if (self.sfp_sync.mode != "independent" and native and set(native) == set(self.switch.sfp_ports)
@@ -855,11 +836,11 @@ class Engine:
         revision = (tuple(self._sfp_revisions.values()) if self.sfp_sync.mode != "independent"
                     else self._sfp_revisions[port])
         look = tuple(sorted(rule.look.to_dict().items())) if rule is not None else None
-        key = (self.sfp_sync, revision, look, self.gamma, self.dimming)
+        key = (self.sfp_sync, revision, look, self.gamma)
         color, brightness = self._sfp_color(port, timing.monotonic() - self._t0)
         if follows:
-            return key, (to_output(color, brightness, self.dimming, self.gamma, precise=True),), 1, True
-        anchors = tuple(to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            return key, (to_output(color, brightness, self.gamma, precise=True),), 1, True
+        anchors = tuple(to_output(color, brightness, self.gamma, precise=True)
                         for color in light.native_anchors())
         return (*key, light, brightness), anchors, light.native_duration, False
 
@@ -1059,7 +1040,7 @@ class Engine:
         async with self._native_quiesce_lock:
             if not self._native_release_pending and not self._sfp_release_pending:
                 return
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=self.switch.precise_rgb)
+            outputs = [to_output(color, brightness, self.gamma, precise=self.switch.precise_rgb)
                        for color, brightness in self._shown]
             try:
                 if self._native_release_pending:
@@ -1122,7 +1103,7 @@ class Engine:
         await self._write_idle.wait()
         await self._initialization_idle.wait()
         async with self._native_quiesce_lock:
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            outputs = [to_output(color, brightness, self.gamma, precise=True)
                        for color, brightness in self._shown]
             try:
                 info = await self.switch.recover_output(outputs)
@@ -1374,7 +1355,7 @@ class Engine:
             "sfp_sync": self.sfp_sync.to_dict(),
             "fps": self.fps,
             "brightness": self.brightness,
-            "dimming": self.dimming,
+            "dimming": "rgb",
             "output": {"gamma": self.gamma, "transition": self.transition, "max_commands": self.max_commands},
             "zones": [z.to_dict() for z in self.zones],
             "rules": [r.to_dict() for r in self.rules],
@@ -1450,11 +1431,6 @@ class Engine:
                 "ports": self.ports(), "sfp": self.sfp_state(), "sfp_sync": self.sfp_sync.to_dict()}
 
     # Websocket fan-out
-
-    def subscribe(self) -> Mailbox:
-        mailbox = Mailbox()
-        self._subscribers.add(mailbox)
-        return mailbox
 
     def attach(self, mailbox: Mailbox) -> None:
         self._subscribers.add(mailbox)
@@ -1558,18 +1534,18 @@ class Engine:
                 self._keys[i] = ("identify",)
                 self._fades.pop(i, None)
                 self._shown[i] = (colors[i], brightness)
-                outputs.append(to_output(colors[i], brightness, self.dimming, self.gamma,
+                outputs.append(to_output(colors[i], brightness, self.gamma,
                                          precise=self.switch.precise_rgb))
             elif port in native and rule is None and override is None:
                 self._keys[i] = ("native", sources[i].get("id"), self._effect_of(port))
                 self._fades.pop(i, None)
                 self._shown[i] = (colors[i], brightness)
                 base, selector = native[port]
-                output = to_output(base, brightness, self.dimming, self.gamma, precise=True)
+                output = to_output(base, brightness, self.gamma, precise=True)
                 outputs.append(PortOutput(output.color, output.level, output.precise_rgb, breath=selector))
             else:
                 colors[i], brightness = self._crossfade(i, key, colors[i], brightness, clock)
-                outputs.append(to_output(colors[i], brightness, self.dimming, self.gamma,
+                outputs.append(to_output(colors[i], brightness, self.gamma,
                                          precise=self.switch.precise_rgb))
 
         self.last_sources = sources
@@ -1622,10 +1598,6 @@ class Engine:
     @property
     def command_budget(self) -> float:
         return min(self._command_budget, self._budget_ceiling())
-
-    @property
-    def throttle(self) -> float:
-        return self.command_budget / min(self.max_commands, self._budget_ceiling())
 
     def _set_command_budget(self, value: float) -> None:
         value = max(min(5.0, self._budget_ceiling()), min(value, self._budget_ceiling()))

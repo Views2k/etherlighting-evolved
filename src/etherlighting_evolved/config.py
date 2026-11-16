@@ -76,6 +76,9 @@ class EngineConfig:
     effect_params: dict = field(default_factory=lambda: {"color": "#ffffff"})
 
     def __post_init__(self) -> None:
+        if self.dimming not in ("level", "rgb"):
+            raise ValueError("dimming must be 'level' or 'rgb'")
+        # Older configurations chose "level"; output always carries brightness in RGB now.
         if self.dimming == "level":
             self.dimming = "rgb"
 

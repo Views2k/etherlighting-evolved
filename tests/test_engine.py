@@ -192,10 +192,8 @@ def test_a_bad_scene_changes_nothing():
     assert engine.snapshot() == before
 
 
-def test_level_dimming_moves_brightness_into_the_hardware_level():
-    out = to_output(Color(128, 0, 0), 100, "level", gamma=1.0)
-    assert out.color == Color(255, 0, 0) and out.level == 50
-    assert to_output(Color(128, 0, 0), 100, "rgb", gamma=1.0) == PortOutput(Color(128, 0, 0), 100)
+def test_brightness_stays_in_the_color_bytes_at_full_hardware_level():
+    assert to_output(Color(128, 0, 0), 100, gamma=1.0) == PortOutput(Color(128, 0, 0), 100)
     assert to_output(Color(255, 255, 255), 0) == PortOutput(Color(0, 0, 0), 100)
     assert to_output(Color(255, 255, 255), 0).preview().is_off
 
@@ -206,8 +204,6 @@ def test_gamma_encodes_effect_amplitude_and_global_brightness_in_rgb():
     assert to_output(Color(128, 128, 128), 100) == PortOutput(Color(56, 56, 56), 100)
     assert to_output(white, 100) == PortOutput(white, 100)
     assert to_output(Color(128, 64, 0), 100) == PortOutput(Color(56, 12, 0), 100)
-    # Explicit legacy conversion stays available, but is no longer Engine's output path.
-    assert to_output(Color(128, 128, 128), 100, "level") == PortOutput(white, 22)
 
 
 def test_a_new_effect_crossfades_from_the_old_one():
@@ -307,10 +303,10 @@ async def test_a_busy_switch_gets_fewer_commands():
     await engine.start()
     try:
         for _ in range(40):
-            if engine.throttle < 1.0:
+            if engine.command_budget < 30:
                 break
             await asyncio.sleep(0.1)
-        assert engine.throttle < 1.0
+        assert engine.command_budget < 30
         assert engine.state()["stats"]["switch_cpu_idle"] < 0.3
     finally:
         await engine.stop()
