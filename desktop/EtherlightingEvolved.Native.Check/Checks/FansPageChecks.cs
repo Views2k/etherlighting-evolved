@@ -46,6 +46,14 @@ public static class FansPageChecks
         check(await Until(() => Task.FromResult(Shows("Switch control") && All<TextBlock>(Page()).Any(t => (t.Text ?? "").EndsWith(" °C", StringComparison.Ordinal)))),
             "Fans shows the switch temperatures and the fan modes");
 
+        var lost = (JsonObject)shell.Workspace.State["fans"]!;
+        lost["error"] = null;
+        lost["settings_error"] = "Saved fan settings could not be read. The switch controls the fans until you choose a mode.";
+        shell.CurrentPage!.Update();
+        check(Shows("Saved fan settings could not be read."), "a fan choice that could not be read stays shown while error is empty");
+        lost["settings_error"] = null;
+        shell.CurrentPage.Update();
+
         check(await Click("Thermal target") && await Until(async () => (await Fans()).Str("settings.mode") == "target"),
             "Thermal target starts fan control on the switch");
         var described = await Until(() => Task.FromResult(Shows("Keeping the CPU at 55 °C")));

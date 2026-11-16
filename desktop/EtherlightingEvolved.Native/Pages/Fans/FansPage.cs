@@ -398,7 +398,9 @@ public sealed class FansPage : Page
             shownMode = mode;
             details.Content = Details(mode);
         }
-        var problem = fans.Str("error");
+        // settings_error stays set until a new mode is saved, so a lost fan choice remains visible after the switch
+        // takes the fans back and error clears.
+        var problem = fans.Str("error") is { Length: > 0 } failure ? failure : fans.Str("settings_error");
         error.Text = sending || chosen is not null ? "" : problem ?? "";
         error.IsVisible = error.Text.Length > 0;
         chart.Curves = curves;
