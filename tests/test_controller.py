@@ -9,11 +9,11 @@ from etherlighting_evolved.controller import (
     MAX_RESPONSE,
     ControllerClient,
     ControllerError,
-    ControllerManager,
     controller_origin,
     match_switch,
     port_metadata,
 )
+from etherlighting_evolved.controller_manager import ControllerManager
 
 TARGET = "02:00:00:00:00:01"
 CHILD = "02:00:00:00:00:02"
@@ -442,6 +442,9 @@ class FakeClient:
     instances = []
     sites = [{"name": "default", "desc": "Home"}]
     error = None
+    auth_method = "password"
+    console_id = None
+    api_key = ""
 
     def __init__(self, url, username, password, pin=None, *, kind="self_hosted"):
         self.url, self.username, self.password, self.pin = url, username, password, pin

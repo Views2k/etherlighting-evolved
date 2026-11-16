@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from .controller import ControllerError, ControllerManager
+from .controller import ControllerError
 from .controller_credentials import ControllerLoginStore
+from .controller_manager import ControllerManager
 from .credentials import CredentialStoreError
 from .port_names import PortNameStore
 
@@ -293,24 +293,15 @@ class ControllerIntegration:
 
         @router.post("/controller/connect")
         async def connect(body: ControllerLogin):
-            try:
-                return await self.connect(body)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.connect(body)
 
         @router.post("/controller/consoles")
         async def discover_consoles(body: ControllerConsoleDiscovery):
-            try:
-                return await self.discover_consoles(body)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.discover_consoles(body)
 
         @router.put("/controller/preferences")
         async def preferences(body: ControllerPreferences):
-            try:
-                return await self.preferences(body.auto_reconnect)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.preferences(body.auto_reconnect)
 
         @router.post("/controller/disconnect")
         async def disconnect():

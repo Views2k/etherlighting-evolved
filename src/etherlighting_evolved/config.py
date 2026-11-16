@@ -13,6 +13,9 @@ from pathlib import Path
 
 from .guard import LOOPBACK_BINDS
 
+# Switch hosts that log in to the built-in simulator instead of a switch.
+DEMO_HOSTS = {"demo", "simulator", "sim"}
+
 EXAMPLE_CONFIG = """\
 # Etherlighting Evolved (EE) - optional advanced settings. Everything here has a sensible default;
 # day-to-day you just log in from the UI with the switch IP, SSH username and password.
@@ -76,6 +79,9 @@ class EngineConfig:
     effect_params: dict = field(default_factory=lambda: {"color": "#ffffff"})
 
     def __post_init__(self) -> None:
+        if self.dimming not in ("level", "rgb"):
+            raise ValueError("dimming must be 'level' or 'rgb'")
+        # Older configurations chose "level"; output always carries brightness in RGB now.
         if self.dimming == "level":
             self.dimming = "rgb"
 
@@ -95,6 +101,10 @@ class ApiConfig:
         if self.host not in LOOPBACK_BINDS and len(self.token) < 32:
             raise ValueError("Network access requires an API token of at least 32 characters; "
                              "set EE_API_TOKEN or api.token")
+        if "*" in self.cors_origins and len(self.token) < 32:
+            raise ValueError('api.cors_origins = ["*"] lets every website use the API, so it requires an API token '
+                             "of at least 32 characters; set EE_API_TOKEN or api.token, or list the allowed "
+                             "origins instead")
 
 
 @dataclass

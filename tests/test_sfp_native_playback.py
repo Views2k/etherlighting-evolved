@@ -199,7 +199,7 @@ async def test_follow_sampling_waits_for_segment_and_does_not_double_brightness(
     engine.compose(t=0)
     await write(engine, switch)
     first = await write(engine, switch)
-    expected = to_output(*engine._shown[3], engine.dimming, engine.gamma, precise=True)
+    expected = to_output(*engine._shown[3], engine.gamma, precise=True)
     assert first[9].precise_rgb == expected.precise_rgb
     assert first[9].gradient == "gradient_1s"
     engine.set_override(4, "blue", brightness=81)

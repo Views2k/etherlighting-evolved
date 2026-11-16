@@ -35,11 +35,12 @@ from .bandwidth import UplinkBandwidth
 from .color import BLACK, Color
 from .effects import create_effect
 from .effects.base import Effect, RenderContext
+from .fans import POLL_INTERVAL
 from .health import HEALTH_INTERVAL, HealthParseError
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
 from .poe import PoePort, summarize_poe
-from .rules import DEFAULT_RULES, PortFacts, Rule, first_match
+from .rules import DEFAULT_RULES, FIELDS, PortFacts, Rule, first_match
 from .sfp import NATIVE_PERIODS, SfpLight, SfpSync
 from .sfp_playback import SfpPlayback, displayed_rgb
 from .switch import EtherlightSwitch, PortOutput
@@ -75,14 +76,12 @@ def percent(value: Any) -> int:
     return round(bounded_number(value, 0, 100, "brightness"))
 
 
-def to_output(color: Color, brightness: float, dimming: str = "rgb", gamma: float = 2.2,
-              *, precise: bool = False) -> PortOutput:
+def to_output(color: Color, brightness: float, gamma: float = 2.2, *, precise: bool = False) -> PortOutput:
     """Turn a color and a brightness into what the LED controller receives.
 
     Apply the configured gamma curve to both color and effective brightness. gamma=1 disables the curve.
-
-    "level" dimming normalizes the color to full strength and puts its brightness in the hardware level.
-    "rgb" carries all brightness changes in the color bytes and keeps the hardware level at 100, including black.
+    All brightness changes are carried in the color bytes; the hardware level stays at 100, including black.
+    Level-only updates did not reproduce effect fades on the Pro XG 8 PoE.
     """
     if precise:
         scale = (max(0.0, min(100.0, brightness)) / 100) ** gamma
@@ -91,16 +90,9 @@ def to_output(color: Color, brightness: float, dimming: str = "rgb", gamma: floa
         return PortOutput(preview, 100, channels)
     if brightness <= 0 or color.is_off:
         return PortOutput.off()
-    linear = [(c / 255) ** gamma for c in (color.r, color.g, color.b)]
     scale = (min(100.0, brightness) / 100) ** gamma
-    if dimming == "rgb":
-        rgb = Color(*(round(255 * v * scale) for v in linear))
-        return PortOutput.off() if rgb.is_off else PortOutput(rgb, 100)
-    peak = max(linear)
-    level = round(100 * peak * scale)
-    if level <= 0:
-        return PortOutput.off()
-    return PortOutput(Color(*(round(255 * v / peak) for v in linear)), level)
+    rgb = Color(*(round(255 * (c / 255) ** gamma * scale) for c in (color.r, color.g, color.b)))
+    return PortOutput.off() if rgb.is_off else PortOutput(rgb, 100)
 
 
 def ease(x: float) -> float:
@@ -162,17 +154,14 @@ class Engine:
         gamma: float = 2.2,
         link_poll: float = 1.0,
         brightness: int = 100,
-        dimming: str = "rgb",
         effect: str = "static",
         effect_params: dict | None = None,
         rules: list[dict] | None = None,
         reconnect_delay: float = 3.0,
     ) -> None:
-        if dimming not in ("level", "rgb"):
-            raise ValueError("dimming must be 'level' or 'rgb'")
         self.switch = switch
         self.num_ports = switch.num_ports
-        self._profile_model = getattr(getattr(switch, "hardware_profile", None), "key", None)
+        self._profile_model = switch.hardware_profile.key if switch.hardware_profile else None
         self._output_sfp_ports = tuple(switch.sfp_ports)
         self.fps = bounded_number(fps, 1, 30, "frame rate")
         self.max_commands = bounded_number(max_commands, 5, self.MAX_COMMANDS, "command limit")
@@ -180,12 +169,11 @@ class Engine:
         self.gamma = bounded_number(gamma, 1, 3, "gamma")
         self.link_poll = bounded_number(link_poll, 0.5, 3600, "status interval")
         self.brightness = percent(brightness)
-        # Keep accepting older configurations while encoding effect fades in RGB.
-        # Level-only updates did not reproduce those fades on the Pro XG 8 PoE.
-        self.dimming = "rgb"
         self.reconnect_delay = bounded_number(reconnect_delay, 1, 300, "reconnect interval")
         self._reconnect_failures = 0
         self._reconnect_blocked = False
+        self._loop_failed = False
+        self._recovering = False
         self._command_budget = min(self.max_commands, self.INITIAL_COMMANDS)
         self._cpu_updated_at: float | None = None
         self._healthy_cpu_samples = 0
@@ -228,7 +216,7 @@ class Engine:
 
         self.mode = "running"  # "released" hands the LEDs back to the switch's own Etherlighting
         self.connected = False
-        self.error: str | None = None
+        self._error: str | None = None
         self.switch_info: dict = {}
         self.links: dict[int, PortLink] = {}
         self.poe: dict[int, PoePort] = {}
@@ -302,13 +290,39 @@ class Engine:
             self.connected = True
         if self.mode == "running":
             self._output_halt = asyncio.Event()
-        self._tasks = [
-            asyncio.create_task(self._keep_connected(), name="ee-connection"),
-            asyncio.create_task(self._render_loop(), name="ee-render"),
-            asyncio.create_task(self._status_loop(), name="ee-status"),
-            asyncio.create_task(self._health_loop(), name="ee-health"),
-            asyncio.create_task(self._fan_loop(), name="ee-fans"),
-        ]
+        self._tasks = [self._spawn(name) for name in self._loops()]
+
+    def _loops(self) -> dict:
+        return {"ee-connection": self._keep_connected, "ee-render": self._render_loop,
+                "ee-status": self._status_loop, "ee-health": self._health_loop, "ee-fans": self._fan_loop}
+
+    def _spawn(self, name: str) -> asyncio.Task:
+        task = asyncio.create_task(self._loops()[name](), name=name)
+        task.add_done_callback(self._loop_ended)
+        return task
+
+    def _loop_ended(self, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        log.error("%s stopped", task.get_name(), exc_info=task.exception())
+        # Health readings are optional; the other loops carry output, telemetry, fans and reconnects.
+        if self._stopping or task.get_name() == "ee-health":
+            return
+        self._loop_failed = True
+        self._publish(self.state_message())
+
+    @property
+    def error(self) -> str | None:
+        # Connection attempts replace the connection error, but a stopped loop stays reported until Reconnect
+        # restarts it.
+        return "Lighting stopped unexpectedly. Reconnect the switch." if self._loop_failed else self._error
+
+    @error.setter
+    def error(self, message: str | None) -> None:
+        self._error = message
+
+    def _reconnect_required(self) -> bool:
+        return self._reconnect_blocked or self._loop_failed or self._native_blocked or self._output_uncertain()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -324,6 +338,7 @@ class Engine:
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
+            # _loop_ended has logged any failure; the connection must close regardless.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks = []
@@ -332,7 +347,7 @@ class Engine:
         if (cleanup_error is not None and lease is not None
                 and (self.switch.native_uncertain or
                      (desktop_output is not None and lease.keep_for_player and self._sfp_release_pending))):
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            outputs = [to_output(color, brightness, self.gamma, precise=True)
                        for color, brightness in self._shown]
             try:
                 await self.switch.recover_output(outputs)
@@ -358,8 +373,7 @@ class Engine:
 
     def start_identify(self, port: Any) -> dict:
         port = self._port(port, effect_port=True)
-        if (not self.connected or self.mode != "running" or self._stopping
-                or self._native_blocked or self._output_uncertain() or self._reconnect_blocked):
+        if not self.connected or self.mode != "running" or self._stopping or self._reconnect_required():
             raise ValueError("Resume connected lighting before identifying a port.")
         self.switch.require_output_profile()
         if not isinstance(self.switch.transport, SimulatedTransport):
@@ -427,11 +441,19 @@ class Engine:
         self._history, self._history_binding = history, binding
         self._record_history()
 
-    def _record_history(self) -> None:
+    @property
+    def history(self) -> tuple | None:
+        """The scene history store and this session's device binding, or None without history."""
         if self._history is None or self._history_binding is None:
+            return None
+        return self._history, self._history_binding
+
+    def _record_history(self) -> None:
+        if self.history is None:
             return
+        store, binding = self.history
         try:
-            self._history.record(self._history_binding, self.snapshot())
+            store.record(binding, self.snapshot())
             self.history_error = None
         except OSError:
             self.history_error = "Lighting history could not be saved. Check the data folder."
@@ -445,7 +467,7 @@ class Engine:
 
     def poe_summary(self) -> dict:
         age = None if self._poe_updated_at is None else max(0, timing.monotonic() - self._poe_updated_at)
-        return summarize_poe(getattr(self.switch, "poe_sample", None), range(1, self.num_ports + 1),
+        return summarize_poe(self.switch.poe_sample, range(1, self.num_ports + 1),
                              age=age, connected=self.connected, max_age=max(5.0, self.link_poll * 2.5))
 
     # Zones
@@ -529,6 +551,19 @@ class Engine:
             zones.append(Zone(zone_id, name, ports, effect))
         return zones
 
+    def _start_zones(self, zones: list[Zone], clock: float, *, keep_running: bool) -> None:
+        """Start new zones at `clock`. With keep_running, a zone whose ports and effect are unchanged continues."""
+        existing = {zone.id: zone for zone in self.zones}
+        for zone in zones:
+            zone.started_at = clock
+            previous = existing.get(zone.id)
+            if (keep_running and previous is not None and previous.ports == zone.ports
+                    and previous.effect.id == zone.effect.id
+                    and previous.effect.params_json() == zone.effect.params_json()):
+                zone.effect = previous.effect
+                zone.started_at = previous.started_at
+                zone.wall_started_at = previous.wall_started_at
+
     def _replace_zones(self, zones: list[Zone]) -> set[int]:
         previous = self._sfp_zones
         self.zones = zones
@@ -556,17 +591,7 @@ class Engine:
         Ports left out of every zone stay dark unless a rule or override lights them."""
         zones = self._build_zones(specs)
         self._validate_native_zones(zones, require_capability=self.connected)
-        clock = self._animation_clock()
-        existing = {zone.id: zone for zone in self.zones}
-        for zone in zones:
-            zone.started_at = clock
-            previous = existing.get(zone.id)
-            if (previous is not None and previous.ports == zone.ports
-                    and previous.effect.id == zone.effect.id
-                    and previous.effect.params_json() == zone.effect.params_json()):
-                zone.effect = previous.effect
-                zone.started_at = previous.started_at
-                zone.wall_started_at = previous.wall_started_at
+        self._start_zones(zones, self._animation_clock(), keep_running=True)
         self._revise_sfp_outputs(self._replace_zones(zones))
         self._sync_sfp_rules()
         if clear_overrides:
@@ -707,6 +732,26 @@ class Engine:
                 return index
         raise NotFound(f"no rule {rule_id!r}")
 
+    def explain_rules(self, port: int, specs: list[dict], now: datetime) -> dict:
+        """Show how draft rules would light one port at a given time, without changing the active rules."""
+        # Each draft rule gets the checks a saved rule gets; unique IDs are required only when saving.
+        rules = [self._parse_rule(spec) for spec in specs]
+        facts = self.facts(port, now)
+        optical = port in self.switch.sfp_ports
+        winner = self._sfp_rule(port, rules, now) if optical else first_match(rules, facts)
+        override = None if optical else self.overrides.get(port)
+        results = [{"id": rule.id, "name": rule.name, "enabled": rule.enabled,
+                    "in_scope": bool((not optical or rule.ports) and (not rule.ports or port in rule.ports)),
+                    "matches": bool((not optical or rule.ports) and rule.matches(facts)),
+                    "conditions": [{**condition.to_dict(), "label": FIELDS[condition.field].label,
+                                    "actual": facts.value(condition.field), "passes": condition.test(facts)}
+                                   for condition in rule.conditions]} for rule in rules]
+        return {"port": port, "at": now.isoformat(timespec="minutes"), "rules": results,
+                "winner": {"id": winner.id, "name": winner.name} if winner else None,
+                "source": ("individual_color" if override else "rule" if winner else
+                           "port_effect" if not optical or self._sfp_indicator_active(port) else "sfp_setting"),
+                "output_running": self.mode == "running"}
+
     # Overrides, brightness, mode
 
     def set_override(self, port: Any, color: Any, brightness: Any = None) -> None:
@@ -774,10 +819,6 @@ class Engine:
         self._sync_sfp_rules()
         self._changed()
 
-    async def wait_for_sfp_sync(self) -> None:
-        for port in self.switch.sfp_ports:
-            await self.wait_for_sfp(port)
-
     @property
     def _sfp_leader(self) -> int:
         return min(self.sfp)
@@ -827,7 +868,7 @@ class Engine:
                 continue
             self._sfp_playback.discard(port)
             color, brightness = self._sfp_color(port, elapsed)
-            outputs[port] = to_output(color, brightness, self.dimming, self.gamma,
+            outputs[port] = to_output(color, brightness, self.gamma,
                                       precise=self.switch.sfp_precise and (port in self._sfp_zones
                                                                            or self._sfp_port_animating(port)))
         if (self.sfp_sync.mode != "independent" and native and set(native) == set(self.switch.sfp_ports)
@@ -855,11 +896,11 @@ class Engine:
         revision = (tuple(self._sfp_revisions.values()) if self.sfp_sync.mode != "independent"
                     else self._sfp_revisions[port])
         look = tuple(sorted(rule.look.to_dict().items())) if rule is not None else None
-        key = (self.sfp_sync, revision, look, self.gamma, self.dimming)
+        key = (self.sfp_sync, revision, look, self.gamma)
         color, brightness = self._sfp_color(port, timing.monotonic() - self._t0)
         if follows:
-            return key, (to_output(color, brightness, self.dimming, self.gamma, precise=True),), 1, True
-        anchors = tuple(to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            return key, (to_output(color, brightness, self.gamma, precise=True),), 1, True
+        anchors = tuple(to_output(color, brightness, self.gamma, precise=True)
                         for color in light.native_anchors())
         return (*key, light, brightness), anchors, light.native_duration, False
 
@@ -887,14 +928,17 @@ class Engine:
             return displayed_rgb(self.switch.sfp_rgb16(port), self.gamma)
         return self._display_rgb(*self._sfp_color(port, elapsed))
 
-    def _sfp_rule(self, port: int) -> Rule | None:
+    def _sfp_indicator_active(self, port: int) -> bool:
+        return self.sfp_sync.mode == "ethernet" or port in self._sfp_zones
+
+    def _sfp_rule(self, port: int, rules: list[Rule] | None = None, now: datetime | None = None) -> Rule | None:
         light = self._sfp_light(port)
-        follows_ethernet = self.sfp_sync.mode == "ethernet"
-        indicator_active = follows_ethernet or port in self._sfp_zones
+        indicator_active = self._sfp_indicator_active(port)
         if light.mode == "off" and not indicator_active:
             return None
         # Existing all-copper rules must never silently acquire the SFP indicators.
-        rule = first_match([rule for rule in self.rules if rule.ports], self.facts(port))
+        rule = first_match([rule for rule in (self.rules if rules is None else rules) if rule.ports],
+                           self.facts(port, now))
         if rule is not None and rule.look.style == "effect" and light.mode == "unmanaged" and not indicator_active:
             return None
         return rule
@@ -1016,6 +1060,24 @@ class Engine:
             except TimeoutError:
                 return
 
+    def sfp_revisions(self) -> dict[int, int]:
+        return dict(self._sfp_revisions)
+
+    async def confirm_sfp_output(self, expected: dict[int, int]) -> None:
+        """Wait for each SFP port to acknowledge its expected revision.
+
+        Raises ValueError when another change replaced one of those revisions, and TransportError when output is
+        running but a port has not acknowledged its revision.
+        """
+        for port in sorted(expected):
+            if self._sfp_revisions[port] != expected[port]:
+                raise ValueError("SFP settings changed during confirmation. Review the current setup.")
+            await self.wait_for_sfp(port)
+        if any(self._sfp_revisions[port] != expected[port] for port in expected):
+            raise ValueError("SFP settings changed during confirmation. Review the current setup.")
+        if self.mode == "running" and any(self._sfp_acknowledged[port] != expected[port] for port in expected):
+            raise TransportError("Lighting settings were saved, but SFP output is still pending.")
+
     def set_fps(self, value: Any) -> None:
         fps = bounded_number(value, 1, 30, "frame rate")
         self._animation_clock()
@@ -1059,7 +1121,7 @@ class Engine:
         async with self._native_quiesce_lock:
             if not self._native_release_pending and not self._sfp_release_pending:
                 return
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=self.switch.precise_rgb)
+            outputs = [to_output(color, brightness, self.gamma, precise=self.switch.precise_rgb)
                        for color, brightness in self._shown]
             try:
                 if self._native_release_pending:
@@ -1091,7 +1153,7 @@ class Engine:
         if self._native_blocked or self._output_uncertain():
             raise TransportError("Reconnect before resuming lighting; "
                                  "the previous animation could not be confirmed stopped")
-        if self._reconnect_blocked:
+        if self._reconnect_blocked or self._loop_failed:
             raise TransportError("Reconnect your switch before resuming lighting")
         if self._native_release_pending or self._sfp_release_pending:
             raise ValueError("lighting release is still finishing")
@@ -1103,7 +1165,7 @@ class Engine:
 
     async def recover_connection(self) -> None:
         """Revalidate and clean up owned lighting before resuming the retained scene."""
-        if getattr(self, "_recovering", False):
+        if self._recovering:
             raise TransportError("Switch recovery is already in progress.")
         if self._stopping:
             raise TransportError("Finish closing this lighting session before reconnecting.")
@@ -1122,7 +1184,7 @@ class Engine:
         await self._write_idle.wait()
         await self._initialization_idle.wait()
         async with self._native_quiesce_lock:
-            outputs = [to_output(color, brightness, self.dimming, self.gamma, precise=True)
+            outputs = [to_output(color, brightness, self.gamma, precise=True)
                        for color, brightness in self._shown]
             try:
                 info = await self.switch.recover_output(outputs)
@@ -1130,7 +1192,7 @@ class Engine:
                 self.error = "Lighting recovery is not confirmed. Check the connection and try Reconnect switch again."
                 self._reconnect_blocked = True
                 self._publish(self.state_message())
-                raise TransportError(self.error) from exc
+                raise TransportError(self._error) from exc
             self.switch_info = info
             self._native_release_pending = self._native_engaged = False
             self._sfp_release_pending = self._sfp_engaged = False
@@ -1139,22 +1201,21 @@ class Engine:
             self.connected, self.error = True, None
             self._invalidate_sfp_intent()
             if not self._stopping:
+                self._loop_failed = False
                 self.resume()
-                if self._tasks and not any(
-                    task.get_name() == "ee-connection" and not task.done() for task in self._tasks
-                ):
-                    self._tasks.append(asyncio.create_task(self._keep_connected(), name="ee-connection"))
+                # The connection loop ends once reconnects are blocked, and any loop can end on an error.
+                self._tasks = [self._spawn(task.get_name()) if task.done() else task for task in self._tasks]
 
     # Scenes (presets, autosave)
 
     def _telemetry_ports(self) -> tuple[int, ...]:
-        profile = getattr(self.switch, "hardware_profile", None)
+        profile = self.switch.hardware_profile
         if profile is not None:
             return (*profile.copper_ports, *profile.optical_ports, *profile.stack_ports)
         return (*range(1, self.num_ports + 1), *self.switch.sfp_ports)
 
     def _validate_switch_topology(self) -> None:
-        model = getattr(getattr(self.switch, "hardware_profile", None), "key", None)
+        model = self.switch.hardware_profile.key if self.switch.hardware_profile else None
         if self.switch.num_ports != self.num_ports or (self._profile_model and model != self._profile_model):
             raise ValueError("The switch layout changed. Start a new lighting session for this device.")
         ports = tuple(self.switch.sfp_ports)
@@ -1212,15 +1273,20 @@ class Engine:
             raise ValueError("This scene was saved for a different switch layout.")
 
     def snapshot(self) -> dict:
+        return self._scene(self.zones, self.rules, self.overrides, self.brightness, self.sfp, self.sfp_sync)
+
+    def _scene(self, zones: list[Zone], rules: list[Rule], overrides: dict[int, Override], brightness: int,
+               sfp: dict[int, SfpLight], sfp_sync: SfpSync) -> dict:
+        # Scene revisions hash this dict, so its content must stay stable for saved profiles and history.
         return {
             "version": 3,
             "topology": self.scene_topology(),
-            "zones": [z.to_dict() for z in self.zones],
-            "rules": [r.to_dict() for r in self.rules],
-            "brightness": self.brightness,
-            "overrides": {str(p): o.to_dict() for p, o in sorted(self.overrides.items())},
-            "sfp": {str(p): light.to_dict() for p, light in self.sfp.items()},
-            "sfp_sync": self.sfp_sync.to_dict(),
+            "zones": [zone.to_dict() for zone in zones],
+            "rules": [rule.to_dict() for rule in rules],
+            "brightness": brightness,
+            "overrides": {str(port): override.to_dict() for port, override in sorted(overrides.items())},
+            "sfp": {str(port): light.to_dict() for port, light in sfp.items()},
+            "sfp_sync": sfp_sync.to_dict(),
         }
 
     def _prepare_snapshot(self, scene: dict) -> tuple[
@@ -1272,17 +1338,7 @@ class Engine:
 
     def validate_snapshot(self, scene: dict) -> dict:
         """Return a canonical saved scene without applying it."""
-        zones, rules, overrides, brightness, sfp, sfp_sync = self._prepare_snapshot(scene)
-        return {
-            "version": 3,
-            "topology": self.scene_topology(),
-            "zones": [zone.to_dict() for zone in zones],
-            "rules": [rule.to_dict() for rule in rules],
-            "brightness": brightness,
-            "overrides": {str(port): override.to_dict() for port, override in sorted(overrides.items())},
-            "sfp": {str(port): light.to_dict() for port, light in sfp.items()},
-            "sfp_sync": sfp_sync.to_dict(),
-        }
+        return self._scene(*self._prepare_snapshot(scene))
 
     def apply_snapshot(self, scene: dict, *, preserve_unchanged: bool = False) -> set[int]:
         """Load a scene. Everything is validated before anything changes."""
@@ -1299,16 +1355,7 @@ class Engine:
                 or [rule.to_dict() for rule in rules if rule.ports and port in rule.ports]
                 != [rule.to_dict() for rule in self.rules if rule.ports and port in rule.ports]
             }
-        existing = {zone.id: zone for zone in self.zones}
-        for zone in zones:
-            zone.started_at = clock
-            previous = existing.get(zone.id)
-            if (preserve_unchanged and previous is not None and previous.ports == zone.ports
-                    and previous.effect.id == zone.effect.id
-                    and previous.effect.params_json() == zone.effect.params_json()):
-                zone.effect = previous.effect
-                zone.started_at = previous.started_at
-                zone.wall_started_at = previous.wall_started_at
+        self._start_zones(zones, clock, keep_running=preserve_unchanged)
         affected_sfp.update(self._replace_zones(zones))
         affected_sfp.update(port for port in self._sfp_zones if sfp[port].brightness != self.sfp[port].brightness)
         self.rules, self.overrides, self.brightness = rules, overrides, brightness
@@ -1365,16 +1412,16 @@ class Engine:
             "mode": self.mode,
             "connected": self.connected,
             "error": self.error,
-            "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
+            "reconnect_required": self._reconnect_required(),
             "switch": self.switch_info,
             "hardware_profile": (self.switch.hardware_profile.public_dict()
-                                 if getattr(self.switch, "hardware_profile", None) is not None else None),
+                                 if self.switch.hardware_profile is not None else None),
             "num_ports": self.num_ports,
             "sfp": self.sfp_state(),
             "sfp_sync": self.sfp_sync.to_dict(),
             "fps": self.fps,
             "brightness": self.brightness,
-            "dimming": self.dimming,
+            "dimming": "rgb",
             "output": {"gamma": self.gamma, "transition": self.transition, "max_commands": self.max_commands},
             "zones": [z.to_dict() for z in self.zones],
             "rules": [r.to_dict() for r in self.rules],
@@ -1444,17 +1491,12 @@ class Engine:
                 "identify": self.identify_state(), "telemetry": self.telemetry_state(),
                 "poe_summary": self.poe_summary(), "history_error": self.history_error,
                 "error": self.error,
-                "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
+                "reconnect_required": self._reconnect_required(),
                 "stats": self.output_stats(),
                 "uplink_bandwidth": self._bandwidth.snapshot(now=timing.monotonic(), connected=self.connected),
                 "ports": self.ports(), "sfp": self.sfp_state(), "sfp_sync": self.sfp_sync.to_dict()}
 
     # Websocket fan-out
-
-    def subscribe(self) -> Mailbox:
-        mailbox = Mailbox()
-        self._subscribers.add(mailbox)
-        return mailbox
 
     def attach(self, mailbox: Mailbox) -> None:
         self._subscribers.add(mailbox)
@@ -1558,18 +1600,18 @@ class Engine:
                 self._keys[i] = ("identify",)
                 self._fades.pop(i, None)
                 self._shown[i] = (colors[i], brightness)
-                outputs.append(to_output(colors[i], brightness, self.dimming, self.gamma,
+                outputs.append(to_output(colors[i], brightness, self.gamma,
                                          precise=self.switch.precise_rgb))
             elif port in native and rule is None and override is None:
                 self._keys[i] = ("native", sources[i].get("id"), self._effect_of(port))
                 self._fades.pop(i, None)
                 self._shown[i] = (colors[i], brightness)
                 base, selector = native[port]
-                output = to_output(base, brightness, self.dimming, self.gamma, precise=True)
+                output = to_output(base, brightness, self.gamma, precise=True)
                 outputs.append(PortOutput(output.color, output.level, output.precise_rgb, breath=selector))
             else:
                 colors[i], brightness = self._crossfade(i, key, colors[i], brightness, clock)
-                outputs.append(to_output(colors[i], brightness, self.dimming, self.gamma,
+                outputs.append(to_output(colors[i], brightness, self.gamma,
                                          precise=self.switch.precise_rgb))
 
         self.last_sources = sources
@@ -1622,10 +1664,6 @@ class Engine:
     @property
     def command_budget(self) -> float:
         return min(self._command_budget, self._budget_ceiling())
-
-    @property
-    def throttle(self) -> float:
-        return self.command_budget / min(self.max_commands, self._budget_ceiling())
 
     def _set_command_budget(self, value: float) -> None:
         value = max(min(5.0, self._budget_ceiling()), min(value, self._budget_ceiling()))
@@ -1728,7 +1766,7 @@ class Engine:
 
     async def _keep_connected(self) -> None:
         while True:
-            if self._stopping or self._reconnect_blocked:
+            if self._stopping or self._reconnect_blocked or self._loop_failed:
                 return
             if self._native_blocked or self._output_uncertain():
                 self.mode = "released"
@@ -1869,16 +1907,16 @@ class Engine:
                 self._publish(self.frame_message())
 
     async def _collect_health(self) -> None:
-        generation = getattr(self.switch.transport, "lighting_generation", None)
+        generation = self.switch.transport.lighting_generation
         try:
             sample = await self.switch.read_health()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if self.connected and generation is getattr(self.switch.transport, "lighting_generation", None):
+            if self.connected and generation is self.switch.transport.lighting_generation:
                 self._health_error = "invalid_response" if isinstance(exc, HealthParseError) else "unavailable"
             return
-        if self.connected and generation is getattr(self.switch.transport, "lighting_generation", None):
+        if self.connected and generation is self.switch.transport.lighting_generation:
             self._switch_health = sample
             self._health_updated_at = timing.monotonic()
             self._health_error = None
@@ -1908,7 +1946,6 @@ class Engine:
             self._publish({"type": "fans", "fans": self.fans.to_dict()})
 
     async def _fan_loop(self) -> None:
-        from .fans import POLL_INTERVAL
         self._fans_wake = asyncio.Event()
         while True:
             if self.connected and self.fans is not None:
@@ -1926,9 +1963,9 @@ class Engine:
                 await asyncio.sleep(0.2)
                 continue
             try:
-                generation = getattr(self.switch.transport, "lighting_generation", None)
+                generation = self.switch.transport.lighting_generation
                 links = await self.switch.read_links()
-                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                if not self.connected or generation is not self.switch.transport.lighting_generation:
                     continue
                 sample_time = timing.monotonic()
                 if generation is not self._telemetry_generation:
@@ -1947,7 +1984,7 @@ class Engine:
                 }
                 self.links = links
                 poe = await self.switch.read_poe()
-                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                if not self.connected or generation is not self.switch.transport.lighting_generation:
                     continue
                 self.poe = poe
                 self._poe_updated_at = timing.monotonic()

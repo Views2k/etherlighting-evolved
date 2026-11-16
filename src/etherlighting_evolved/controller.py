@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import http.client
@@ -11,15 +10,10 @@ import json
 import re
 import socket
 import ssl
-import time
-from collections import deque
-from datetime import UTC, datetime
 from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 
 MAX_RESPONSE = 4 * 1024 * 1024
-STALE_AFTER = 45.0
-_SITE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MAC = re.compile(r"^[0-9a-f]{12}$")
 CONTROLLER_KINDS = {"self_hosted", "unifi_os", "cloud_connector"}
 
@@ -100,6 +94,7 @@ class ControllerClient:
             raise ControllerError("invalid_auth_method", "Use a UniFi API key for the cloud connection.")
         self.auth_method = "password"
         self.console_id = None
+        self.api_key = ""
         parsed = urlsplit(self.url)
         self.host, self.port = parsed.hostname, parsed.port or 443
         self.username, self.password = username, password
@@ -203,7 +198,7 @@ class ControllerClient:
                     cookie = SimpleCookie()
                     cookie["UBIC_2FA"] = token
                     self._remember_cookie(cookie.output(header="").strip())
-                raise self._verification_error() if verifying else self._two_factor_error()
+                raise self.verification_error() if verifying else self._two_factor_error()
             if isinstance(meta, dict) and meta.get("rc") == "error":
                 reason = meta.get("msg")
                 if not is_login and reason == "api.err.LoginRequired":
@@ -223,7 +218,7 @@ class ControllerClient:
                     self.authenticated = False
                     if verifying:
                         self.two_factor_required = True
-                        raise self._verification_error()
+                        raise self.verification_error()
                     raise ControllerError(
                         "authentication_failed", "Check the controller account and its Network access.", 401)
                 raise ControllerError("controller_error", "The controller did not accept the request.", 502)
@@ -249,7 +244,7 @@ class ControllerClient:
         return ControllerError("two_factor_required", "Enter the verification code from your authenticator app.", 401)
 
     @staticmethod
-    def _verification_error() -> ControllerError:
+    def verification_error() -> ControllerError:
         return ControllerError("verification_failed", "The verification code was not accepted. Enter a new code.", 401)
 
     def _check_status(self, status: int, *, verifying: bool = False) -> None:
@@ -257,7 +252,7 @@ class ControllerClient:
             self.authenticated = False
             if verifying:
                 self.two_factor_required = True
-                raise self._verification_error()
+                raise self.verification_error()
             raise ControllerError("authentication_failed", "Check the controller account and its Network access.", 401)
         if status == 429:
             raise ControllerError("rate_limited", "The controller is busy. Try again shortly.", 503)
@@ -341,25 +336,25 @@ class ControllerClient:
         self.two_factor_required = False
 
 
-def _records(response: dict) -> list[dict]:
+def response_records(response: dict) -> list[dict]:
     data = response.get("data")
     if not isinstance(data, list) or len(data) > 10000 or any(not isinstance(item, dict) for item in data):
         raise ControllerError("invalid_response", "The controller returned an unexpected response.", 502)
     return data
 
 
-def _mac(value) -> str | None:
+def normalize_mac(value) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.replace(":", "").replace("-", "").lower()
     return normalized if _MAC.fullmatch(normalized) else None
 
 
-def _name(value) -> str | None:
+def clean_name(value) -> str | None:
     if not isinstance(value, str):
         return None
     value = " ".join(value.split())[:160]
-    return value if value and not _mac(value) else None
+    return value if value and not normalize_mac(value) else None
 
 
 def _port(value) -> int | None:
@@ -394,7 +389,7 @@ def match_switch(devices: list[dict], switch_host: str) -> dict:
             address = str(ipaddress.ip_address(device.get("ip", "")))
         except ValueError:
             continue
-        if address in addresses and _mac(device.get("mac")) and isinstance(device.get("port_table"), list):
+        if address in addresses and normalize_mac(device.get("mac")) and isinstance(device.get("port_table"), list):
             matches.append(device)
     if len(matches) != 1:
         raise ControllerError("switch_not_found", "Could not uniquely match the connected switch in this site.", 409)
@@ -403,37 +398,37 @@ def match_switch(devices: list[dict], switch_host: str) -> dict:
 
 def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dict[int, dict]:
     """Only attach names backed by an explicit topology port; never guess from list order."""
-    target_mac = _mac(switch.get("mac"))
+    target_mac = normalize_mac(switch.get("mac"))
     if target_mac is None:
         return {}
     valid_ports = {_port(port.get("port_idx")) for port in _rows(switch.get("port_table"))}
     valid_ports.discard(None)
     metadata: dict[int, dict] = {}
-    device_by_mac = {_mac(device.get("mac")): device for device in devices if _mac(device.get("mac"))}
+    device_by_mac = {normalize_mac(device.get("mac")): device for device in devices if normalize_mac(device.get("mac"))}
     connected_devices: dict[int, dict[str, dict]] = {}
 
     def add_device(port, device):
-        mac = _mac(device.get("mac"))
+        mac = normalize_mac(device.get("mac"))
         if port in valid_ports and mac and mac != target_mac and device.get("state") == 1:
             connected_devices.setdefault(port, {})[mac] = device
 
     for entry in _rows(switch.get("downlink_table")):
-        if device := device_by_mac.get(_mac(entry.get("mac"))):
+        if device := device_by_mac.get(normalize_mac(entry.get("mac"))):
             add_device(_port(entry.get("port_idx")), device)
     for device in devices:
         uplink = device.get("uplink")
-        if isinstance(uplink, dict) and _mac(uplink.get("uplink_mac")) == target_mac:
+        if isinstance(uplink, dict) and normalize_mac(uplink.get("uplink_mac")) == target_mac:
             add_device(_port(uplink.get("uplink_remote_port")), device)
 
     # The switch's own uplink can identify its upstream device without naming a downstream client there.
     uplink = switch.get("uplink")
-    if isinstance(uplink, dict) and (upstream := device_by_mac.get(_mac(uplink.get("uplink_mac")))):
+    if isinstance(uplink, dict) and (upstream := device_by_mac.get(normalize_mac(uplink.get("uplink_mac")))):
         add_device(_port(uplink.get("port_idx")), upstream)
 
     grouped: dict[int, dict[str, dict]] = {}
     for client in clients:
-        port, mac = _port(client.get("sw_port")), _mac(client.get("mac"))
-        if (client.get("is_wired") is not True or _mac(client.get("sw_mac")) != target_mac
+        port, mac = _port(client.get("sw_port")), normalize_mac(client.get("mac"))
+        if (client.get("is_wired") is not True or normalize_mac(client.get("sw_mac")) != target_mac
                 or port not in valid_ports or not mac or client.get("is_downstream") is True):
             continue
         grouped.setdefault(port, {})[mac] = client
@@ -441,7 +436,7 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
     for port, records in connected_devices.items():
         if len(records) == 1:
             record = next(iter(records.values()))
-            name = _name(record.get("name"))
+            name = clean_name(record.get("name"))
             if name:
                 metadata[port] = {"name": name, "controller": {"source": "unifi", "kind": "device", "count": 1}}
         else:
@@ -452,8 +447,8 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
             continue
         client_details = []
         for record in records.values():
-            assigned_name = _name(record.get("name"))
-            hostname = _name(record.get("hostname"))
+            assigned_name = clean_name(record.get("name"))
+            hostname = clean_name(record.get("hostname"))
             client_details.append({"name": assigned_name or hostname,
                                    "name_source": "assigned" if assigned_name else "hostname" if hostname else None})
         client_details.sort(key=lambda item: (item["name_source"] != "assigned", item["name"] is None,
@@ -468,238 +463,9 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
         else:
             metadata[port] = {"name": f"{len(records)} clients", "controller": details}
     for override in _rows(switch.get("port_overrides")):
-        port, name = _port(override.get("port_idx")), _name(override.get("name"))
+        port, name = _port(override.get("port_idx")), clean_name(override.get("name"))
         if port in valid_ports and name:
             item = metadata.setdefault(port, {"name": name, "controller": {
                 "source": "unifi", "kind": "port_label", "count": 0}})
             item["controller"]["port_name"] = name
     return metadata
-
-
-class ControllerManager:
-    def __init__(self, *, client_factory=ControllerClient, clock=time.monotonic) -> None:
-        self._factory, self._clock = client_factory, clock
-        self._client: ControllerClient | None = None
-        self._pending: ControllerClient | None = None
-        self._pending_sites: list[dict] = []
-        self._lock = asyncio.Lock()
-        self._sites: list[dict] = []
-        self._site: str | None = None
-        self._ports: dict[int, dict] = {}
-        self._switch_host: str | None = None
-        self._switch_name: str | None = None
-        self._last_success: float | None = None
-        self._updated_at: str | None = None
-        self._error: dict | None = None
-        self._console_requests = deque()
-        self._console_next_due = 0.0
-
-    def status(self) -> dict:
-        stale = self._last_success is not None and self._clock() - self._last_success > STALE_AFTER
-        client = self._client or self._pending
-        pending_choice = ({"url": self._pending.url,
-                           "controller_kind": getattr(self._pending, "kind", "self_hosted"),
-                           "auth_method": getattr(self._pending, "auth_method", "password"),
-                           "console_id": getattr(self._pending, "console_id", None),
-                           "capabilities": {"client_mapping":
-                                            getattr(self._pending, "auth_method", "password") == "password",
-                                            "port_metadata": True},
-                           "sites": self._pending_sites}
-                          if self._pending is not None and self._pending_sites else None)
-        return {"connected": bool(self._client and self._client.authenticated and self._last_success is not None
-                                  and not self._error and not stale),
-                "configured": client is not None, "url": client.url if client else None,
-                "supported_auth_methods": {"self_hosted": ["password"], "unifi_os": ["password", "api_key"],
-                                           "cloud_connector": ["api_key"]},
-                "console_discovery_supported": True,
-                "controller_kind": getattr(client, "kind", "self_hosted") if client else None,
-                "auth_method": getattr(client, "auth_method", "password") if client else None,
-                "console_id": getattr(client, "console_id", None),
-                "capabilities": {"client_mapping": bool(client and
-                                                       getattr(client, "auth_method", "password") == "password"),
-                                 "port_metadata": bool(client)},
-                "site": self._site, "sites": self._sites, "switch_name": self._switch_name,
-                "pending_site_choice": pending_choice,
-                "updated_at": self._updated_at, "stale": stale or bool(self._error), "error": self._error,
-                "mapped_ports": len(self._ports) if not stale and not self._error else 0}
-
-    async def discover_consoles(self, api_key: str) -> dict:
-        from .controller_official import ConsoleClient
-        async with self._lock:
-            client = ConsoleClient(validate_api_key(api_key), clock=self._clock)
-            client._requests = self._console_requests
-            client._not_before = self._console_next_due
-            try:
-                return {"consoles": await asyncio.to_thread(client.consoles)}
-            finally:
-                self._console_next_due = max(self._console_next_due, client._not_before)
-                client.clear()
-
-    def can_save_login(self, switch_host: str | None) -> bool:
-        client = self._client
-        return bool(switch_host and switch_host == self._switch_host and self._site
-                    and not self._pending_sites and client
-                    and (getattr(client, "api_key", None) if getattr(client, "auth_method", "password") == "api_key"
-                         else client.username and client.password)
-                    and self.status()["connected"])
-
-    async def login_for_saving(self, switch_host: str | None) -> dict:
-        async with self._lock:
-            if not self.can_save_login(switch_host):
-                raise ControllerError("controller_login_required",
-                                      "Connect your controller before enabling automatic reconnect.", 409)
-            client = self._client
-            if getattr(client, "auth_method", "password") == "api_key":
-                return {"url": client.url, "auth_method": "api_key", "api_key": client.api_key,
-                        "console_id": client.console_id, "site": self._site,
-                        "certificate_sha256": client.pin, "controller_kind": client.kind}
-            return {"url": client.url, "username": client.username, "password": client.password,
-                    "site": self._site, "certificate_sha256": client.pin,
-                    "controller_kind": getattr(client, "kind", "self_hosted")}
-
-    async def connect(self, *, url: str, username: str = "", password: str = "", switch_host: str | None = None,
-                      site: str | None = None, certificate_sha256: str | None = None,
-                      verification_code: str | None = None, controller_kind: str = "self_hosted",
-                      auth_method: str = "password", api_key: str = "", console_id: str | None = None) -> dict:
-        kind = validate_controller_kind(controller_kind)
-        origin, pin = controller_origin(url), certificate_pin(certificate_sha256)
-        console_id = controller_access(kind, auth_method, origin, console_id)
-        if (auth_method == "api_key" and (username or password or verification_code)
-                or auth_method == "password" and api_key):
-            raise ControllerError("invalid_auth_method", "Send only the credentials for the selected sign-in method.")
-        if kind == "cloud_connector" and pin is not None:
-            raise ControllerError("invalid_certificate",
-                                  "The UniFi cloud connection requires a publicly trusted certificate.")
-        verification_code = verification_code.strip() if verification_code else None
-        if verification_code and not re.fullmatch(r"[0-9]{6,8}", verification_code):
-            raise ControllerClient._verification_error()
-        if site and not _SITE.fullmatch(site):
-            raise ControllerError("invalid_site", "Choose a valid controller site.")
-        async with self._lock:
-            previous = next((saved for saved in (self._pending, self._client)
-                             if saved is not None and saved.url == origin
-                             and getattr(saved, "kind", "self_hosted") == kind
-                             and getattr(saved, "auth_method", "password") == auth_method
-                             and getattr(saved, "console_id", None) == console_id), None)
-            if not username and not password and previous and previous.url == origin:
-                username, password = previous.username, previous.password
-            if pin is None and previous and previous.url == origin:
-                pin = previous.pin
-            if auth_method == "api_key":
-                from .controller_official import IntegrationClient
-                api_key = validate_api_key(api_key or (getattr(previous, "api_key", "") if previous else ""))
-                same_identity = previous is not None and previous.api_key == api_key and previous.pin == pin
-                client = (previous if same_identity else IntegrationClient(
-                    origin, api_key, pin, kind=kind, console_id=console_id))
-            else:
-                same_identity = (previous is not None and previous.username == username
-                                 and previous.password == password and previous.pin == pin)
-                client = (previous if same_identity else self._factory(origin, username, password, pin, kind=kind))
-            before = (self._client, self._site, self._switch_host, self._switch_name, self._ports,
-                      self._sites, self._last_success, self._updated_at, self._error)
-            if self._pending is not None and self._pending not in (client, self._client):
-                self._pending.clear()
-            if self._pending is not client:
-                self._pending_sites = []
-            self._pending = client
-            try:
-                if not client.authenticated:
-                    if verification_code:
-                        await asyncio.to_thread(client.login, verification_code)
-                    else:
-                        await asyncio.to_thread(client.login)
-                records = _records(await asyncio.to_thread(client.get, "/api/self/sites"))
-                sites = [{"id": row["name"], "name": _name(row.get("desc")) or row["name"]}
-                         for row in records if isinstance(row.get("name"), str) and _SITE.fullmatch(row["name"])]
-                if not sites:
-                    raise ControllerError("no_sites", "This controller account has no accessible Network sites.", 403)
-                if not site and len(sites) == 1:
-                    site = sites[0]["id"]
-                if not site:
-                    self._pending_sites = sites
-                    if self._client is None:
-                        self._sites = sites
-                        self._error = {"code": "site_required", "message": "Choose the site containing your switch."}
-                    return self.status()
-                if site not in {item["id"] for item in sites}:
-                    self._pending_sites = sites
-                    raise ControllerError("site_not_found", "Choose a site available to this controller account.", 404)
-                topology = await self._read_topology(client, site, switch_host)
-                self._client, self._pending = client, None
-                self._pending_sites = []
-                self._sites, self._site = sites, site
-                self._switch_host = switch_host
-                (self._ports, self._switch_name,
-                 self._last_success, self._updated_at, self._error) = topology
-                if before[0] is not None and before[0] is not client:
-                    before[0].clear()
-                return self.status()
-            except ControllerError as exc:
-                self._pending = client
-                (self._client, self._site, self._switch_host, self._switch_name, self._ports,
-                 self._sites, self._last_success, self._updated_at, self._error) = before
-                if (self._client is None or self._client is client
-                        and (site == before[1] or not client.authenticated)):
-                    self._error = exc.detail()
-                raise
-
-    async def refresh(self, switch_host: str | None) -> dict:
-        async with self._lock:
-            if self._client is not None and self._site is not None:
-                try:
-                    await self._refresh(switch_host)
-                except ControllerError as exc:
-                    self._ports = {}
-                    self._error = exc.detail()
-            return self.status()
-
-    async def _refresh(self, switch_host: str | None) -> None:
-        if switch_host != self._switch_host:
-            self._ports = {}
-            self._switch_name = None
-        self._switch_host = switch_host
-        (self._ports, self._switch_name,
-         self._last_success, self._updated_at, self._error) = await self._read_topology(
-             self._client, self._site, switch_host)
-
-    async def _read_topology(self, client, site, switch_host):
-        if not switch_host or switch_host.lower() in {"demo", "sim", "simulator"}:
-            return ({}, None, None, None,
-                    {"code": "switch_required", "message": "Connect your switch to match controller devices."})
-        if getattr(client, "auth_method", "password") == "api_key":
-            ports, name = await asyncio.to_thread(client.topology, site, switch_host)
-            return ports, name, self._clock(), datetime.now(UTC).isoformat(), None
-        devices = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/device"))
-        clients = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/sta"))
-        switch = await asyncio.to_thread(match_switch, devices, switch_host)
-        return (port_metadata(switch, devices, clients),
-                _name(switch.get("name")), self._clock(), datetime.now(UTC).isoformat(), None)
-
-    def enrich_ports(self, ports: list[dict], switch_host: str | None) -> list[dict]:
-        status = self.status()
-        if not status["connected"] or switch_host != self._switch_host:
-            return ports
-        return [{**port, **self._ports.get(port.get("port"), {})} for port in ports]
-
-    async def disconnect(self) -> dict:
-        async with self._lock:
-            for client in (self._client, self._pending):
-                if client is not None:
-                    client.clear()
-            self._client = self._pending = None
-            self._pending_sites = []
-            self._site = self._switch_host = self._switch_name = None
-            self._sites, self._ports = [], {}
-            self._last_success = self._updated_at = self._error = None
-            return self.status()
-
-    async def cancel(self) -> dict:
-        async with self._lock:
-            if self._pending is not None and self._pending is not self._client:
-                self._pending.clear()
-            self._pending = None
-            self._pending_sites = []
-            if self._client is None:
-                self._sites = []
-                self._error = None
-            return self.status()

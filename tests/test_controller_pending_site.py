@@ -7,8 +7,9 @@ import pytest
 from test_controller import FakeClient
 from test_controller_reconnect import Store
 
-from etherlighting_evolved.controller import ControllerError, ControllerManager
+from etherlighting_evolved.controller import ControllerError
 from etherlighting_evolved.controller_api import ControllerIntegration, ControllerLogin
+from etherlighting_evolved.controller_manager import ControllerManager
 
 OLD_URL = "https://current.invalid"
 NEW_URL = "https://candidate.invalid"

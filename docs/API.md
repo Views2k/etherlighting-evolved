@@ -92,10 +92,12 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 400 | `invalid` | Invalid request; the message gives the reason |
 | 401 | `auth_failed` | Wrong SSH username or password |
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
+| 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
 | 409 | `host_key_changed` | The switch's SSH host key doesn't match the saved one |
 | 409 | `not_simulated` | Simulator controls require a demo login |
+| 413 | `too_large` | The request body is larger than 1 MiB |
 | 422 | `no_etherlighting` | Logged in, but the device has no Etherlighting |
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
@@ -107,6 +109,16 @@ call `POST /api/session/forget-host-key` with `{"host": "...", "port": 22}` and 
 
 If the server has an API token, send `Authorization: Bearer <token>` with every request. The browser UI uses
 authenticated REST polling for these connections so the token stays out of URLs and access logs.
+
+Browser requests to `/api/` that carry `Sec-Fetch-Site: cross-site` or `same-site` are refused with 403 unless their
+`Origin` is the server itself or is listed in `cors_origins`; requests without that header, such as those from
+scripts and the desktop app, are not affected. Request bodies are limited to 1 MiB. `PUT /api/zones` accepts at most
+64 zones, and `PUT /api/rules`, `PUT /api/rules/order` and `POST /api/rules/test` at most 256 rules; longer lists
+return 422. `POST /api/rules` returns `400 invalid` when 256 rules already exist, and `PUT /api/scene`, history
+restore, `POST /api/presets` with a `scene`, and `POST /api/presets/{name}/apply` return `400 invalid` for a scene
+with more than 256 rules. In `POST /api/session/login`, a
+`host` longer than 253 characters, a `username` longer than 256 or a `password` longer than 4096 returns
+`422 invalid_credentials`.
 
 ## Session
 
@@ -891,7 +903,9 @@ Any of `{"mode": "switch" | "curve" | "manual" | "target", "curve": "low" | "med
 "manual_percent": 30-100, "target_celsius": 45-85}`. Missing fields keep their saved values. The response is the
 `GET /api/fans` object after the switch confirms the change. An invalid value returns `400 invalid`; a change the
 switch does not confirm returns `409 fans_unconfirmed` and keeps the previous settings. A model without fan control
-returns `400 invalid` with the reason.
+returns `400 invalid` with the reason. When the switch runs the new setting but EE cannot write it to its data folder,
+the response is `503 fans_not_saved`: the setting stays active until EE restarts, which then uses the previously
+saved setting.
 
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
@@ -917,6 +931,11 @@ A preset stores zones, rules, brightness and manual colors.
 | `DELETE /api/presets/{name}` | Delete a preset |
 | `POST /api/presets/{name}/duplicate` | `{"name":"New name"}` copies the saved snapshot without applying it |
 | `POST /api/presets/{name}/rename` | `{"name":"New name"}` renames the saved snapshot without applying it |
+
+Apply uses the same scene transaction as `PUT /api/scene` with `confirm_output`, and returns the state after
+the switch acknowledges the SFP output. It returns `409 output_unconfirmed` when that output is not confirmed,
+and `503 offline_scene_unconfirmed` when the lighting is applied in EE but the switch has not confirmed its offline
+copy.
 
 To save a preview without applying it, `POST /api/presets` accepts `scene` and
 `expected_revision` alongside `name`. The revision must match the current scene;
@@ -1123,10 +1142,9 @@ These endpoints work without logging in.
 
 ## WebSocket: `/api/ws`
 
-When an API token is configured, desktop clients authenticate with an `Authorization: Bearer <token>`
-header. The web gateway supplies authentication for REST edits and WebSocket telemetry so the token stays out of browser URLs. The protocol also accepts
-a `token` query parameter; a supplied Authorization header takes precedence and an invalid header cannot be
-overridden by a query token.
+When an API token is configured, clients authenticate with an `Authorization: Bearer <token>` header. A missing
+or wrong header closes the socket with code 4401. The token is not accepted as a query parameter, so it never
+appears in URLs or access logs. The web gateway supplies the header for REST edits and WebSocket telemetry.
 
 Writable sockets are bound to the switch session present when the socket opens.
 After login or session replacement, reopen the socket before sending changes.

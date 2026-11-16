@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from etherlighting_evolved.api import create_app
+from etherlighting_evolved.fans import FanControl, FanStore, SimulatedFans
 
 LOCAL = "http://127.0.0.1:8787"
 
@@ -28,6 +29,50 @@ def eventually(fn, timeout=2.0):
             return True
         time.sleep(0.05)
     return fn()
+
+
+def test_a_fan_setting_that_cannot_be_saved_reports_fans_not_saved(demo, config, monkeypatch):
+    engine = demo.app.state.sessions.engine
+    store = FanStore(config.data_dir / "fans-fixture.json")
+
+    def cannot_write(settings):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(store, "save", cannot_write)
+    engine.attach_fans(FanControl(SimulatedFans(), store, supported=True))
+    response = demo.put("/api/fans", json={"mode": "manual", "manual_percent": 60})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "fans_not_saved"
+    assert engine.fans.settings.mode == "manual"
+
+
+def test_login_fields_and_request_lists_have_size_limits(demo):
+    refused = demo.post("/api/session/login", json={"host": "h" * 254, "username": "fixture"})
+    assert refused.status_code == 422 and refused.json()["detail"]["code"] == "invalid_credentials"
+    assert demo.put("/api/zones", json={"zones": [{}] * 65}).status_code == 422
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    assert demo.put("/api/rules", json={"rules": rules}).status_code == 422
+    assert demo.put("/api/rules", json={"rules": rules[:256]}).status_code == 200
+    refused = demo.post("/api/rules", json=rules[256])
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "invalid"
+
+
+def test_scenes_and_profiles_with_too_many_rules_are_refused(demo):
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    current = demo.get("/api/scene").json()
+    scene = {**current["scene"], "rules": rules}
+    body = {"scene": scene, "expected_revision": current["revision"]}
+    demo.app.state.presets.save("Saved earlier", scene)
+    for response in (
+        demo.put("/api/scene", json=body),
+        demo.post("/api/presets", json={"name": "Many rules", **body}),
+        demo.post("/api/presets/Saved earlier/apply"),
+    ):
+        assert response.status_code == 400 and response.json()["detail"]["code"] == "invalid"
+    assert demo.get("/api/scene").json() == current
+    assert "Many rules" not in demo.get("/api/presets").json()
+    allowed = {**current["scene"], "rules": rules[:256]}
+    assert demo.put("/api/scene", json={"scene": allowed, "expected_revision": current["revision"]}).status_code == 200
 
 
 def test_about_says_unofficial(client):
