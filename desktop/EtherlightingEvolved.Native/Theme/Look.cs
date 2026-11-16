@@ -326,6 +326,8 @@ public static class Look
             [!!Track.ValueProperty] = slider[!!RangeBase.ValueProperty], [!Track.IsDirectionReversedProperty] = slider[!Slider.IsDirectionReversedProperty],
         };
         track.RegisterInNameScope(scope);
-        return new Grid { Background = Brushes.Transparent, Children = { track } };
+        // The touch area reaches 7px above and below the 22px slider, so a fingertip lands without moving any
+        // layout; a press anywhere on it moves the knob to that point.
+        return new Grid { Background = Brushes.Transparent, Margin = new Thickness(0, -7), Children = { track } };
     });
 }
