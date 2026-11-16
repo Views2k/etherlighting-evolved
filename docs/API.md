@@ -93,6 +93,8 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 401 | `auth_failed` | Wrong SSH username or password |
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
 | 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
+| 403 | `local_access_required` | Only the computer running EE can make this request |
+| 403 | `private_access_denied` | The Tailscale identity is not approved, or the path cannot be opened through private access |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
 | 409 | `host_key_changed` | The switch's SSH host key doesn't match the saved one |
@@ -119,6 +121,65 @@ restore, `POST /api/presets` with a `scene`, and `POST /api/presets/{name}/apply
 with more than 256 rules. In `POST /api/session/login`, a
 `host` longer than 253 characters, a `username` longer than 256 or a `password` longer than 4096 returns
 `422 invalid_credentials`.
+
+## Private access
+
+Requests from Tailscale devices reach the workspace through the private gateway. It checks the Tailscale identity
+first and answers `403 private_access_denied` when the identity is not approved. It then compares the request's
+method and decoded path with the entries in `preview/remote-routes.mjs`. A request is forwarded only when at least
+one entry matches and every matching entry has `"remote": true`. Every other `/api` request, including a route added
+later without an entry, gets this answer before anything reaches the engine:
+
+```json
+{ "detail": { "code": "local_access_required", "message": "This action is available only on the computer running EE." } }
+```
+
+The answer is `403` with `Content-Type: application/json`, `Cache-Control: no-store` and
+`X-Content-Type-Options: nosniff`. The query string does not change the result, so
+`POST /api/session/logout?forget=true` is refused like `POST /api/session/logout`. Workspace pages, scripts, styles
+and images allow `GET` and `HEAD`.
+
+These requests are local-only:
+
+| Request | Reason |
+|---|---|
+| `POST /api/controller/cancel` | UniFi Network setup: cancels a pending site choice |
+| `POST /api/controller/connect` | UniFi Network setup: sends and can save controller credentials |
+| `POST /api/controller/consoles` | UniFi Network setup: sends an API key to UniFi |
+| `POST /api/controller/disconnect` | UniFi Network setup: disconnects the controller |
+| `PUT /api/controller/preferences` | UniFi Network setup: saves or removes the controller login |
+| `PUT /api/fps` | Output tuning outside the scene; no client sends it |
+| `PUT /api/output` | Output tuning outside the scene; no client sends it |
+| `PUT /api/private-access` | Tailscale settings |
+| `POST /api/private-access/login` | Starts Tailscale sign-in on the host computer |
+| `POST /api/private-access/refresh` | Runs Tailscale checks on the host computer |
+| `POST /api/session/forget` | Deletes the saved switch login |
+| `POST /api/session/forget-host-key` | Removes a trusted SSH host key, part of signing in to a new or replaced switch |
+| `POST /api/session/host-key/accept` | Trusts a switch's first SSH host key, part of signing in to a new switch |
+| `POST /api/session/host-key/replace` | Replaces a trusted SSH host key, part of signing in to a replaced switch |
+| `POST /api/session/login` | Signs in to a switch or the demo with typed details |
+| `POST /api/session/logout` | Ends the switch session; `forget=true` deletes the saved login |
+| `PUT /api/simulator/anomaly/{port}` | Demo simulator test control; the demo starts only from a local login |
+| `PUT /api/simulator/links/{port}` | Demo simulator test control; the demo starts only from a local login |
+| `PUT /api/simulator/poe/{port}` | Demo simulator test control; the demo starts only from a local login |
+| `POST /api/workspace/close` | Stops the service on the host computer |
+
+The private gateway answers `GET /api/private-access` itself, with `can_configure` and `can_close_workspace` false,
+and `GET /api/workspace` itself. A WebSocket upgrade is accepted only at exactly `/api/ws`; a query, trailing slash
+or encoded form is refused with `403 Forbidden`. Every WebSocket command is available to devices that use private
+access.
+
+### `GET /api/workspace`
+
+Answered by the gateway, never by the engine. `live` is true when the workspace controls a real switch and false
+for the demo. `remote` is true when the request came through private access:
+
+```json
+{ "live": true, "remote": false }
+```
+
+Through private access the answer is always `{"live": true, "remote": true}`. When `remote` is true, clients leave out
+switch login, Forget saved login and UniFi Network setup.
 
 ## Session
 
@@ -184,6 +245,9 @@ The server publishes `connecting: true` and the final session transition. Missin
 HTTP 409 with `no_saved_login`; an unreadable saved record returns HTTP 409 with `saved_login_unavailable`.
 Connection errors use the normal login error contract. The saved record is retained, and its password is never
 returned to the browser.
+
+Devices that use private access reconnect with this route. Signing in with typed details and changing the switch's
+trusted SSH host key are available only on the computer running EE.
 
 ### `POST /api/session/forget`
 
@@ -1185,6 +1249,9 @@ Messages to the server (add an `id` to any of them to get an `ack` or `error` ba
 { "type": "resume" }
 { "type": "ping" }
 ```
+
+A message with any other `type` gets an `error` with code `invalid`. Every command is available to devices that use
+private access. An action that must stay on the host computer needs a REST route.
 
 `zone` is optional; without it the first zone is used. `clear_port` without a port clears all ports. Mutation
 messages apply immediately; the browser sends lighting changes only after Apply. Actual switch writes follow
