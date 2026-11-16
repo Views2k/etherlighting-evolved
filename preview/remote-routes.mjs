@@ -36,7 +36,7 @@ export const ROUTE_ACCESS = {
     {"method": "GET", "path": "/api/presets", "source": "engine", "remote": true, "reason": "Profiles: the list Profiles reads."},
     {"method": "POST", "path": "/api/presets", "source": "engine", "remote": true, "reason": "Profiles: saves a profile; both clients send it."},
     {"method": "DELETE", "path": "/api/presets/{name}", "source": "engine", "remote": true, "reason": "Profiles: deletes a profile, the same records as PATCH /api/profiles/{profile_id}."},
-    {"method": "POST", "path": "/api/presets/{name}/apply", "source": "engine", "remote": true, "reason": "Profiles: applies a profile; the desktop inspector sends it."},
+    {"method": "POST", "path": "/api/presets/{name}/apply", "source": "engine", "remote": true, "reason": "Profiles: applies a saved profile, the same control as PUT /api/scene."},
     {"method": "POST", "path": "/api/presets/{name}/duplicate", "source": "engine", "remote": true, "reason": "Profiles: duplicates a profile, the same records as PATCH /api/profiles/{profile_id}."},
     {"method": "POST", "path": "/api/presets/{name}/rename", "source": "engine", "remote": true, "reason": "Profiles: renames a profile, the same records as PATCH /api/profiles/{profile_id}."},
     {"method": "GET", "path": "/api/private-access", "source": "gateway", "remote": true, "reason": "Answered by the private gateway with read-only status; never forwarded."},
