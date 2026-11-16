@@ -300,6 +300,25 @@ test('a failed remote reconnect names the computer running EE',async context=>{
   }
 });
 
+const FP_A='SHA256:'+'A'.repeat(43),FP_B='SHA256:'+'B'.repeat(42)+'A';
+const CHANGED_KEY={code:'host_key_changed',message:'The switch’s SSH key changed. Check the new fingerprint before signing in.',
+  host:'192.168.1.2',port:22,ssh_host_key:FP_B,ssh_host_key_type:'ssh-rsa',saved_ssh_host_key:FP_A};
+const REMOTE_KEY='The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.';
+
+test('a remote device shows the changed key message instead of a key review it cannot complete',async context=>{
+  const session={logged_in:false,has_saved_login:true,remembered:{host:'192.168.1.2',port:22},error:CHANGED_KEY};
+  const refuse=async()=>{throw Object.assign(new Error(CHANGED_KEY.message),{code:CHANGED_KEY.code,details:CHANGED_KEY});};
+  // The key error arrives in the session, or as the refused reconnect.
+  for(const [value,restoreSaved] of [[session,undefined],[{...session,error:null},refuse]]){
+    const ui=remoteConnection(context,value,restoreSaved);await flush();
+    if(restoreSaved){assert.notEqual(ui.notice(),REMOTE_KEY);ui.button('Connect with saved login').click();await flush();}
+    assert.equal(ui.notice(),REMOTE_KEY);
+    assert.equal(ui.byClass(ui.host,'host-key-review').length,0);assert.equal(ui.button('Accept new key'),undefined);
+    // A review would read private access again to decide whether the key can be accepted here.
+    assert.deepEqual(ui.sent,[['/api/private-access']]);
+  }
+});
+
 test('a saved login the host cannot open is reported to a remote device',async context=>{
   const ui=remoteConnection(context,{has_saved_login:true,saved_login_error:'x'});await flush();
   assert.equal(ui.notice(),'The saved login could not be opened. Sign in to the switch on the computer running EE.');

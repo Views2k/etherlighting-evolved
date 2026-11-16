@@ -22,6 +22,7 @@ internal static class RemoteAccessChecks
     const string HostLoginUnavailable = "The saved login could not be opened. Sign in to the switch on the computer running EE.";
     const string HostLoginRejected = "The switch rejected the saved login. Sign in to the switch on the computer running EE.";
     const string HostKeyChanged = "The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.";
+    const string ReviewNotice = "The switch’s SSH key changed. Review it before connecting.";
     const string HandoffWarning = " The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.";
     const string Scope = "Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.";
 
@@ -43,7 +44,8 @@ internal static class RemoteAccessChecks
           if (route === 'GET /api/last-session') return reply(200, {});
           if (route === 'GET /api/private-access')
             return reply(200, {available: true, enabled: true, ready: true, can_configure: false, can_close_workspace: false, url: null});
-          if (route === 'POST /api/session/restore?resume=true') return reply(409, {detail: {code: 'no_saved_login', message: 'x'}});
+          if (route === 'POST /api/session/restore?resume=true')
+            return reply(409, {detail: fs.existsSync('restore.json') ? JSON.parse(fs.readFileSync('restore.json', 'utf8')) : {code: 'no_saved_login', message: 'x'}});
           reply(403, {detail: {code: 'local_access_required', message: 'This action is available only on the computer running EE.'}});
         });
         server.on('upgrade', (_req, socket) => socket.destroy());
@@ -144,6 +146,7 @@ internal static class RemoteAccessChecks
                     }
                     finally { blocked.Leave(); }
 
+                    await HostKeyChecks(shell, workspace, directory, check);
                     await SettingsChecks(shell, directory, check);
                     check(!Requests(directory).Any(line => line.Split(' ')[1] is "/api/session/login" or "/api/session/forget" or "/api/session/handoff"
                                                            || line.Split(' ')[1].StartsWith("/api/controller", StringComparison.Ordinal)),
@@ -157,6 +160,51 @@ internal static class RemoteAccessChecks
                 }
             }
             finally { deadline.Cancel(); }
+        }
+    }
+
+    // A remote window cannot accept a changed key, so a key error in the session or from a refused reconnect shows
+    // where to review it instead of the review.
+    static async Task HostKeyChecks(AppShell shell, Workspace workspace, string directory, Action<bool, string> check)
+    {
+        var changed = new JsonObject
+        {
+            ["code"] = "host_key_changed", ["message"] = "The switch’s SSH key changed. Check the new fingerprint before signing in.", ["host"] = "192.168.1.2",
+            ["port"] = 22, ["ssh_host_key"] = "SHA256:" + new string('B', 42) + "A", ["ssh_host_key_type"] = "ssh-rsa",
+            ["saved_ssh_host_key"] = "SHA256:" + new string('A', 43),
+        };
+        JsonObject Session(JsonNode? error) => new()
+        {
+            ["logged_in"] = false, ["has_saved_login"] = true, ["remembered"] = new JsonObject { ["host"] = "192.168.1.2", ["port"] = 22 }, ["error"] = error,
+        };
+        static bool NoReview(Control page) => !page.GetLogicalDescendants().OfType<HostKeyReview>().Any() && Find(page, "Accept new key") is null
+                                              && !Texts(page).Contains(ReviewNotice);
+
+        workspace.Session = Session(changed.DeepClone());
+        var inSession = PageRegistry.Create("Connect", shell)!;
+        try
+        {
+            check(Texts(inSession).Contains(HostKeyChanged) && NoReview(inSession),
+                "a remote connection page shows a changed key in the session as a message for the computer running EE");
+        }
+        finally { inSession.Leave(); }
+
+        var reply = Path.Combine(directory, "restore.json");
+        File.WriteAllText(reply, changed.ToJsonString());
+        workspace.Session = Session(null);
+        var refused = PageRegistry.Create("Connect", shell)!;
+        try
+        {
+            var before = Texts(refused).Contains(HostKeyChanged);
+            Find(refused, "Connect with saved login")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Until(() => Texts(refused).Contains(HostKeyChanged));
+            check(!before && Texts(refused).Contains(HostKeyChanged) && NoReview(refused),
+                "a remote connection page shows a changed key from a refused reconnect as a message for the computer running EE");
+        }
+        finally
+        {
+            refused.Leave();
+            File.Delete(reply);
         }
     }
 
