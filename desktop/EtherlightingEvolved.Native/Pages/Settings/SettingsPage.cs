@@ -11,6 +11,7 @@ using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -35,7 +36,7 @@ public sealed class SettingsPage : Page
     readonly StackPanel content = new() { Spacing = 18 };
     readonly Control contentPanel;
     readonly Border health;
-    readonly TextBlock healthStatus = SettingsKit.HelpText();
+    readonly TextBlock healthStatus = UiKit.HelpText();
     readonly DetailsList healthDetails = new();
     readonly Panel controllerHost = new();
     readonly Connect.PrivateAccessPanel privateAccess;
@@ -77,7 +78,7 @@ public sealed class SettingsPage : Page
         var (healthFrame, healthBody) = SettingsKit.AutomationSection();
         health = healthFrame;
         healthBody.Children.Add(SettingsKit.SectionHeading("Switch health"));
-        healthBody.Children.Add(SettingsKit.HelpText("Lighting command activity, CPU, memory, temperature, and storage readings."));
+        healthBody.Children.Add(UiKit.HelpText("Lighting command activity, CPU, memory, temperature, and storage readings."));
         healthBody.Children.Add(healthStatus);
         healthBody.Children.Add(healthDetails);
 
@@ -116,8 +117,7 @@ public sealed class SettingsPage : Page
                      (about, "About"),
                  })
         {
-            var button = SettingsKit.Button(label, "quiet settings-nav");
-            button.HorizontalAlignment = HorizontalAlignment.Stretch;
+            var button = UiKit.Button(label, "quiet settings-nav");
             var target = section;
             button.Click += (_, _) => ScrollTo(target);
             sections.Add((section, button));
@@ -226,7 +226,7 @@ public sealed class SettingsPage : Page
             if (simulated) content.Children.Add(SettingsKit.P("Use this preview to review the lighting workspace, effects, rules, and profiles.", "muted"));
             else
             {
-                if (session.At("offline_lighting_error") is { } offline && offline.Truthy()) content.Children.Add(SettingsKit.HelpText(offline.Str() ?? offline.ToJsonString()));
+                if (session.At("offline_lighting_error") is { } offline && offline.Truthy()) content.Children.Add(UiKit.HelpText(offline.Str() ?? offline.ToJsonString()));
                 Button? handoff = null;
                 handoff = SettingsKit.ActionButton("Handoff to UniFi", () => gate.Run(async () =>
                 {
@@ -251,7 +251,7 @@ public sealed class SettingsPage : Page
                         if (gate.Active) handoff!.SetLabel("Handoff to UniFi");
                     }
                 }));
-                content.Children.Add(SettingsKit.HelpText("Return lighting control to UniFi and keep your EE setup for next time."));
+                content.Children.Add(UiKit.HelpText("Return lighting control to UniFi and keep your EE setup for next time."));
                 content.Children.Add(handoff);
                 if (session.Truthy("has_saved_login"))
                 {

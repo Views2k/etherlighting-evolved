@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Controls;
@@ -45,7 +46,10 @@ public sealed class Dialog
 /// </summary>
 public sealed class Overlay : Panel
 {
+    sealed record PendingConfirmation(string Title, string Message, string Accept, CancellationToken Signal, Task<bool> Promise, Dialog Dialog);
+
     readonly List<(Dialog Dialog, Control Layer)> dialogs = [];
+    readonly ConditionalWeakTable<object, PendingConfirmation> confirmations = new();
     readonly Border toast = new() { IsVisible = false, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), Padding = new Thickness(16, 12), MaxWidth = 580 };
     readonly TextBlock toastText = new() { TextWrapping = TextWrapping.Wrap, LineHeight = 19, VerticalAlignment = VerticalAlignment.Center };
     readonly Button toastDismiss;
@@ -161,20 +165,49 @@ public sealed class Overlay : Panel
     }
 
     /// <summary>
-    /// Port of confirmAction: a sheet with a title, a muted message, Cancel and the accept action (primary).
-    /// True when accepted.
+    /// Port of confirmAction (preview/confirmation.mjs): a sheet with the title, a muted message, and Cancel and the
+    /// accept action. True when accepted. An owner has one confirmation open at a time: asking again with the same text
+    /// returns the open one, and any other request is refused. A canceled signal closes it as Cancel does. Focus then
+    /// returns to the control that had it.
     /// </summary>
-    public async Task<bool> Confirm(string title, string message, string accept)
+    public Task<bool> Confirm(string title, string message, string accept, object? owner = null, CancellationToken signal = default)
     {
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };
-        var sheet = new StackPanel { Children = { Ui.Text(title, "h2", wrap: true), Ui.P(message, "muted"), actions } };
-        sheet.Children[0].Margin = new Thickness(0, 0, 0, 16);
-        ((TextBlock)sheet.Children[0]).FontSize = 18;
-        var dialog = Show(sheet, sheet: true);
-        actions.Children.Add(Ui.Button("Cancel", null, () => dialog.Close("false")));
-        actions.Children.Add(Ui.Button(accept, "primary", () => dialog.Close("true")));
-        return await dialog.Result == "true";
+        if (signal.IsCancellationRequested) return Task.FromResult(false);
+        // A closed dialog no longer counts, even before its result is handed back.
+        if (owner is not null && confirmations.TryGetValue(owner, out var pending) && pending.Dialog.IsOpen)
+            return pending.Title == title && pending.Message == message && pending.Accept == accept && pending.Signal == signal
+                ? pending.Promise : Task.FromResult(false);
+        var previousFocus = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() as Control;
+        var heading = new TextBlock { Text = title, Classes = { "h2" }, FontSize = 18, LineHeight = 26, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 16) };
+        var copy = new TextBlock { Text = message, FontSize = 13, LineHeight = 19.5, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted");
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        var actions = new Border { BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 14), Margin = new Thickness(0, 16, 0, 0), Child = buttons }
+            .Bind(Border.BorderBrushProperty, "line");
+        var dialog = Show(new StackPanel { Spacing = 6, Children = { heading, copy, actions } }, sheet: true);
+        buttons.Children.Add(Ui.Button("Cancel", null, () => dialog.Close("false")));
+        buttons.Children.Add(Ui.Button(accept, "primary", () => dialog.Close("true")));
+        var registration = signal.Register(() => Dispatcher.UIThread.Post(() => dialog.Close("false")));
+        PendingConfirmation? entry = null;
+        var promise = Finish();
+        if (owner is not null)
+        {
+            entry = new PendingConfirmation(title, message, accept, signal, promise, dialog);
+            confirmations.AddOrUpdate(owner, entry);
+        }
+        return promise;
+
+        async Task<bool> Finish()
+        {
+            var result = await dialog.Result;
+            if (owner is not null && confirmations.TryGetValue(owner, out var latest) && ReferenceEquals(latest, entry)) confirmations.Remove(owner);
+            registration.Dispose();
+            if (owner is not Visual visual || Attached(visual))
+                if (previousFocus is { IsEffectivelyEnabled: true } && Attached(previousFocus)) previousFocus.Focus();
+            return result == "true";
+        }
     }
+
+    static bool Attached(Visual visual) => TopLevel.GetTopLevel(visual) is not null;
 }
 
 static class VisualSafe

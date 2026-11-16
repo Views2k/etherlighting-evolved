@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Avalonia.Controls;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -13,7 +14,7 @@ public sealed class LastSession : StackPanel
 {
     readonly Send request;
     readonly StackPanel content = new();
-    readonly Button refresh = SettingsKit.Button("Refresh session details", "quiet");
+    readonly Button refresh = UiKit.Button("Refresh session details", "quiet");
     bool active = true, pending;
 
     public LastSession(Send request)
@@ -36,7 +37,7 @@ public sealed class LastSession : StackPanel
             details.Set(rows.Select(row => (row.Str("0") ?? "", row.Str("1") ?? "")));
             content.Children.Add(details);
         }
-        if (view.Str("message") is { Length: > 0 } message) content.Children.Add(SettingsKit.HelpText(message));
+        if (view.Str("message") is { Length: > 0 } message) content.Children.Add(UiKit.HelpText(message));
     }
 
     public async Task Reload()

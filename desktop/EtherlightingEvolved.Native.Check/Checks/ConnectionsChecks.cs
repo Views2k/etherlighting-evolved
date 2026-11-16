@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Pages;
 using EtherlightingEvolved.Native.Ui;
@@ -57,5 +60,29 @@ internal static class ConnectionsChecks
         var opened = details.Open && details.Body.IsVisible;
         Press(Key.Space);
         check(details.Summary.Focusable && opened && !details.Open && !details.Body.IsVisible, "a disclosure opens and closes from the keyboard");
+
+        var actions = new FlowRow(10, new Border { Width = 40, Height = 34 }, new Border { Width = 40, Height = 34, IsVisible = false }, new Border { Width = 40, Height = 34 });
+        actions.Measure(Size.Infinity);
+        check(actions.DesiredSize == new Size(90, 34), "an action row in Connect or Settings leaves no gap for a hidden button");
+
+        // Every page asks through the same confirmation dialog. The connection view passes itself as the owner and its
+        // lifetime as the signal.
+        var overlay = new Overlay();
+        var owner = new object();
+        using var leave = new CancellationTokenSource();
+        var forget = overlay.Confirm("Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", owner, leave.Token);
+        var repeated = overlay.Confirm("Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", owner, leave.Token);
+        var other = overlay.Confirm("Retry handoff to UniFi?", "Stop EE lighting and return control to UniFi.", "Retry handoff", owner, leave.Token);
+        var single = overlay.HasDialog && overlay.Children.Count == 2;
+        leave.Cancel();
+        var clock = Stopwatch.StartNew();
+        while (!forget.IsCompleted && clock.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(5);
+        }
+        check(single && ReferenceEquals(forget, repeated) && other.IsCompletedSuccessfully && !other.Result
+              && forget.IsCompletedSuccessfully && !forget.Result && !overlay.HasDialog,
+            "an owner has one confirmation at a time, and its canceled signal closes it as Cancel does");
     }
 }

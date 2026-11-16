@@ -8,6 +8,7 @@ using EtherlightingEvolved.Native.Pages.Settings;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Help;
 
@@ -130,7 +131,7 @@ public sealed class HelpPage : Page
         row.Children.Add(chevron);
         row.Children.Add(heading);
         var summary = new Border { Child = row, Background = Brushes.Transparent };
-        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * SettingsKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
+        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * UiKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
         // The steps are p elements, whose own 1.5 line height replaces the card's 1.65.
         foreach (var text in paragraphs)
             steps.Children.Add(new TextBlock { Text = text, FontSize = 13, LineHeight = 19.5, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted"));

@@ -312,3 +312,75 @@ public sealed class CheckRow : StackPanel
 
     public CheckBox Box { get; }
 }
+
+/// <summary>
+/// A wrapping row with a fixed gap between items, as the flex rows .connection-actions (10px) and inline buttons
+/// (no gap) do. Hidden items take no space and add no gap. Items are centered in their line.
+/// </summary>
+public sealed class FlowRow : Panel
+{
+    public FlowRow(double gap = 10, params Control[] children)
+    {
+        Gap = gap;
+        foreach (var child in children) Children.Add(child);
+    }
+
+    public double Gap { get; set; }
+
+    IEnumerable<List<Control>> Lines(double width)
+    {
+        var line = new List<Control>();
+        double x = 0;
+        foreach (var child in Children)
+        {
+            if (!child.IsVisible) continue;
+            var size = child.DesiredSize;
+            if (line.Count > 0 && x + Gap + size.Width > width + 0.5)
+            {
+                yield return line;
+                line = [];
+                x = 0;
+            }
+            x += (line.Count > 0 ? Gap : 0) + size.Width;
+            line.Add(child);
+        }
+        if (line.Count > 0) yield return line;
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        foreach (var child in Children) child.Measure(new Size(availableSize.Width, double.PositiveInfinity));
+        double width = 0, height = 0;
+        var first = true;
+        foreach (var line in Lines(availableSize.Width))
+        {
+            width = Math.Max(width, line.Sum(child => child.DesiredSize.Width) + Gap * (line.Count - 1));
+            height += (first ? 0 : Gap) + line.Max(child => child.DesiredSize.Height);
+            first = false;
+        }
+        return new Size(width, height);
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        double y = 0;
+        var first = true;
+        foreach (var line in Lines(finalSize.Width))
+        {
+            if (!first) y += Gap;
+            first = false;
+            var height = line.Max(child => child.DesiredSize.Height);
+            double x = 0;
+            foreach (var child in line)
+            {
+                var size = child.DesiredSize;
+                child.Arrange(new Rect(x, y + (height - size.Height) / 2, size.Width, size.Height));
+                x += size.Width + Gap;
+            }
+            y += height;
+        }
+        foreach (var child in Children)
+            if (!child.IsVisible) child.Arrange(default);
+        return finalSize;
+    }
+}

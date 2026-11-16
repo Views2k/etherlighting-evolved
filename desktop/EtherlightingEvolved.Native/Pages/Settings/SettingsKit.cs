@@ -11,31 +11,18 @@ using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
 /// <summary>
-/// Markup helpers shared by the Settings sections, ported from the small builders at the top of preview/secondary.mjs
-/// and preview/connections.mjs (node, field, button, section, frame, notice) and the matching rules in style.css.
+/// Markup helpers for the Settings sections, ported from the small builders at the top of preview/secondary.mjs
+/// (node, section, frame) and the matching rules in style.css. Fields, help text and buttons are the shared ones in
+/// Ui/Ui.cs.
 /// </summary>
 public static class SettingsKit
 {
-    /// <summary>1ch of the 13px workspace font, for the max-width: 64ch and 76ch text measures.</summary>
-    public const double Ch = 6.99;
-
     /// <summary>A paragraph with the browser's 1.5 line height.</summary>
     public static TextBlock P(string text, string? token = null, double size = 13)
     {
         var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = size, LineHeight = Math.Round(size * 1.5, 2) };
         if (token is not null) block.Bind(TextBlock.ForegroundProperty, token);
         return block;
-    }
-
-    /// <summary>p.help-text: 13px muted text at 1.55 line height, 64ch wide at most, 5px below the previous item.</summary>
-    public static TextBlock HelpText(string text = "")
-    {
-        var block = new TextBlock
-        {
-            Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 13, LineHeight = 20.15, MaxWidth = 64 * Ch,
-            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 5, 0, 0),
-        };
-        return block.Bind(TextBlock.ForegroundProperty, "muted");
     }
 
     /// <summary>An h2 in the browser's sizes: 20px by default, colored by the token given.</summary>
@@ -89,7 +76,6 @@ public static class SettingsKit
     public static Button ActionButton(string label, Func<Task> action, string? classes = null, Func<bool>? enabled = null)
     {
         var button = UiKit.Button(label, classes);
-        button.HorizontalAlignment = HorizontalAlignment.Left;
         button.Click += async (_, _) =>
         {
             if (!button.IsEnabled) return;
@@ -101,32 +87,10 @@ public static class SettingsKit
         return button;
     }
 
-    /// <summary>A plain button (connections.mjs button()); clicks are handled by the caller.</summary>
-    public static Button Button(string label, string? classes = null)
-    {
-        var button = UiKit.Button(label, classes);
-        button.HorizontalAlignment = HorizontalAlignment.Left;
-        return button;
-    }
-
     public static void SetLabel(this Button button, string text)
     {
         if (button.Content as string != text) button.Content = text;
     }
-
-    /// <summary>label.field: a muted label above its control, with optional faint help text (small).</summary>
-    public static StackPanel Field(string label, Control control, string? help = null)
-    {
-        var field = new StackPanel { Spacing = 7 };
-        field.Children.Add(new TextBlock { Text = label, FontSize = 13, LineHeight = 18, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted"));
-        field.Children.Add(control);
-        if (help is not null) field.Children.Add(Small(help));
-        return field;
-    }
-
-    /// <summary>The faint small text inside a field.</summary>
-    public static TextBlock Small(string text = "") =>
-        new TextBlock { Text = text, FontSize = 13, LineHeight = 18.85, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "faint");
 
     /// <summary>
     /// header.view-header from frame(): Ui.ViewHeader with the browser's line heights (h1 at 1.45, p at 1.5).
@@ -141,22 +105,6 @@ public static class SettingsKit
             text.FontSize = 13;
         }
         return header;
-    }
-
-    /// <summary>A text input as the browser workspace styles it; spell checking and capitals are off.</summary>
-    public static TextBox Input(int maxLength = 0, string? placeholder = null)
-    {
-        var box = new TextBox { Watermark = placeholder, HorizontalAlignment = HorizontalAlignment.Stretch };
-        if (maxLength > 0) box.MaxLength = maxLength;
-        return box;
-    }
-
-    /// <summary>div.connection-actions: a wrapping row with 10px gaps.</summary>
-    public static WrapPanel Actions(params Control[] children)
-    {
-        var row = new WrapPanel { ItemSpacing = 10, LineSpacing = 10, Orientation = Orientation.Horizontal };
-        foreach (var child in children) row.Children.Add(child);
-        return row;
     }
 
     /// <summary>Styles for these pages that Look.cs does not cover.</summary>

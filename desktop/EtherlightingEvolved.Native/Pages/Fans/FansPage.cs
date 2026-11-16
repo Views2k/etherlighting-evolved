@@ -192,7 +192,7 @@ public sealed class FansPage : Page
         right.Children.Add(ModeBar());
         right.Children.Add(details);
         right.Children.Add(error);
-        right.Children.Add(SettingsKit.HelpText(Footer));
+        right.Children.Add(U.HelpText(Footer));
         columns = new Grid();
         columns.Children.Add(left);
         columns.Children.Add(right);
@@ -284,7 +284,7 @@ public sealed class FansPage : Page
                 }
                 var panel = new StackPanel { Spacing = 8 };
                 panel.Children.Add(grid);
-                panel.Children.Add(SettingsKit.HelpText("The fan speed follows the CPU temperature along the selected curve. Higher curves run the fans faster and the switch cooler."));
+                panel.Children.Add(U.HelpText("The fan speed follows the CPU temperature along the selected curve. Higher curves run the fans faster and the switch cooler."));
                 return panel;
             }
             case "manual":
@@ -296,7 +296,7 @@ public sealed class FansPage : Page
                 return rack
                     ? new TextBlock { Text = "The switch’s own fan controller sets the speed. EE does not change the fans.", FontSize = 16, LineHeight = 23, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center }
                         .Bind(TextBlock.ForegroundProperty, "muted")
-                    : SettingsKit.HelpText("The switch’s own fan controller sets the speed. EE does not change the fans.");
+                    : U.HelpText("The switch’s own fan controller sets the speed. EE does not change the fans.");
         }
     }
 
@@ -312,7 +312,7 @@ public sealed class FansPage : Page
             row.Children.Add(slider);
             var panel = new StackPanel { Spacing = 4 };
             panel.Children.Add(row);
-            panel.Children.Add(SettingsKit.HelpText(help));
+            panel.Children.Add(U.HelpText(help));
             return panel;
         }
         // Large controls for the rack's touch screen: the value, then − slider + with the slider drawn at twice the size.
