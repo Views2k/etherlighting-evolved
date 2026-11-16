@@ -16,9 +16,9 @@ from .controller import (
     MAX_RESPONSE,
     ControllerClient,
     ControllerError,
-    _mac,
-    _name,
+    clean_name,
     controller_access,
+    normalize_mac,
     validate_api_key,
 )
 
@@ -44,7 +44,7 @@ def _address(value):
 
 
 def _hardware_address(value):
-    mac = _mac(value)
+    mac = normalize_mac(value)
     return mac if mac and mac not in {"0" * 12, "f" * 12} and not int(mac[:2], 16) & 1 else None
 
 
@@ -206,7 +206,7 @@ class IntegrationClient(ControllerClient):
         self.authenticated = True
         return {
             "meta": {"rc": "ok"},
-            "data": [{"name": _uuid(site["id"]), "desc": _name(site.get("name"))} for site in sites],
+            "data": [{"name": _uuid(site["id"]), "desc": clean_name(site.get("name"))} for site in sites],
         }
 
     def topology(self, site, switch_host):
@@ -246,7 +246,7 @@ class IntegrationClient(ControllerClient):
             if not _integer(index, 1, 256) or index in metadata or port.get("state") not in ("UP", "DOWN", "UNKNOWN"):
                 raise ControllerError("invalid_response", "The controller returned invalid port information.", 502)
             value = {"source": "unifi_integration", "kind": "port", "client_mapping": False, "state": port["state"]}
-            if name := _name(port.get("name")):
+            if name := clean_name(port.get("name")):
                 value["port_name"] = name
             if _integer(port.get("speedMbps")):
                 value["speed_mbps"] = port["speedMbps"]
@@ -266,7 +266,7 @@ class IntegrationClient(ControllerClient):
                     and (key != "type" or not isinstance(poe[key], bool))
                 }
             metadata[index] = {"controller": value}
-        return metadata, _name(detail.get("name"))
+        return metadata, clean_name(detail.get("name"))
 
 
 class ConsoleClient(IntegrationClient):
@@ -305,7 +305,7 @@ class ConsoleClient(IntegrationClient):
                 identifiers.add(identifier)
                 reported = row.get("reportedState")
                 name = (
-                    (_name(reported.get("hostname")) or _name(reported.get("name")))
+                    (clean_name(reported.get("hostname")) or clean_name(reported.get("name")))
                     if isinstance(reported, dict)
                     else None
                 )
@@ -313,7 +313,7 @@ class ConsoleClient(IntegrationClient):
                     {
                         "id": identifier,
                         "name": name or f"Console · {identifier[-8:]}",
-                        "type": _name(row.get("type")),
+                        "type": clean_name(row.get("type")),
                         "blocked": row.get("isBlocked") is True,
                     }
                 )

@@ -11,13 +11,13 @@ from .config import DEMO_HOSTS
 from .controller import (
     ControllerClient,
     ControllerError,
-    _name,
-    _records,
     certificate_pin,
+    clean_name,
     controller_access,
     controller_origin,
     match_switch,
     port_metadata,
+    response_records,
     validate_api_key,
     validate_controller_kind,
 )
@@ -115,7 +115,7 @@ class ControllerManager:
                                   "The UniFi cloud connection requires a publicly trusted certificate.")
         verification_code = verification_code.strip() if verification_code else None
         if verification_code and not re.fullmatch(r"[0-9]{6,8}", verification_code):
-            raise ControllerClient._verification_error()
+            raise ControllerClient.verification_error()
         if site and not _SITE.fullmatch(site):
             raise ControllerError("invalid_site", "Choose a valid controller site.")
         async with self._lock:
@@ -148,8 +148,8 @@ class ControllerManager:
                         await asyncio.to_thread(client.login, verification_code)
                     else:
                         await asyncio.to_thread(client.login)
-                records = _records(await asyncio.to_thread(client.get, "/api/self/sites"))
-                sites = [{"id": row["name"], "name": _name(row.get("desc")) or row["name"]}
+                records = response_records(await asyncio.to_thread(client.get, "/api/self/sites"))
+                sites = [{"id": row["name"], "name": clean_name(row.get("desc")) or row["name"]}
                          for row in records if isinstance(row.get("name"), str) and _SITE.fullmatch(row["name"])]
                 if not sites:
                     raise ControllerError("no_sites", "This controller account has no accessible Network sites.", 403)
@@ -209,11 +209,11 @@ class ControllerManager:
         if client.auth_method == "api_key":
             ports, name = await asyncio.to_thread(client.topology, site, switch_host)
             return ports, name, self._clock(), datetime.now(UTC).isoformat(), None
-        devices = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/device"))
-        clients = _records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/sta"))
+        devices = response_records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/device"))
+        clients = response_records(await asyncio.to_thread(client.get, f"/api/s/{site}/stat/sta"))
         switch = await asyncio.to_thread(match_switch, devices, switch_host)
         return (port_metadata(switch, devices, clients),
-                _name(switch.get("name")), self._clock(), datetime.now(UTC).isoformat(), None)
+                clean_name(switch.get("name")), self._clock(), datetime.now(UTC).isoformat(), None)
 
     def enrich_ports(self, ports: list[dict], switch_host: str | None) -> list[dict]:
         status = self.status()

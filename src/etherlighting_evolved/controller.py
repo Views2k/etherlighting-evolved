@@ -198,7 +198,7 @@ class ControllerClient:
                     cookie = SimpleCookie()
                     cookie["UBIC_2FA"] = token
                     self._remember_cookie(cookie.output(header="").strip())
-                raise self._verification_error() if verifying else self._two_factor_error()
+                raise self.verification_error() if verifying else self._two_factor_error()
             if isinstance(meta, dict) and meta.get("rc") == "error":
                 reason = meta.get("msg")
                 if not is_login and reason == "api.err.LoginRequired":
@@ -218,7 +218,7 @@ class ControllerClient:
                     self.authenticated = False
                     if verifying:
                         self.two_factor_required = True
-                        raise self._verification_error()
+                        raise self.verification_error()
                     raise ControllerError(
                         "authentication_failed", "Check the controller account and its Network access.", 401)
                 raise ControllerError("controller_error", "The controller did not accept the request.", 502)
@@ -244,7 +244,7 @@ class ControllerClient:
         return ControllerError("two_factor_required", "Enter the verification code from your authenticator app.", 401)
 
     @staticmethod
-    def _verification_error() -> ControllerError:
+    def verification_error() -> ControllerError:
         return ControllerError("verification_failed", "The verification code was not accepted. Enter a new code.", 401)
 
     def _check_status(self, status: int, *, verifying: bool = False) -> None:
@@ -252,7 +252,7 @@ class ControllerClient:
             self.authenticated = False
             if verifying:
                 self.two_factor_required = True
-                raise self._verification_error()
+                raise self.verification_error()
             raise ControllerError("authentication_failed", "Check the controller account and its Network access.", 401)
         if status == 429:
             raise ControllerError("rate_limited", "The controller is busy. Try again shortly.", 503)
@@ -336,25 +336,25 @@ class ControllerClient:
         self.two_factor_required = False
 
 
-def _records(response: dict) -> list[dict]:
+def response_records(response: dict) -> list[dict]:
     data = response.get("data")
     if not isinstance(data, list) or len(data) > 10000 or any(not isinstance(item, dict) for item in data):
         raise ControllerError("invalid_response", "The controller returned an unexpected response.", 502)
     return data
 
 
-def _mac(value) -> str | None:
+def normalize_mac(value) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.replace(":", "").replace("-", "").lower()
     return normalized if _MAC.fullmatch(normalized) else None
 
 
-def _name(value) -> str | None:
+def clean_name(value) -> str | None:
     if not isinstance(value, str):
         return None
     value = " ".join(value.split())[:160]
-    return value if value and not _mac(value) else None
+    return value if value and not normalize_mac(value) else None
 
 
 def _port(value) -> int | None:
@@ -389,7 +389,7 @@ def match_switch(devices: list[dict], switch_host: str) -> dict:
             address = str(ipaddress.ip_address(device.get("ip", "")))
         except ValueError:
             continue
-        if address in addresses and _mac(device.get("mac")) and isinstance(device.get("port_table"), list):
+        if address in addresses and normalize_mac(device.get("mac")) and isinstance(device.get("port_table"), list):
             matches.append(device)
     if len(matches) != 1:
         raise ControllerError("switch_not_found", "Could not uniquely match the connected switch in this site.", 409)
@@ -398,37 +398,37 @@ def match_switch(devices: list[dict], switch_host: str) -> dict:
 
 def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dict[int, dict]:
     """Only attach names backed by an explicit topology port; never guess from list order."""
-    target_mac = _mac(switch.get("mac"))
+    target_mac = normalize_mac(switch.get("mac"))
     if target_mac is None:
         return {}
     valid_ports = {_port(port.get("port_idx")) for port in _rows(switch.get("port_table"))}
     valid_ports.discard(None)
     metadata: dict[int, dict] = {}
-    device_by_mac = {_mac(device.get("mac")): device for device in devices if _mac(device.get("mac"))}
+    device_by_mac = {normalize_mac(device.get("mac")): device for device in devices if normalize_mac(device.get("mac"))}
     connected_devices: dict[int, dict[str, dict]] = {}
 
     def add_device(port, device):
-        mac = _mac(device.get("mac"))
+        mac = normalize_mac(device.get("mac"))
         if port in valid_ports and mac and mac != target_mac and device.get("state") == 1:
             connected_devices.setdefault(port, {})[mac] = device
 
     for entry in _rows(switch.get("downlink_table")):
-        if device := device_by_mac.get(_mac(entry.get("mac"))):
+        if device := device_by_mac.get(normalize_mac(entry.get("mac"))):
             add_device(_port(entry.get("port_idx")), device)
     for device in devices:
         uplink = device.get("uplink")
-        if isinstance(uplink, dict) and _mac(uplink.get("uplink_mac")) == target_mac:
+        if isinstance(uplink, dict) and normalize_mac(uplink.get("uplink_mac")) == target_mac:
             add_device(_port(uplink.get("uplink_remote_port")), device)
 
     # The switch's own uplink can identify its upstream device without naming a downstream client there.
     uplink = switch.get("uplink")
-    if isinstance(uplink, dict) and (upstream := device_by_mac.get(_mac(uplink.get("uplink_mac")))):
+    if isinstance(uplink, dict) and (upstream := device_by_mac.get(normalize_mac(uplink.get("uplink_mac")))):
         add_device(_port(uplink.get("port_idx")), upstream)
 
     grouped: dict[int, dict[str, dict]] = {}
     for client in clients:
-        port, mac = _port(client.get("sw_port")), _mac(client.get("mac"))
-        if (client.get("is_wired") is not True or _mac(client.get("sw_mac")) != target_mac
+        port, mac = _port(client.get("sw_port")), normalize_mac(client.get("mac"))
+        if (client.get("is_wired") is not True or normalize_mac(client.get("sw_mac")) != target_mac
                 or port not in valid_ports or not mac or client.get("is_downstream") is True):
             continue
         grouped.setdefault(port, {})[mac] = client
@@ -436,7 +436,7 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
     for port, records in connected_devices.items():
         if len(records) == 1:
             record = next(iter(records.values()))
-            name = _name(record.get("name"))
+            name = clean_name(record.get("name"))
             if name:
                 metadata[port] = {"name": name, "controller": {"source": "unifi", "kind": "device", "count": 1}}
         else:
@@ -447,8 +447,8 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
             continue
         client_details = []
         for record in records.values():
-            assigned_name = _name(record.get("name"))
-            hostname = _name(record.get("hostname"))
+            assigned_name = clean_name(record.get("name"))
+            hostname = clean_name(record.get("hostname"))
             client_details.append({"name": assigned_name or hostname,
                                    "name_source": "assigned" if assigned_name else "hostname" if hostname else None})
         client_details.sort(key=lambda item: (item["name_source"] != "assigned", item["name"] is None,
@@ -463,7 +463,7 @@ def port_metadata(switch: dict, devices: list[dict], clients: list[dict]) -> dic
         else:
             metadata[port] = {"name": f"{len(records)} clients", "controller": details}
     for override in _rows(switch.get("port_overrides")):
-        port, name = _port(override.get("port_idx")), _name(override.get("name"))
+        port, name = _port(override.get("port_idx")), clean_name(override.get("name"))
         if port in valid_ports and name:
             item = metadata.setdefault(port, {"name": name, "controller": {
                 "source": "unifi", "kind": "port_label", "count": 0}})
