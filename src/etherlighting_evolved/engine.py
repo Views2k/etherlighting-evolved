@@ -35,6 +35,7 @@ from .bandwidth import UplinkBandwidth
 from .color import BLACK, Color
 from .effects import create_effect
 from .effects.base import Effect, RenderContext
+from .fans import POLL_INTERVAL
 from .health import HEALTH_INTERVAL, HealthParseError
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
@@ -428,11 +429,19 @@ class Engine:
         self._history, self._history_binding = history, binding
         self._record_history()
 
-    def _record_history(self) -> None:
+    @property
+    def history(self) -> tuple | None:
+        """The scene history store and this session's device binding, or None without history."""
         if self._history is None or self._history_binding is None:
+            return None
+        return self._history, self._history_binding
+
+    def _record_history(self) -> None:
+        if self.history is None:
             return
+        store, binding = self.history
         try:
-            self._history.record(self._history_binding, self.snapshot())
+            store.record(binding, self.snapshot())
             self.history_error = None
         except OSError:
             self.history_error = "Lighting history could not be saved. Check the data folder."
@@ -530,6 +539,19 @@ class Engine:
             zones.append(Zone(zone_id, name, ports, effect))
         return zones
 
+    def _start_zones(self, zones: list[Zone], clock: float, *, keep_running: bool) -> None:
+        """Start new zones at `clock`. With keep_running, a zone whose ports and effect are unchanged continues."""
+        existing = {zone.id: zone for zone in self.zones}
+        for zone in zones:
+            zone.started_at = clock
+            previous = existing.get(zone.id)
+            if (keep_running and previous is not None and previous.ports == zone.ports
+                    and previous.effect.id == zone.effect.id
+                    and previous.effect.params_json() == zone.effect.params_json()):
+                zone.effect = previous.effect
+                zone.started_at = previous.started_at
+                zone.wall_started_at = previous.wall_started_at
+
     def _replace_zones(self, zones: list[Zone]) -> set[int]:
         previous = self._sfp_zones
         self.zones = zones
@@ -557,17 +579,7 @@ class Engine:
         Ports left out of every zone stay dark unless a rule or override lights them."""
         zones = self._build_zones(specs)
         self._validate_native_zones(zones, require_capability=self.connected)
-        clock = self._animation_clock()
-        existing = {zone.id: zone for zone in self.zones}
-        for zone in zones:
-            zone.started_at = clock
-            previous = existing.get(zone.id)
-            if (previous is not None and previous.ports == zone.ports
-                    and previous.effect.id == zone.effect.id
-                    and previous.effect.params_json() == zone.effect.params_json()):
-                zone.effect = previous.effect
-                zone.started_at = previous.started_at
-                zone.wall_started_at = previous.wall_started_at
+        self._start_zones(zones, self._animation_clock(), keep_running=True)
         self._revise_sfp_outputs(self._replace_zones(zones))
         self._sync_sfp_rules()
         if clear_overrides:
@@ -1248,15 +1260,20 @@ class Engine:
             raise ValueError("This scene was saved for a different switch layout.")
 
     def snapshot(self) -> dict:
+        return self._scene(self.zones, self.rules, self.overrides, self.brightness, self.sfp, self.sfp_sync)
+
+    def _scene(self, zones: list[Zone], rules: list[Rule], overrides: dict[int, Override], brightness: int,
+               sfp: dict[int, SfpLight], sfp_sync: SfpSync) -> dict:
+        # Scene revisions hash this dict, so its content must stay stable for saved profiles and history.
         return {
             "version": 3,
             "topology": self.scene_topology(),
-            "zones": [z.to_dict() for z in self.zones],
-            "rules": [r.to_dict() for r in self.rules],
-            "brightness": self.brightness,
-            "overrides": {str(p): o.to_dict() for p, o in sorted(self.overrides.items())},
-            "sfp": {str(p): light.to_dict() for p, light in self.sfp.items()},
-            "sfp_sync": self.sfp_sync.to_dict(),
+            "zones": [zone.to_dict() for zone in zones],
+            "rules": [rule.to_dict() for rule in rules],
+            "brightness": brightness,
+            "overrides": {str(port): override.to_dict() for port, override in sorted(overrides.items())},
+            "sfp": {str(port): light.to_dict() for port, light in sfp.items()},
+            "sfp_sync": sfp_sync.to_dict(),
         }
 
     def _prepare_snapshot(self, scene: dict) -> tuple[
@@ -1308,17 +1325,7 @@ class Engine:
 
     def validate_snapshot(self, scene: dict) -> dict:
         """Return a canonical saved scene without applying it."""
-        zones, rules, overrides, brightness, sfp, sfp_sync = self._prepare_snapshot(scene)
-        return {
-            "version": 3,
-            "topology": self.scene_topology(),
-            "zones": [zone.to_dict() for zone in zones],
-            "rules": [rule.to_dict() for rule in rules],
-            "brightness": brightness,
-            "overrides": {str(port): override.to_dict() for port, override in sorted(overrides.items())},
-            "sfp": {str(port): light.to_dict() for port, light in sfp.items()},
-            "sfp_sync": sfp_sync.to_dict(),
-        }
+        return self._scene(*self._prepare_snapshot(scene))
 
     def apply_snapshot(self, scene: dict, *, preserve_unchanged: bool = False) -> set[int]:
         """Load a scene. Everything is validated before anything changes."""
@@ -1335,16 +1342,7 @@ class Engine:
                 or [rule.to_dict() for rule in rules if rule.ports and port in rule.ports]
                 != [rule.to_dict() for rule in self.rules if rule.ports and port in rule.ports]
             }
-        existing = {zone.id: zone for zone in self.zones}
-        for zone in zones:
-            zone.started_at = clock
-            previous = existing.get(zone.id)
-            if (preserve_unchanged and previous is not None and previous.ports == zone.ports
-                    and previous.effect.id == zone.effect.id
-                    and previous.effect.params_json() == zone.effect.params_json()):
-                zone.effect = previous.effect
-                zone.started_at = previous.started_at
-                zone.wall_started_at = previous.wall_started_at
+        self._start_zones(zones, clock, keep_running=preserve_unchanged)
         affected_sfp.update(self._replace_zones(zones))
         affected_sfp.update(port for port in self._sfp_zones if sfp[port].brightness != self.sfp[port].brightness)
         self.rules, self.overrides, self.brightness = rules, overrides, brightness
@@ -1935,7 +1933,6 @@ class Engine:
             self._publish({"type": "fans", "fans": self.fans.to_dict()})
 
     async def _fan_loop(self) -> None:
-        from .fans import POLL_INTERVAL
         self._fans_wake = asyncio.Event()
         while True:
             if self.connected and self.fans is not None:
