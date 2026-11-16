@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a problem with EE.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security vulnerabilities privately as described in SECURITY.md, not in an issue.
+        Leave out passwords, API keys, Tailscale names and public IP addresses.
+  - type: input
+    id: version
+    attributes:
+      label: EE version
+      description: Settings → About in the desktop app shows it.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it happened
+      options:
+        - Windows desktop app
+        - Browser workspace
+        - macOS client
+        - Linux client
+        - Installer or uninstaller
+        - Running from source
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and version
+    validations:
+      required: true
+  - type: input
+    id: switch
+    attributes:
+      label: Switch model and firmware version
+      description: Leave empty if no switch is involved.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened
+      description: Include any message EE showed, word for word.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        Lines of %LOCALAPPDATA%\Etherlighting Evolved\workspace\service-diagnostics.log from around the time of the
+        problem. This log holds no hosts, names or passwords. Read desktop.log before you paste from it, because it can
+        hold file paths and addresses.
+      render: text
