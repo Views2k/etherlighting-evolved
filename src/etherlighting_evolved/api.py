@@ -19,7 +19,6 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import DISCLAIMER, PROJECT_NAME, SHORT_NAME, TAGLINE, __version__
@@ -41,18 +40,6 @@ from .transport import SimulatedTransport, TransportError
 log = logging.getLogger(__name__)
 
 ColorValue = str | list[int] | dict[str, int]
-
-
-class UIStaticFiles(StaticFiles):
-    """Keep a saved browser profile from reusing an earlier app's interface."""
-
-    def is_not_modified(self, response_headers, request_headers) -> bool:
-        return False
-
-    async def get_response(self, path, scope):
-        response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-store"
-        return response
 
 
 class LoginRequest(BaseModel):
@@ -991,20 +978,15 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
                 await send_task
             sessions.unlisten(mailbox)
 
-    # The web UI, if one has been built into static_dir
-    static_dir = config.resolve(config.api.static_dir)
-    if (static_dir / "index.html").is_file():
-        app.mount("/", UIStaticFiles(directory=static_dir, html=True), name="ui")
-    else:
-        @app.get("/", include_in_schema=False, response_class=HTMLResponse)
-        async def root():
-            return NO_UI_PAGE.format(name=PROJECT_NAME, version=__version__, disclaimer=html.escape(DISCLAIMER),
-                                     folder=html.escape(str(static_dir)))
+    # The server provides the API only. The desktop app and the browser workspace start their own service.
+    @app.get("/", include_in_schema=False, response_class=HTMLResponse)
+    async def root():
+        return API_ONLY_PAGE.format(name=PROJECT_NAME, version=__version__, disclaimer=html.escape(DISCLAIMER))
 
     return app
 
 
-NO_UI_PAGE = """<!doctype html>
+API_ONLY_PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1026,9 +1008,9 @@ NO_UI_PAGE = """<!doctype html>
 <body>
 <main>
   <h1>{name} {version}</h1>
-  <p>The server is running, but this copy doesn't include the web interface.</p>
-  <p>Add the interface's build to <code>{folder}</code>, or use the <a href="/docs">API documentation</a> in the
-  meantime.</p>
+  <p>The server is running and provides the API only. The desktop app and the browser workspace start their own
+  copy of this service.</p>
+  <p>See the <a href="/docs">API documentation</a>.</p>
   <p class="muted">{disclaimer}</p>
 </main>
 </body>

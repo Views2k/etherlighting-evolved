@@ -60,6 +60,18 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [InstallDelete]
 ; The Python runtime of the 0.4 desktop program. The native desktop program does not use it.
 Type: filesandordirs; Name: "{app}\_internal"
+; Files of the retired standalone web interface and the 0.4 window controls that earlier versions installed.
+Type: files; Name: "{app}\src\app.mjs"
+Type: files; Name: "{app}\src\api.mjs"
+Type: files; Name: "{app}\src\state.mjs"
+Type: files; Name: "{app}\src\views.mjs"
+Type: files; Name: "{app}\src\rule-editor.mjs"
+Type: files; Name: "{app}\src\groups.mjs"
+Type: files; Name: "{app}\src\group-views.mjs"
+Type: files; Name: "{app}\src\window-chrome.mjs"
+Type: files; Name: "{app}\assets\style.css"
+Type: files; Name: "{app}\preview\desktop-chrome.mjs"
+Type: files; Name: "{app}\preview\titlebar-drag.mjs"
 
 [Files]
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion

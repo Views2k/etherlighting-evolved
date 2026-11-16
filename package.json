@@ -6,8 +6,6 @@
   "scripts": {
     "dev": "node preview/server.mjs",
     "start": "node preview/server.mjs",
-    "dev:legacy": "node server.mjs",
-    "build:legacy": "node tools/build.mjs",
     "test": "node --test tests/*.test.mjs preview/*.test.mjs",
     "check": "node tools/check.mjs"
   },

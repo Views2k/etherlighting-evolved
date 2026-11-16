@@ -53,7 +53,7 @@ The Windows installer launches the Avalonia window and a bundled EE gateway. `Se
 
 The standalone macOS and Linux clients use the same pages with an existing workspace service. Changing the workspace address first verifies the target's workspace response. Quitting a client connected by address leaves that service running. Client startup and packaging commands are in the [desktop guide](../desktop/README.md).
 
-The legacy standalone frontend and alternative WPF client remain in the repository as separate consumers. Their source and build paths are described in [DEVELOPMENT.md](DEVELOPMENT.md#retained-interfaces).
+The alternative WPF client remains in the repository as a separate consumer. Its source and build paths are described in [DEVELOPMENT.md](DEVELOPMENT.md#retained-interfaces).
 
 ## Verification
 

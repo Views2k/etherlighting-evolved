@@ -37,9 +37,7 @@ switch-connection-intent.json
 device-scenes/
 output-ownership/
 
-# Generated legacy web bundle and installer artwork
-web/*
-!web/README.md
+# Generated installer artwork
 packaging/wizard*.bmp
 
 .DS_Store

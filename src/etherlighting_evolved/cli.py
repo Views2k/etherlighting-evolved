@@ -1,6 +1,6 @@
-"""Command line. `etherlighting-evolved` runs the server; `eectl` has tools for checking and testing a switch.
+"""Command line. `etherlighting-evolved` runs the API server; `eectl` has tools for checking and testing a switch.
 
-    etherlighting-evolved                 start the server, then log in from the UI
+    etherlighting-evolved                 start the API server
     etherlighting-evolved --demo          start logged in to the built-in simulator
     eectl probe 192.168.1.2 -u admin      check a switch works with EE
     eectl set 192.168.1.2 -u admin 3 ff00ff
@@ -45,7 +45,7 @@ def _serve(args: argparse.Namespace) -> int:
     print(f"{PROJECT_NAME} {__version__}  ·  {TAGLINE}")
     print(DISCLAIMER)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
-    print(f"\nOpen http://{shown}:{port} and log in to your switch.")
+    print(f"\nThe API is at http://{shown}:{port}/api. Its documentation is at http://{shown}:{port}/docs.")
     if args.demo:
         print("Demo mode: logged in to the simulator, no switch needed.")
     print()
@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"{PROJECT_NAME} {__version__}")
     commands = parser.add_subparsers(dest="command")
 
-    serve = commands.add_parser("serve", help="run the server and web UI (the default)")
+    serve = commands.add_parser("serve", help="run the API server (the default)")
     serve.add_argument("-c", "--config", help="optional TOML file with advanced settings")
     serve.add_argument("--host", help="address to listen on (default 127.0.0.1)")
     serve.add_argument("--port", type=int, help="port to listen on (default 8787)")

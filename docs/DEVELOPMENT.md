@@ -108,6 +108,4 @@ Keep deterministic JSON fixtures under `tests/fixtures/`. Their generators accep
 
 ## Retained interfaces
 
-The standalone frontend rooted at `index.html` and `src/app.mjs` is retained for existing integrations. See [web/README.md](../web/README.md) for its build. It is separate from the current packaged workspace.
-
 `native/` contains the alternative C# WPF interface. It shares the Python service and has its own build and verification entry points. The current Windows installer is produced by `packaging/build.ps1`, not the WPF build. Changes to shared engine contracts need to preserve the retained clients or explicitly migrate them.

@@ -70,8 +70,8 @@ The application, engine, tests, assets, and packaging scripts share this reposit
 | `desktop/` | Native desktop app, simulator checks, and platform packaging |
 | `preview/` | Browser workspace, private gateway, and browser rendering |
 | `src/etherlighting_evolved/` | Python lighting engine, device adapters, and API |
-| `src/*.mjs` | Shared browser modules and effect catalog |
-| `assets/` | Browser artwork and styles |
+| `src/*.mjs` | Shared effect catalog, color, rule and icon modules |
+| `assets/` | Logo, favicon and app icons |
 | `tests/` | Python and JavaScript tests with deterministic fixtures |
 | `packaging/` | Service entry points, executable specifications, and installer |
 | `tools/` | Build, verification, and fixture-generation tools |

@@ -26,7 +26,6 @@ def main():
         config = Config()
         config.data_dir = Path(data_path)
         config.base_dir = root
-        config.api.static_dir = str(root)
         with TestClient(create_app(config, autoconnect=False), base_url="http://127.0.0.1") as client:
 
             def request(method, route, body=None):

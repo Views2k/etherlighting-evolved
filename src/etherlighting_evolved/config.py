@@ -43,7 +43,6 @@ host = "127.0.0.1"          # network access requires an API token of at least 3
 port = 8787
 token = ""                  # bearer token; required for network access; or set EE_API_TOKEN
 cors_origins = []           # other sites allowed to use the API, e.g. a UI dev server: ["http://localhost:5173"]
-static_dir = "web"          # the web UI build (index.html) served at /
 """
 
 
@@ -87,7 +86,6 @@ class ApiConfig:
     port: int = 8787
     token: str = ""
     cors_origins: list = field(default_factory=list)
-    static_dir: str = "web"
 
     def validate(self) -> None:
         if not isinstance(self.host, str) or not self.host or self.host != self.host.strip():
@@ -130,10 +128,12 @@ def load_config(path: str | Path | None = None) -> Config:
     unknown = set(data) - {"switch", "engine", "api"}
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
+    # Earlier example configs set api.static_dir for a web interface the server no longer serves.
+    api = {key: value for key, value in data.get("api", {}).items() if key != "static_dir"}
     cfg = Config(
         switch=_section(SwitchConfig, data.get("switch", {}), "switch"),
         engine=_section(EngineConfig, data.get("engine", {}), "engine"),
-        api=_section(ApiConfig, data.get("api", {}), "api"),
+        api=_section(ApiConfig, api, "api"),
         base_dir=base,
     )
     env = os.environ
