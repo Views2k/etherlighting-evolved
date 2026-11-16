@@ -12,7 +12,10 @@ const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolv
 
 async function gateway(t){
   const received=[];
-  const backend=http.createServer((req,res)=>{req.resume();received.push({url:req.url,method:req.method,headers:req.headers});res.end('{}');});
+  const backend=http.createServer((req,res)=>{
+    const item={url:req.url,method:req.method,headers:req.headers,bytes:0};received.push(item);
+    req.on('data',chunk=>item.bytes+=chunk.length);req.on('end',()=>res.end('{}'));
+  });
   const backendPort=await listen(backend);
   const {server}=createWorkspaceServer({root,port:4180,live:false,backendPort,token:'fixture-token',
     child:{exitCode:null,stdin:{writableEnded:false,end(){}}},diagnostics:{record(){}},
@@ -72,6 +75,21 @@ test('API calls from another site are refused while links from other sites still
   for(const site of ['same-origin','none'])assert.equal((await request(f.port,'/api/state',{headers:{'sec-fetch-site':site}})).status,200,site);
   assert.equal(f.received.length,2);
   assert.equal((await request(f.port,'/',{headers:{'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate'}})).status,200);
+});
+
+test('request bodies over 1 MiB stop at the gateway',async t=>{
+  const f=await gateway(t);
+  const declared=await request(f.port,'/api/rules',{method:'PUT',headers:{'content-length':String(1048577)}});
+  assert.equal(declared.status,413);assert.equal(declared.headers.connection,'close');assert.equal(f.received.length,0);
+  assert.equal((await request(f.port,'/api/rules',{method:'PUT',body:Buffer.alloc(1048576,'a')})).status,200);
+  assert.equal(f.received[0].bytes,1048576);
+  const streamed=await new Promise(resolve=>{
+    const req=http.request({host:'127.0.0.1',port:f.port,path:'/api/rules',method:'PUT',agent:false,headers:{host}},response=>resolve(response.statusCode));
+    req.on('error',error=>resolve(error.code));
+    const chunk=Buffer.alloc(600*1024,'a');req.write(chunk);req.end(chunk);
+  });
+  assert.equal(typeof streamed,'string');
+  assert.equal((await request(f.port,'/api/workspace')).status,200);
 });
 
 test('static files are served only from the published folders',async t=>{

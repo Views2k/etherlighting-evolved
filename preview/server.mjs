@@ -15,6 +15,8 @@ import {watchDesktopParent, whenWorkspaceGone} from './parent-lifetime.mjs';
 import {createServiceDiagnostics} from './service-diagnostics.mjs';
 
 const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.webmanifest':'application/manifest+json','.png':'image/png','.ico':'image/x-icon','.svg':'image/svg+xml'};
+// Engine requests are small JSON documents, and the engine reads each body fully into memory.
+const MAX_BODY_BYTES=1048576;
 
 // The returned server is not listening yet. Every way the workspace closes (the close request, the desktop parent
 // exiting, a signal or a listen failure) goes through the same state, so private access cannot be reopened while
@@ -82,9 +84,12 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
       res.end(JSON.stringify({live}));return;
     }
     if (req.url.startsWith('/api/')) {
+      if(Number(req.headers['content-length'])>MAX_BODY_BYTES){res.writeHead(413,{'Content-Type':'application/json',Connection:'close'});res.end(JSON.stringify({detail:'The request is too large.'}));return;}
       const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`}; delete headers.origin;
       const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});
       upstream.on('error',()=>{if(!res.headersSent)res.writeHead(503,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The preview service is unavailable.'}));});
+      let received=0;
+      req.on('data',chunk=>{received+=chunk.length;if(received>MAX_BODY_BYTES){res.destroy();upstream.destroy();}});
       req.pipe(upstream);return;
     }
     try {
