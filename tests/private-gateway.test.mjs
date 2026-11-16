@@ -51,6 +51,7 @@ test('private gateway strips identity headers and keeps host-management actions 
     assert.equal(received.host,`127.0.0.1:${targetPort}`);assert.equal(received['x-ee-workspace'],'current');
     const state=JSON.parse((await get(port,'/api/private-access')).text);assert.equal(state.can_configure,false);assert.equal(state.can_close_workspace,false);
     assert.equal(state.action_url,null);assert.equal(state.setup_action,null);assert.equal(state.can_change_port,false);
+    assert.equal(state.local,undefined);
     const refused=await get(port,'/api/private-access',{method:'PUT',body:'{}'});
     assert.equal(refused.status,403);assert.equal(JSON.parse(refused.text).detail.code,'local_access_required');
     assert.equal((await get(port,'/api/private-access/login',{method:'POST'})).status,403);
@@ -297,6 +298,21 @@ test('encoded paths are classified after decoding',async context=>{
   refusedLocally(await get(port,'/api/session/%6cogin',{method:'POST'}));
   assert.equal((await get(port,'/api/zones/left%20desk/effect',{method:'PUT'})).status,200);
   assert.deepEqual(received,[['PUT','/api/zones/left%20desk/effect']]);
+});
+
+test('private gateway keeps SSH key approval local',async context=>{
+  const {port,received}=await recordingGateway(context);
+  for(const route of ['accept','replace']){
+    for(const [method,path] of [['POST',`/api/session/host-key/${route}`],['POST',`/api/session/host-key/${route}/`],
+      ['POST',`/api/session/host-key/${route}?x=1`],['POST',`/api/session/host-key/%${route.charCodeAt(0).toString(16)}${route.slice(1)}`],
+      ['PUT',`/api/session/host-key/${route}`]]){
+      const response=await get(port,path,{method});
+      assert.equal(response.status,403,`${method} ${path}`);
+      assert.equal(JSON.parse(response.text).detail.code,'local_access_required',`${method} ${path}`);
+    }
+  }
+  refusedLocally(await get(port,'/api/session/forget-host-key',{method:'POST'}));
+  assert.deepEqual(received,[]);
 });
 
 test('only listed socket paths upgrade',{timeout:5000},async context=>{

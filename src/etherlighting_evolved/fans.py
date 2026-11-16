@@ -3,7 +3,15 @@
 EE can leave the fans to the switch, follow one of four temperature curves, hold one fixed speed, or adjust the
 speed to keep the switch CPU at a chosen temperature. The control loop runs on the switch from RAM
 (`resident/fans.sh`), so it keeps working while EE is closed. A switch restart returns the fans to the switch's
-own control until EE connects again and restores the saved choice.
+own control until EE connects again and restores the saved choice. Handoff to UniFi stops EE's control loop and
+keeps the saved choice for the next connection.
+
+Each switch has its own saved choice in `device-fans/<identity>.json`, keyed like its saved lighting. That file also
+holds an owner token, which EE writes as a second line of the controller's `config` beside every setting it sends.
+The automatic check leaves running fan control alone when it cannot account for it (the hold): another
+installation's owner token is on the switch, or this switch's fan file cannot be used. Only an explicit change or a
+handoff replaces such fan control. When a newer release saved the fan file, no change is accepted, because that file
+is never overwritten, and only a handoff stops EE's control loop.
 
 The Python step function below mirrors the shell controller exactly. Tests compare the two, and the simulator
 uses the Python version.
@@ -16,13 +24,15 @@ import hashlib
 import json
 import logging
 import math
+import re
+import secrets
 import shlex
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .storage import atomic_write_json, quarantine
+from .storage import NewerFormatError, atomic_write_json, check_version, quarantine
 from .transport import TransportError
 
 log = logging.getLogger(__name__)
@@ -54,6 +64,20 @@ POLL_INTERVAL = 5.0
 FAST_POLL_INTERVAL = 1.5
 FAST_POLL_SECONDS = 30.0
 RETRY_INTERVAL = 60.0
+# Handoff to UniFi waits at most this long for the fans, including a check or change already in progress. The
+# desktop app, the browser and the private gateway give up on a request after 30 seconds, and the rest of the
+# handoff has to fit there too.
+RELEASE_TIMEOUT = 15.0
+RELEASE_READ_TIMEOUT = 5.0
+# Always used with fullmatch.
+OWNER = re.compile(r"[0-9a-f]{48}")
+IDENTITY = re.compile(r"[0-9a-f]{64}")
+FORMAT_VERSION = 1
+# A switch's fan file, or one set aside as damaged. The temporary file of an interrupted save does not count.
+_FAN_FILE = re.compile(r"[0-9a-f]{64}\.json(?:\.corrupt-.+)?")
+SAVE_FAILED = ("The switch runs the new fan setting, but EE could not save it on this PC. Check the data folder and "
+               "choose the setting again.")
+STOPPING = "Fan control is stopping for Handoff to UniFi."
 _CHANNEL = "ee-fans"
 _CHECK_DIRECTORY = '[ ! -L "$d" ] && [ -d "$d" ] && [ "$(stat -c %u:%a "$d")" = "$(id -u):700" ]'
 _TMP_CHECK = 'cd /tmp && [ "$(pwd -P)" = /tmp ] || exit 1'
@@ -162,7 +186,12 @@ class FanSettingsError(ValueError):
     """A fan choice was saved but cannot be used, so the switch keeps control of its fans, the safe default."""
 
 
+class FanSettingsSaveError(OSError):
+    """The switch confirmed a fan change, but the fan file could not be written."""
+
+
 _UNUSABLE_SETTINGS = "Saved fan settings could not be read. The switch controls the fans until you choose a mode."
+_UNUSABLE_DEVICE_SETTINGS = "The fan mode saved for this switch could not be read."
 
 
 class FanStore:
@@ -198,6 +227,115 @@ class FanStore:
         atomic_write_json(self.path, asdict(settings))
 
 
+class DeviceFanStore:
+    """The fan choice saved for one switch, and the owner token EE writes beside each setting on that switch.
+
+    `hold` is true while the saved choice cannot be used: the file cannot be read, is not one this release can use,
+    or the fan mode of releases up to 0.5.1 could not be moved to this switch. The automatic check then leaves
+    running fan control alone. `newer` holds the reason when a newer release saved the file, which this release
+    never overwrites.
+    """
+
+    def __init__(self, path: Path, identity: str) -> None:
+        if not IDENTITY.fullmatch(identity):
+            raise ValueError("A switch identity is 64 lowercase hexadecimal characters.")
+        self.path = path
+        self.identity = identity
+        self.owner: str | None = None
+        self.hold = False
+        self.newer: str | None = None
+
+    def load(self) -> FanSettings:
+        """The saved choice, or the switch's own control when nothing was saved.
+
+        Raises FanSettingsError when the file cannot be used, and sets `hold`. A file that holds no JSON object is
+        moved aside. Any other file stays in place: a JSON object this release cannot use until a confirmed change
+        replaces it, and a newer release's file for good.
+        """
+        try:
+            content = self.path.read_bytes()
+        except FileNotFoundError:
+            return FanSettings()
+        except OSError as exc:
+            log.warning("The saved fan settings in %s could not be read: %s", self.path, exc)
+            raise self._unusable(_UNUSABLE_DEVICE_SETTINGS) from exc
+        try:
+            envelope = json.loads(content)
+        except ValueError:
+            envelope = None
+        if not isinstance(envelope, dict):
+            quarantine(self.path, "The fan settings saved for a switch could not be read")
+            raise self._unusable(_UNUSABLE_DEVICE_SETTINGS)
+        try:
+            check_version(envelope.get("version"), FORMAT_VERSION, "The fan settings for this switch")
+            owner, settings = envelope.get("owner"), envelope.get("settings")
+            if (envelope.get("identity") != self.identity or not isinstance(owner, str) or not OWNER.fullmatch(owner)
+                    or not isinstance(settings, dict)):
+                raise ValueError("the file belongs to another switch or has no valid owner or settings")
+            result = FanSettings.from_dict(settings)
+        except NewerFormatError as exc:
+            log.warning("The saved fan settings in %s were saved by a newer version of EE", self.path)
+            self.newer = str(exc)
+            raise self._unusable(str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            log.warning("The saved fan settings in %s are not ones this version of EE can use: %s", self.path, exc)
+            raise self._unusable(_UNUSABLE_DEVICE_SETTINGS) from exc
+        self.owner, self.hold = owner, False
+        return result
+
+    def _unusable(self, message: str) -> FanSettingsError:
+        self.owner, self.hold = None, True
+        return FanSettingsError(message)
+
+    def save(self, settings: FanSettings) -> None:
+        if self.owner is None:
+            self.owner = secrets.token_hex(24)
+        atomic_write_json(self.path, {"version": FORMAT_VERSION, "identity": self.identity, "owner": self.owner,
+                                      "settings": asdict(settings)})
+        self.hold = False
+
+    def adopt_legacy(self, legacy: Path) -> None:
+        """Save the fan choice of releases up to 0.5.1 for this switch, when no switch has a fan file yet.
+
+        Those releases saved one choice for every switch in `legacy`. The file stays in place and is no longer read,
+        so a downgrade still finds it. This sends nothing to the switch. The controller those releases started has no
+        owner line, so the automatic check adopts it. Because fans.sh changed after 0.5.1, that check restarts it once
+        with the same setting and this switch's owner line. When the folder or `legacy` cannot be read or the new file
+        cannot be written, `hold` is set and the next connection tries again.
+        """
+        try:
+            names = [entry.name for entry in self.path.parent.iterdir()]
+        except FileNotFoundError:
+            names = []
+        except OSError as exc:
+            log.warning("The saved fan settings in %s could not be listed: %s", self.path.parent, exc)
+            self.hold = True
+            return
+        if any(_FAN_FILE.fullmatch(name) for name in names):
+            return
+        try:
+            content = legacy.read_bytes()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.warning("The saved fan settings in %s could not be read: %s", legacy, exc)
+            self.hold = True
+            return
+        try:
+            settings = FanSettings.from_dict(json.loads(content))
+        except (ValueError, TypeError):
+            # Releases up to 0.5.1 used the switch's own control for a file like this.
+            settings = FanSettings()
+        try:
+            self.save(settings)
+        except OSError as exc:
+            log.warning("The fan settings for this switch could not be saved in %s: %s", self.path, exc)
+            self.hold = True
+            return
+        log.info("The fan mode saved in %s now applies to this switch, saved in %s. EE no longer reads %s.",
+                 legacy, self.path, legacy.name)
+
+
 def _number(value: str) -> int | None:
     return int(value) if value.isdigit() and len(value) <= 9 else None
 
@@ -217,6 +355,7 @@ def parse_reading(output: str) -> dict[str, Any]:
         (lines.get("D") or ["none"])[0], "absent")
     controller = lines.get("C", ["absent"])
     status = lines.get("S", [])
+    owner = lines.get("O", [])
     active = controller[0] == "1"
     result = {
         "cpu_celsius": _celsius(cpu),
@@ -230,12 +369,16 @@ def parse_reading(output: str) -> dict[str, Any]:
         "script": controller[1] if len(controller) > 1 else None,
         "reason": status[1] if active and len(status) >= 10 else None,
         "config": " ".join(lines.get("F", [])) or None,
+        "owner": owner[0] if owner and OWNER.fullmatch(owner[0]) else None,
     }
     if active and len(status) >= 10 and _number(status[2]) is not None:
         result["duty"] = _number(status[2])
     return result
 
 
+# The controller reads only the first line of config, the setting. EE writes its owner token as the second line.
+_CONFIG_READ = ('f=; o=; { IFS= read -r f; IFS= read -r o; } 2>/dev/null < "$d/config"; '
+                'echo "F $f"; echo "O ${o#owner }"')
 _READ = f"""
 r() {{ v=; read -r v 2>/dev/null < "$1"; printf ' %s' "${{v:-NA}}"; }}
 printf R; r $h/pwm1; r $h/pwm2; r $h/fan1_input; r $h/fan2_input; r $h/temp1_input; r $h/temp2_input; r $h/temp3_input
@@ -247,7 +390,7 @@ if {_CHECK_DIRECTORY}; then
   pid=$(cat "$d/pid" 2>/dev/null); alive=0
   case "$pid" in ''|*[!0-9]*) ;; *) [ "$(readlink /proc/$pid/cwd 2>/dev/null)" = "$d" ] && alive=1;; esac
   echo "C $alive $(sha256sum "$d/fans.sh" 2>/dev/null | cut -d' ' -f1)"
-  echo "S $(cat "$d/status" 2>/dev/null)"; echo "F $(cat "$d/config" 2>/dev/null)"
+  echo "S $(cat "$d/status" 2>/dev/null)"; {_CONFIG_READ}
 else echo "C absent"; fi"""
 
 
@@ -303,14 +446,18 @@ class SwitchFans:
         if check != "ok":
             raise ValueError(check or "The switch could not confirm fan control support.")
 
-    async def apply(self, line: str) -> dict[str, Any]:
+    async def apply(self, line: str, owner: str | None = None) -> dict[str, Any]:
+        if owner is not None and not OWNER.fullmatch(owner):
+            # Not ValueError: FanControl takes that to mean the switch does not support fan control.
+            raise TransportError("The fan setting could not be prepared.")
         reading = await self.read()
         if reading["controller"] == "running" and not reading["script_current"]:
             await self.stop()
             reading = await self.read()
         if reading["controller"] != "running":
             await self._install()
-        command = f"printf '%s\\n' {shlex.quote(line)} > config.next && mv -f config.next config && echo saved"
+        lines = " ".join(shlex.quote(text) for text in (line, *([f"owner {owner}"] if owner is not None else [])))
+        command = f"printf '%s\\n' {lines} > config.next && mv -f config.next config && echo saved"
         if await self._run(self._inside(command)) != "saved":
             raise TransportError("The switch could not save the fan setting.")
         if reading["controller"] != "running":
@@ -380,6 +527,7 @@ class SimulatedFans:
         self.average = 420
         self.integral = 0
         self.line: str | None = None
+        self.owner: str | None = None
         self.daemon_integral = 12_000
         self.updated = clock()
 
@@ -417,16 +565,17 @@ class SimulatedFans:
                 "controller": "running" if self.line else "absent", "script_current": True,
                 "reason": None if self.line is None else step(cpu, sfp, port, self.duty, self.integral,
                                                               self.line.split())[2],
-                "config": self.line, **({"duty": self.duty} if self.line else {})}
+                "config": self.line, "owner": self.owner if self.line else None,
+                **({"duty": self.duty} if self.line else {})}
 
-    async def apply(self, line: str) -> dict[str, Any]:
+    async def apply(self, line: str, owner: str | None = None) -> dict[str, Any]:
         self._advance()
         words = line.split()
         cpu, _, sfp, port = self._millidegrees()
         fresh = self.line != line
         if words[0] == "target" and fresh:
             self.integral = start_integral(cpu, self.average, int(words[1]))
-        self.line = line
+        self.line, self.owner = line, owner
         # The switch confirms a setting after the controller's first step with it; a new setting skips the easing.
         self.duty, self.integral, _ = step(cpu, sfp, port, 0 if fresh else self.duty, self.integral, words)
         self.average = next_average(self.average, self.duty)
@@ -434,13 +583,13 @@ class SimulatedFans:
 
     async def stop(self) -> None:
         self._advance()
-        self.line = None
+        self.line = self.owner = None
 
 
 class FanControl:
     """Keeps the saved fan choice running on the connected switch and reports the readings."""
 
-    def __init__(self, backend, store: FanStore | None, *, supported: bool) -> None:
+    def __init__(self, backend, store: FanStore | DeviceFanStore | None, *, supported: bool) -> None:
         self.backend = backend
         self.store = store
         self.supported = supported
@@ -455,34 +604,72 @@ class FanControl:
                 self.settings_error = str(exc)
         self.reading: dict[str, Any] | None = None
         self.error: str | None = None
+        # The switch runs a setting that could not be saved. Reported until a later save succeeds.
+        self.save_error: str | None = None
+        # The controller state of the last successful reading. Kept when a read fails, unlike reading.
+        self.last_controller: str | None = None
+        # Set for good by Handoff to UniFi; the engine is discarded after the handoff.
+        self.suspended = False
         self.unsupported: str | None = None if supported else "Fan control needs a USW-Pro-XG-8-PoE."
         self.lock = asyncio.Lock()
         self._retry_at = 0.0
         self._fast_until = 0.0
 
+    @property
+    def owner(self) -> str | None:
+        return self.store.owner if isinstance(self.store, DeviceFanStore) else None
+
     def interval(self) -> float:
         """Seconds until the next reading: shorter for a while after a change."""
         return FAST_POLL_INTERVAL if time.monotonic() < self._fast_until else POLL_INTERVAL
+
+    def _seen(self, reading: dict[str, Any]) -> None:
+        self.reading = reading
+        self.last_controller = reading["controller"]
+
+    def _foreign(self, reading: dict[str, Any] | None) -> bool:
+        """A running controller that carries another installation's owner token."""
+        return (reading is not None and reading["controller"] == "running" and reading.get("owner") is not None
+                and reading["owner"] != self.owner)
+
+    def hold_reason(self) -> str | None:
+        """Why the automatic check leaves running fan control alone, or None when it follows the settings."""
+        if not self.supported or self.unsupported:
+            return None
+        if isinstance(self.store, DeviceFanStore) and self.store.hold:
+            # Told apart because no change can clear it: a newer release's file is never overwritten.
+            return "settings_newer" if self.store.newer else "settings_unreadable"
+        return "other_installation" if self._foreign(self.reading) else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "supported": self.supported and self.unsupported is None,
             "unsupported_reason": self.unsupported,
             "settings": asdict(self.settings),
-            "reading": self.reading,
-            "error": self.error,
+            # The owner token stays on this PC and the switch.
+            "reading": None if self.reading is None else {k: v for k, v in self.reading.items() if k != "owner"},
+            "error": self.error or self.save_error,
             "settings_error": self.settings_error,
+            "hold": self.hold_reason(),
             "curves": {name: {"name": CURVE_NAMES[name], "points": [list(p) for p in points]}
                        for name, points in CURVES.items()},
             "limits": {"manual_percent": list(MANUAL_RANGE), "target_celsius": list(TARGET_RANGE)},
         }
 
     async def update(self, change: dict[str, Any]) -> None:
+        """Apply an explicit change, which replaces any EE fan control on the switch, and save it."""
         if not self.supported or self.unsupported:
             raise ValueError(self.unsupported or "Fan control is not available on this switch.")
+        if isinstance(self.store, DeviceFanStore) and self.store.newer:
+            raise ValueError(self.store.newer)
         settings = FanSettings.from_dict(change, self.settings)
         self._fast_until = time.monotonic() + FAST_POLL_SECONDS
         async with self.lock:
+            if self.suspended:
+                raise TransportError(STOPPING)
+            # The token goes to the switch with the change and is saved only after the switch confirms it.
+            if isinstance(self.store, DeviceFanStore) and self.store.owner is None:
+                self.store.owner = secrets.token_hex(24)
             try:
                 await self._enforce(settings)
             except ValueError as exc:
@@ -490,19 +677,25 @@ class FanControl:
                 raise
             finally:
                 self._retry_at = 0.0
+            # The switch runs the new setting now, so it stays in effect even when it cannot be saved.
             self.settings = settings
             if self.store:
-                self.store.save(settings)
-            self.settings_error = None
+                try:
+                    self.store.save(settings)
+                except OSError as exc:
+                    log.warning("The fan setting could not be saved: %s", exc)
+                    self.save_error = SAVE_FAILED
+                    raise FanSettingsSaveError(SAVE_FAILED) from exc
+            self.save_error = self.settings_error = None
 
     async def _enforce(self, settings: FanSettings) -> None:
         line = settings.config_line()
         try:
             if line is None:
                 await self.backend.stop()
-                self.reading = await self.backend.read()
+                self._seen(await self.backend.read())
             else:
-                self.reading = await self.backend.apply(line)
+                self._seen(await self.backend.apply(line, owner=self.owner))
         except (TransportError, ValueError) as exc:
             self.error = str(exc)
             raise
@@ -510,9 +703,11 @@ class FanControl:
 
     async def poll(self) -> None:
         """Read the fans; restore the saved choice after a switch restart or a stopped controller."""
-        if not self.supported or self.unsupported:
+        if not self.supported or self.unsupported or self.suspended:
             return
         async with self.lock:
+            if self.suspended:
+                return
             try:
                 reading = await self.backend.read()
             except TransportError:
@@ -521,10 +716,15 @@ class FanControl:
             except ValueError as exc:
                 self.unsupported = str(exc)
                 return
-            self.reading = reading
-            line = self.settings.config_line()
+            self._seen(reading)
             running = reading["controller"] == "running"
-            if line is None:
+            target = self.settings
+            line = target.config_line()
+            if self.hold_reason():
+                # Fan control EE cannot account for keeps running. A controller that stopped is still cleaned up,
+                # because the switch's own controller stays paused until EE's files are removed.
+                stale, target = reading["controller"] == "stopped", FanSettings()
+            elif line is None:
                 # Only EE's own files count. A paused daemon without them belongs to someone else.
                 stale = running or reading["controller"] == "stopped"
             else:
@@ -532,8 +732,42 @@ class FanControl:
             if not stale or time.monotonic() < self._retry_at:
                 return
             try:
-                await self._enforce(self.settings)
+                await self._enforce(target)
             except ValueError as exc:
                 self.unsupported = str(exc)
             except TransportError:
                 self._retry_at = time.monotonic() + RETRY_INTERVAL
+
+    async def release(self, *, connected: bool) -> str | None:
+        """Stop EE fan control on the switch for Handoff to UniFi, whatever started it, and keep the saved choice.
+
+        Returns "returned" when the switch confirmed that its own controller runs the fans again, None when no EE
+        fan control was found, and "unconfirmed" otherwise. Checks and changes stop for good. Takes at most
+        RELEASE_TIMEOUT seconds; a stop cut short there still completes on the switch or is undone by its guard.
+        """
+        if not self.supported:
+            return None
+        self.suspended = True
+        result = "unconfirmed"
+        try:
+            async with asyncio.timeout(RELEASE_TIMEOUT), self.lock:
+                if not connected:
+                    return self._unseen_result()
+                try:
+                    async with asyncio.timeout(RELEASE_READ_TIMEOUT):
+                        reading = await self.backend.read()
+                except (TransportError, TimeoutError):
+                    return self._unseen_result()
+                self._seen(reading)
+                if reading["controller"] == "absent":
+                    return None
+                await self.backend.stop()
+                self.last_controller = "absent"
+                result = "returned"
+        except (TransportError, ValueError, TimeoutError) as exc:
+            log.warning("Handoff could not confirm that the switch's own controller runs the fans again: %s", exc)
+        return result
+
+    def _unseen_result(self) -> str | None:
+        """The release result when the switch cannot be read: None only when EE saw no fan control of its own."""
+        return None if self.settings.mode == "switch" and self.last_controller == "absent" else "unconfirmed"

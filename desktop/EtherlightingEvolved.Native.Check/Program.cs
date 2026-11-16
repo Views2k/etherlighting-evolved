@@ -44,6 +44,7 @@ AppBuilder.Configure<App>()
 ShellChecks.Contracts(Check);
 ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
+HostKeyReviewChecks.Run(Check);
 AdminAccessChecks.Panel(Check);
 RemoteAccessChecks.Contracts(Check);
 

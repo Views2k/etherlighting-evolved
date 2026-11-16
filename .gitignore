@@ -41,6 +41,7 @@ fans.json
 fans-demo.json
 last-session.json
 device-scenes/
+device-fans/
 output-ownership/
 port-names/
 

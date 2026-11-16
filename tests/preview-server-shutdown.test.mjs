@@ -60,6 +60,14 @@ test('shutdown rejects new private-access enable and refresh requests',async()=>
   assert.deepEqual(f.calls,[]);f.finish();await closing;
 });
 
+test('private access status from this gateway says it comes from the computer running EE',async()=>{
+  const f=fixture();
+  assert.equal(JSON.parse((await f.request('/api/private-access','GET')).body).local,true);
+  const closing=f.request('/api/workspace/close','POST');
+  assert.equal(JSON.parse((await f.request('/api/private-access','GET')).body).local,true);
+  f.finish();await closing;
+});
+
 test('a request whose body arrives after shutdown cannot reopen private access',async()=>{
   const f=fixture();let sendBody;
   const updating=f.request('/api/private-access','PUT',new Promise(resolve=>{sendBody=resolve;}));
@@ -163,18 +171,19 @@ test('without administration access, private access changes and close are refuse
   assert.deepEqual(f.calls,['configure']);
 });
 
+// Both forms keep `local`: a local tab without administration access still accepts a changed SSH key.
 test('a tab without administration access reads private access in the read-only form',async()=>{
   const f=fixture();
   const plain=JSON.parse((await f.request('/api/private-access','GET',undefined,{})).body);
   assert.deepEqual(plain,{...managerStatus,setup_action:null,action_url:null,can_change_port:false,can_configure:false,
-    can_close_workspace:false,admin_required:true});
+    can_close_workspace:false,admin_required:true,local:true});
   const owner=JSON.parse((await f.request('/api/private-access','GET')).body);
-  assert.deepEqual(owner,{...managerStatus,can_configure:true,can_close_workspace:true,admin_required:false});
+  assert.deepEqual(owner,{...managerStatus,can_configure:true,can_close_workspace:true,admin_required:false,local:true});
   assert.equal(JSON.parse((await f.request('/api/private-access/refresh','POST')).body).admin_required,false);
 });
 
 test('the demo gateway reports administration access in its close capability',async()=>{
-  const f=fixture({live:false}),demo={available:false,enabled:false,ready:false,can_configure:false};
+  const f=fixture({live:false}),demo={available:false,enabled:false,ready:false,can_configure:false,local:true};
   assert.deepEqual(JSON.parse((await f.request('/api/private-access','GET',undefined,{})).body),{...demo,can_close_workspace:false,admin_required:true});
   assert.deepEqual(JSON.parse((await f.request('/api/private-access','GET')).body),{...demo,can_close_workspace:true,admin_required:false});
   assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}',{})).status,403);

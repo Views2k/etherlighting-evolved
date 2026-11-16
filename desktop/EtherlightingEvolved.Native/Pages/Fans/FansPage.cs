@@ -34,7 +34,8 @@ public sealed class FansPage : Page
         [("switch", "Switch control"), ("curve", "Curve"), ("manual", "Manual"), ("target", "Thermal target")];
     static readonly string[] CurveOrder = ["low", "medium", "high", "max"];
     const string Footer = "Every mode speeds the fans up when the CPU passes 85 °C, the SFP sensor passes 65 °C or a port chip passes 100 °C. "
-                          + "Fan control runs on the switch and continues while EE is closed. A switch restart returns the fans to the switch’s own control until EE connects again.";
+                          + "EE saves the fan mode for each switch; a switch EE has not controlled before starts in Switch control. "
+                          + "Fan control runs on the switch and continues while EE is closed. Handoff to UniFi and a switch restart return the fans to the switch’s own control until EE connects again.";
 
     readonly Dictionary<string, Button> modeButtons = [];
     readonly Dictionary<string, Button> curveButtons = [];
@@ -370,6 +371,11 @@ public sealed class FansPage : Page
         if (!ReferenceEquals(Content, page)) Content = page;
         var settings = Settings;
         var mode = settings.Str("mode") ?? "switch";
+        // While EE leaves running fan control alone, the saved mode is not what runs, so no mode shows as selected.
+        // A mode chosen here shows at once.
+        var held = fans.Str("hold") is not null && chosen is null;
+        // The service refuses every change while a newer EE's fan file is in place, since it never overwrites that file.
+        var locked = fans.Str("hold") == "settings_newer";
         syncing = true;
         try
         {
@@ -384,19 +390,21 @@ public sealed class FansPage : Page
         targetValue.Text = $"{(int)target.Value} °C";
         foreach (var (key, button) in modeButtons)
         {
-            button.Classes.Set("selected", key == mode);
-            AutomationProperties.SetHelpText(button, key == mode ? "Selected" : "");
+            button.Classes.Set("selected", key == mode && !held);
+            AutomationProperties.SetHelpText(button, key == mode && !held ? "Selected" : "");
+            button.IsEnabled = !locked;
         }
         var curves = fans["curves"] as JsonObject;
         foreach (var (name, button) in curveButtons)
         {
-            button.Classes.Set("selected", mode == "curve" && settings.Str("curve") == name);
+            button.Classes.Set("selected", !held && mode == "curve" && settings.Str("curve") == name);
             button.Content = CurveLabel(name, curves?[name] as JsonObject);
         }
-        if (shownMode != mode)
+        var shown = held ? "held" : mode;
+        if (shownMode != shown)
         {
-            shownMode = mode;
-            details.Content = Details(mode);
+            shownMode = shown;
+            details.Content = held ? null : Details(mode);
         }
         // settings_error stays set until a new mode is saved, so a lost fan choice remains visible after the switch
         // takes the fans back and error clears.
@@ -404,8 +412,8 @@ public sealed class FansPage : Page
         error.Text = sending || chosen is not null ? "" : problem ?? "";
         error.IsVisible = error.Text.Length > 0;
         chart.Curves = curves;
-        chart.IsVisible = mode == "curve";
-        chart.Selected = mode == "curve" ? settings.Str("curve") : null;
+        chart.IsVisible = !held && mode == "curve";
+        chart.Selected = !held && mode == "curve" ? settings.Str("curve") : null;
         Frame();
     }
 
@@ -431,6 +439,15 @@ public sealed class FansPage : Page
         if (sending || chosen is not null) return "Sending the new setting to the switch…";
         var reading = fans["reading"] as JsonObject;
         if (reading is null) return "Waiting for a reading from the switch.";
+        switch (fans.Str("hold"))
+        {
+            case "other_installation":
+                return "Fan control on this switch was not started from the fan settings saved on this PC, for example by EE on another PC. EE leaves it running until you choose a mode here.";
+            case "settings_unreadable":
+                return "EE could not load the fan mode saved for this switch, so it does not change fan control that is running. Choose a mode to save it again.";
+            case "settings_newer":
+                return "The fan mode for this switch was saved by a newer version of EE. This version does not change fan control that is running and cannot change the mode. Handoff to UniFi in Settings still returns the fans to the switch’s own controller.";
+        }
         var mode = settings.Str("mode");
         if (mode == "switch")
             return reading.Str("daemon") == "paused" ? "The switch’s fan controller is paused by another tool." : "The switch’s own fan controller sets the speed.";

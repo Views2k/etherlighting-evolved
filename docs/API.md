@@ -95,22 +95,62 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 401 | `bad_token` | API token missing or wrong (only when the server has one set) |
 | 403 | `forbidden` | A browser request from another website, or a non-local Host on a local-only server |
 | 403 | `admin_required` | This local gateway action needs the per-launch administration key, or a browser opened from the desktop app or from the printed administration link |
-| 403 | `local_access_required` | Only the computer running EE can make this request; the private gateway refuses it |
+| 403 | `local_access_required` | Only the computer running EE can make this request: the private gateway refuses it, and the SSH host-key routes also refuse a caller whose address is not a loopback address |
 | 403 | `private_access_denied` | The Tailscale identity is not approved, or the path cannot be opened through private access |
 | 404 | `not_found` | No such zone, rule, preset or schedule |
 | 409 | `not_logged_in` | Not logged in to a switch |
-| 409 | `host_key_changed` | The switch's SSH host key doesn't match the saved one |
+| 409 | `host_key_untrusted` | EE has no saved SSH key for the switch; nothing but the SSH key exchange was sent |
+| 409 | `host_key_changed` | The switch's SSH key differs from the saved key; nothing but the SSH key exchange was sent |
+| 409 | `host_key_stale` | The SSH key in a host-key request is not the key EE last saw at that address |
+| 409 | `host_key_in_use` | EE still has an open switch connection, so a changed SSH key cannot be accepted yet |
+| 409 | `switch_playback_reserved` | Switch playback is saved for a switch; also returned by `POST /api/session/host-key/replace` |
 | 409 | `not_simulated` | Simulator controls require a demo login |
+| 409 | `fans_unconfirmed` | The switch did not confirm a fan change; the previous fan settings are kept |
 | 413 | `too_large` | The request body is larger than 1 MiB |
+| 422 | `invalid_credentials` | The fields of a connection or SSH host-key request were not accepted |
 | 422 | `no_etherlighting` | Logged in, but the device has no Etherlighting |
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
+| 500 | `host_key_save_failed` | The saved SSH keys could not be read or updated |
+| 500 | `fan_settings_save_failed` | The switch runs the new fan setting, but EE could not save it on this PC |
 | 502 | `unreachable`, `ssh_error` | The switch couldn't be reached, or SSH failed |
 | 503 | `workspace_closing` | `POST /api/workspace/admin-link` while EE is closing |
 
-`host_key_changed` means the switch's SSH host key differs from the one saved at the first login. This happens
-when the switch is replaced or reset, or when a different device answers at that address. To accept the new key,
-call `POST /api/session/forget-host-key` with `{"host": "...", "port": 22}` and log in again.
+### SSH host keys
+
+EE sends the SSH username and password only to a switch whose SSH key is saved. When an address has no saved key,
+or the switch presents a different one, EE ends the connection during the SSH key exchange and the login, the
+restore, `GET /api/session` `error` and the WebSocket `session` message report the key with HTTP 409:
+
+```json
+{ "code": "host_key_untrusted",
+  "message": "Check this switch's SSH key fingerprint before signing in.",
+  "host": "192.168.1.2", "port": 22,
+  "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
+  "ssh_host_key_type": "ssh-ed25519" }
+```
+
+```json
+{ "code": "host_key_changed",
+  "message": "The switch's SSH key changed. Check the new fingerprint before signing in.",
+  "host": "192.168.1.2", "port": 22,
+  "ssh_host_key": "SHA256:Zt4Wc8Hn1Lq6Rv3Xb9Me2Kd7Pj0Ys5Ug8Fa1Ni4Ow7E",
+  "ssh_host_key_type": "ssh-rsa",
+  "saved_ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ" }
+```
+
+`host` is the trimmed host of the attempt and `port` an integer. Fingerprints have the form that `ssh` and
+`ssh-keygen -l` print. `ssh_host_key_type` is `null` when the type is not known. `ssh_host_key` is `null` only
+when the SSH library refused the key without asking EE, for example a host certificate; there is then nothing to
+accept. `saved_ssh_host_key` appears only on `host_key_changed`. A changed key happens after the switch is reset or
+replaced, or when another device answers at that address.
+
+To approve the key, a client shows the fingerprints and echoes them back to
+[`POST /api/session/host-key/accept`](#post-apisessionhost-keyaccept) or
+[`POST /api/session/host-key/replace`](#post-apisessionhost-keyreplace), then repeats the login or the restore. That
+attempt checks the newly saved key during the key exchange. Keys saved by earlier releases are used as they are.
+A switch set in the [switch] configuration or EE_HOST connects at the next start after its key is accepted. For a
+headless setup, accept the key with `eectl probe` and `--accept-host-key`.
 
 If the server has an API token, send `Authorization: Bearer <token>` with every request. The browser UI uses
 authenticated REST polling for these connections so the token stays out of URLs and access logs.
@@ -157,7 +197,6 @@ These requests are local-only:
 | `POST /api/private-access/login` | Starts Tailscale sign-in on the host computer |
 | `POST /api/private-access/refresh` | Runs Tailscale checks on the host computer |
 | `POST /api/session/forget` | Deletes the saved switch login |
-| `POST /api/session/forget-host-key` | Removes a trusted SSH host key, part of signing in to a new or replaced switch |
 | `POST /api/session/host-key/accept` | Trusts a switch's first SSH host key, part of signing in to a new switch |
 | `POST /api/session/host-key/replace` | Replaces a trusted SSH host key, part of signing in to a replaced switch |
 | `POST /api/session/login` | Signs in to a switch or the demo with typed details |
@@ -321,12 +360,34 @@ A refused request changes nothing, so lighting and private access keep working.
   "error": null,
   "remembered": { "host": "192.168.1.2", "port": 22, "username": "admin" },
   "has_saved_login": true,
-  "saved_login_error": null
+  "saved_login_error": null,
+  "handoff_state": "none",
+  "handed_off": false,
+  "fan_handoff": null
 }
 ```
 
 `connected` can become false while logged in, for example when the switch reboots. EE reconnects automatically,
 and `error` holds the last connection error until it does.
+
+`fan_handoff` reports what [Handoff to UniFi](#post-apisessionhandoff) did with the fans:
+
+| Value | Meaning |
+|---|---|
+| `"returned"` | During the last handoff EE stopped its fan control on the switch, and the switch confirmed that its own fan controller runs and is not paused. |
+| `"unconfirmed"` | EE could not confirm that the fans are back on the switch's own controller: the switch was not connected or could not be read and EE could not rule out its own fan control, a fan command failed, or the 15-second limit ran out. |
+| `null` | No EE fan control was found, the switch has no fan control, no handoff ran since the last connection, or no switch was connected. |
+
+The value is kept in memory only. A successful connection resets it to `null`. A handoff that retries an
+unconfirmed one after its switch connection was closed keeps the previous value; any other handoff sets it to its
+own result, or to `null` when no switch was connected.
+
+`error` is the engine's message while a switch is logged in and its engine has one; otherwise it is the error
+object of the last failed attempt. That object can be an [SSH host key](#ssh-host-keys) error with its fingerprints,
+also while another switch is logged in, so a client opens a key review only when `logged_in` is false. The WebSocket
+`session` message carries the same object. When a reconnect is refused because the switch's key changed or is not
+saved, the engine's message asks the user to quit EE, open it again and review the key on the Connect page; the
+startup connection then reports the key with its fingerprints.
 
 `connecting` is true during automatic startup login and returns to false after success, failure or cancellation.
 The server publishes both transitions as session messages. Clients must keep listening when their initial
@@ -376,10 +437,72 @@ trusted SSH host key are available only on the computer running EE.
 Deletes the saved login, returns the updated session and publishes a session message. The current switch
 connection keeps running. This also removes an unreadable record when the user explicitly chooses Forget.
 
+### `POST /api/session/host-key/accept`
+
+```json
+{ "host": "192.168.1.2", "port": 22, "ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ" }
+```
+
+Saves the first SSH key of an address, after a `host_key_untrusted` error. `host` is 1 to 253 characters, `port` a
+JSON integer from 1 to 65535 (default 22) and `ssh_host_key` matches `^SHA256:[A-Za-z0-9+/]{43}$`. Other fields
+and values of another JSON type return `422 invalid_credentials`. The route does not contact the switch: the
+retried login or restore verifies the saved key during the SSH key exchange. Returns the session, clears a
+host-key `error` for that address and publishes a session message.
+
+| Status | Code | When |
+|---|---|---|
+| 200 | | The key is saved, or was already the saved key |
+| 400 | `missing_host` | `host` is empty after trimming |
+| 403 | `local_access_required` | The caller's address is not a loopback address (127.0.0.0/8 or ::1) |
+| 409 | `host_key_stale` | A different key is saved for the address, or `ssh_host_key` is not the key EE last saw there |
+| 500 | `host_key_save_failed` | The saved keys could not be read or written; nothing changed |
+
+### `POST /api/session/host-key/replace`
+
+```json
+{ "host": "192.168.1.2", "port": 22,
+  "saved_ssh_host_key": "SHA256:qmA9mR0m2rC3k7Yw1xB5nT8fJ4hL6sV0pD2eG9uZ1aQ",
+  "ssh_host_key": "SHA256:Zt4Wc8Hn1Lq6Rv3Xb9Me2Kd7Pj0Ys5Ug8Fa1Ni4Ow7E" }
+```
+
+Replaces a changed SSH key, after a `host_key_changed` error. The fields follow the accept route, and
+`saved_ssh_host_key` must be the key saved now. The route does not contact the switch. It also deletes the switch
+playback record of the replaced key, as a confirmed handoff does, because that player ran in the previous switch's
+memory. Lighting, schedules and port names saved for the previous key stay saved but are not used with the new
+key. Returns the session and publishes a session message.
+
+| Status | Code | When |
+|---|---|---|
+| 200 | | The key is replaced, or was already the saved key |
+| 400 | `missing_host` | `host` is empty after trimming |
+| 403 | `local_access_required` | The caller's address is not a loopback address (127.0.0.0/8 or ::1) |
+| 409 | `host_key_in_use` | EE still has an open switch connection, a lighting choice waiting, or a shutdown it has not confirmed |
+| 409 | `host_key_stale` | No key is saved, the saved key is not `saved_ssh_host_key`, the two keys are equal, or `ssh_host_key` is not the key EE last saw there |
+| 409 | `switch_playback_reserved` | The switch playback record cannot be read, waits for a handoff, or belongs to another switch |
+| 500 | `host_key_save_failed` | The saved keys or the playback record could not be updated; the saved key and the record are unchanged |
+
+Both routes refuse a caller whose address is not a loopback address before they read the request body, and the
+private gateway refuses them, so SSH keys are accepted only on the computer running EE. The desktop app, the
+browser workspace and the gateway reach the service from 127.0.0.1.
+
+A client offers to accept a key only when the workspace gateway's `GET /api/private-access` returns `local: true`.
+The gateway on the computer running EE includes that field in its answer, with or without permission to change
+private access. The private gateway answers the request itself without the field, and clients treat a failed
+request as remote.
+
 ### `POST /api/session/logout`
 
 Stops EE from controlling the LEDs. The switch's own colors return within about two seconds. `?forget=true` also
 deletes the remembered login.
+
+### `POST /api/session/handoff`
+
+Takes no request body. Stops EE lighting and its switch helpers, returns the fans of a USW-Pro-XG-8-PoE to the
+switch's own controller, closes the SSH connection, and pauses automatic connection until you connect again. Saved
+logins, profiles, the lighting setup and the fan mode saved for each switch are kept. Returns the session. Errors:
+409 `handoff_unconfirmed`, `handoff_save_failed` or `handoff_recovery_required`. The fan step takes at most 15
+seconds; `fan_handoff` reports its result and never changes `handoff_state`. The next connection to the switch
+restores its saved fan mode.
 
 ### `GET /api/about`
 
@@ -1053,10 +1176,15 @@ available to API clients and applies immediately.
 
 ## Fans
 
-Fan control is available on the USW-Pro-XG-8-PoE. The chosen mode runs on the switch from RAM
-(`/tmp/ee-fan-control-v1`), so it continues while EE is closed. The engine checks it every 5 seconds and starts it
-again after a switch restart. The default mode, `switch`, leaves the fans to the switch's own controller and writes
-nothing to the switch.
+Fan control is available on the USW-Pro-XG-8-PoE. EE saves the fan mode for each switch, keyed by the same switch
+identity as the switch's saved lighting. A switch EE has not controlled before starts in `switch`. The chosen mode
+runs on the switch from RAM (`/tmp/ee-fan-control-v1`), so it continues while EE is closed, after logout and after
+Quit. The engine checks it every 5 seconds and starts it again after a switch restart, and at the next connection
+after a handoff. In `switch` mode the check stops EE fan control that has no owner line (started by releases up to
+0.5.1) or that was started from this PC's saved settings, and returns the fans to the switch's own controller. It
+leaves other fan control alone; see `hold`. EE writes an owner line with each setting it sends (the second line of
+the controller's `config` file); the value is saved with the switch's fan file on this PC and never appears in an API
+response.
 
 ### `GET /api/fans`
 
@@ -1072,26 +1200,49 @@ nothing to the switch.
     "reason": "curve", "config": "curve 45 30 60 50 70 75 80 100", "duty": 55
   },
   "error": null,
+  "settings_error": null,
+  "hold": null,
   "curves": {"low": {"name": "Low", "points": [[55, 30], [70, 40], [80, 60], [90, 100]]}, "...": {}},
   "limits": {"manual_percent": [30, 100], "target_celsius": [45, 85]}
 }
 ```
 
+- `settings` is the mode saved for the connected switch. With `hold` `settings_unreadable` or `settings_newer` it is
+  `switch`, which is not enforced.
 - `reading` is `null` until the first sample. `port_celsius` is the hottest port chip. `daemon` is the switch's own
-  fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`.
+  fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`. `config`
+  is the setting line of EE's controller, without the owner line.
 - `reason` names what set the speed in the last step: the mode, `guard` when a sensor near the switch's limit raised
   the speed (CPU 85-95 °C, SFP 65-75 °C, port chips 100-110 °C), or `fault` when a sensor could not be read and
   the fans ran at 100%. After six failed reads EE's control stops and the switch's controller resumes.
+- `error` is the last fan command error, or else the message of a setting the switch runs but EE could not save
+  (`fan_settings_save_failed`), or else `null`.
+- `settings_error` says why the saved fan mode is not in use, for example because the fan file for this switch could
+  not be read or was saved by a newer version of EE. It stays until a change is saved.
+- `hold` is `null` when the check follows `settings`. `other_installation`: EE fan control from other settings, for
+  example EE on another PC, is running; EE reads it and leaves it running. `settings_unreadable`: the fan file for
+  this switch could not be read or created; EE does not change running fan control and only cleans up a stopped EE
+  controller. A successful `PUT /api/fans` clears either of these holds. `settings_newer`: the fan file for this
+  switch was saved by a newer version of EE. The check behaves as with `settings_unreadable`, but `PUT /api/fans`
+  refuses every change, `switch` included, so the hold stays until EE is updated; Handoff to UniFi still returns the
+  fans to the switch's own controller. `hold` is `null` when fan control is not supported.
 
 ### `PUT /api/fans`
 
 Any of `{"mode": "switch" | "curve" | "manual" | "target", "curve": "low" | "medium" | "high" | "max",
 "manual_percent": 30-100, "target_celsius": 45-85}`. Missing fields keep their saved values. The response is the
-`GET /api/fans` object after the switch confirms the change. An invalid value returns `400 invalid`; a change the
-switch does not confirm returns `409 fans_unconfirmed` and keeps the previous settings. A model without fan control
-returns `400 invalid` with the reason. When the switch runs the new setting but EE cannot write it to its data folder,
-the response is `503 fans_not_saved`: the setting stays active until EE restarts, which then uses the previously
-saved setting.
+`GET /api/fans` object after the switch confirms the change. The change is saved for the connected switch only. It
+replaces EE fan control started from other settings, and `switch` stops any EE fan control.
+
+An invalid value returns `400 invalid`; a change the switch does not confirm returns `409 fans_unconfirmed` and
+keeps the previous settings, including an unreadable fan file and its `hold`. A model without fan control returns
+`400 invalid` with the reason. So does any change, `switch` included, while the fan file for this switch was saved
+by a newer version of EE (`hold` `settings_newer`); nothing is sent to the switch and the file is not overwritten. A
+change that arrives while Handoff to UniFi stops fan control returns `409 fans_unconfirmed` with the message "Fan
+control is stopping for Handoff to UniFi.". When the switch runs the new setting but EE cannot write the fan file, the
+response is `500 fan_settings_save_failed` with the message "The switch runs the new fan setting, but EE could not
+save it on this PC. Check the data folder and choose the setting again." The new setting stays in effect for the
+session, and the same message stays in `error` until a later save succeeds.
 
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
@@ -1104,6 +1255,24 @@ saved setting.
 
 The same object is `fans` in `GET /api/state` and WebSocket state messages, and arrives every 5 seconds as a
 `fans` WebSocket message.
+
+### Saved fan settings
+
+Each switch's fan mode is saved in `device-fans/<identity>.json` in the data directory as
+`{"version": 1, "identity": "<64 hex>", "owner": "<48 hex>", "settings": {...}}`. A file that holds no JSON object
+is moved aside as `<identity>.json.corrupt-<UTC time>`. A file that cannot be read, or that has an invalid format
+version, another identity, an invalid owner or invalid settings, sets `hold` to `settings_unreadable` and stays where
+it is until the next successful `PUT /api/fans` replaces it. A file with a newer format version sets `hold` to
+`settings_newer` and is never replaced. The demo keeps `fans-demo.json`.
+
+Releases up to 0.5.1 saved one fan mode for every switch in `fans.json`. When no switch has a fan file yet, the first
+USW-Pro-XG-8-PoE that EE connects to receives that mode. Saving it sends nothing to the switch, and the fan control
+that 0.5.1 started there has no owner line, so EE adopts it. Because `fans.sh` changed after 0.5.1 (`script_current`
+is `false`), the first check on that switch restarts fan control once with the same mode and adds the owner line;
+while it restarts, the switch's own controller runs the fans. `fans.json` stays in place and is no longer read, so
+release 0.5.1 still finds its own setting after a downgrade; it ignores `device-fans/`. When `fans.json` or
+`device-fans/` cannot be read, or the new file cannot be written, the switch gets `hold` `settings_unreadable` and
+the next connection tries again.
 
 ## Presets
 

@@ -65,7 +65,6 @@ export const ROUTE_ACCESS = {
     {"method": "POST", "path": "/api/schedules/{schedule_id}/run", "source": "engine", "remote": true, "reason": "Schedules: runs a confirmed schedule now."},
     {"method": "GET", "path": "/api/session", "source": "engine", "remote": true, "reason": "Session status without passwords; every client reads it."},
     {"method": "POST", "path": "/api/session/forget", "source": "engine", "remote": false, "reason": "Deletes the saved switch login."},
-    {"method": "POST", "path": "/api/session/forget-host-key", "source": "engine", "remote": false, "reason": "Removes a trusted SSH host key, part of signing in to a new or replaced switch."},
     {"method": "POST", "path": "/api/session/handoff", "source": "engine", "remote": true, "reason": "Returns lighting to UniFi and keeps the saved login."},
     {"method": "POST", "path": "/api/session/host-key/accept", "source": "engine", "remote": false, "reason": "Trusts a switch's first SSH host key, part of signing in to a new switch."},
     {"method": "POST", "path": "/api/session/host-key/replace", "source": "engine", "remote": false, "reason": "Replaces a trusted SSH host key, part of signing in to a replaced switch."},

@@ -85,7 +85,10 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
       const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
       const access=admin.allows(req);
       if(req.method!=='GET'&&!access){respond(403,{detail:{code:'admin_required',message:ADMIN_MESSAGES.privateAccess}});return;}
-      if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:access&&!workspaceClosing,admin_required:!access});return;}
+      // `local` tells clients that this gateway, on the computer running EE, answered, with or without administration
+      // access. The private gateway answers GET itself without it, so a page on a remote device does not offer actions
+      // that work only here, such as accepting an SSH key.
+      if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:access&&!workspaceClosing,admin_required:!access,local:true});return;}
       try{
         if(workspaceClosing&&req.method!=='GET'){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
         if(req.url.endsWith('/refresh')&&req.method==='POST'){await privateAccess.initialize();privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true,admin_required:false});return;}
@@ -93,8 +96,8 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
         if(req.url==='/api/private-access'&&req.method==='GET'){
           // Without administration access a tab gets the read-only status that devices on Tailscale get. It leaves
           // out a pending sign-in link, which must not reach other local users.
-          respond(200,access?{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing,admin_required:false}
-            :{...privateAccess.status(),setup_action:null,action_url:null,can_change_port:false,can_configure:false,can_close_workspace:false,admin_required:true});
+          respond(200,access?{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing,admin_required:false,local:true}
+            :{...privateAccess.status(),setup_action:null,action_url:null,can_change_port:false,can_configure:false,can_close_workspace:false,admin_required:true,local:true});
           return;
         }
         if(req.url==='/api/private-access'&&req.method==='PUT'){

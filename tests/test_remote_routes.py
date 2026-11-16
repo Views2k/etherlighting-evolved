@@ -19,11 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTES_FILE = ROOT / "preview" / "remote-routes.mjs"
 API_REFERENCE = ROOT / "docs" / "API.md"
 PREFIX = "export const ROUTE_ACCESS = "
-# Local-only host-key routes that are listed before the engine has them.
-PENDING_ENGINE_ROUTES = {("POST", "/api/session/host-key/accept"), ("POST", "/api/session/host-key/replace")}
 METHOD_ORDER = ["GET", "POST", "PUT", "PATCH", "DELETE", "WS"]
 OWNER_LOCAL = {
-    ("POST", "/api/session/login"), ("POST", "/api/session/forget-host-key"),
+    ("POST", "/api/session/login"),
     ("POST", "/api/session/host-key/accept"), ("POST", "/api/session/host-key/replace"),
     ("POST", "/api/session/forget"), ("POST", "/api/session/logout"),
     ("POST", "/api/controller/connect"), ("POST", "/api/controller/consoles"), ("POST", "/api/controller/disconnect"),
@@ -89,7 +87,7 @@ def test_every_engine_route_is_classified(config):
 def test_no_stale_engine_entries(config):
     # A remote entry for a route the engine no longer has would open a later route with the same path. A local entry
     # under a remote placeholder refuses requests that the placeholder would forward.
-    stale = pairs(load_access()["routes"], source="engine") - engine_routes(config) - PENDING_ENGINE_ROUTES
+    stale = pairs(load_access()["routes"], source="engine") - engine_routes(config)
     assert not stale, "Delete these rows from preview/remote-routes.mjs: " + ", ".join(
         f"{method} {path}" for method, path in sorted(stale))
 

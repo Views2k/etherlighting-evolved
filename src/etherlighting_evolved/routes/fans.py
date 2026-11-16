@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ..fans import FanSettingsSaveError
 from ..transport import TransportError
 from .context import ApiContext
 
@@ -32,9 +33,7 @@ def attach(api: APIRouter, ctx: ApiContext) -> None:
             raise HTTPException(409, detail={"code": "fans_unconfirmed", "message": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(400, detail={"code": "invalid", "message": str(exc)}) from exc
-        except OSError as exc:
-            # The switch already runs the new setting; only the local fans file could not be written.
-            raise HTTPException(503, detail={"code": "fans_not_saved", "message":
-                                            "The fan setting is active but could not be saved. Check the data "
-                                            "folder; the previous setting returns when EE restarts."}) from exc
+        except FanSettingsSaveError as exc:
+            # The switch already runs the new setting; only the fan file for this switch could not be written.
+            raise HTTPException(500, detail={"code": "fan_settings_save_failed", "message": str(exc)}) from exc
         return e.fans.to_dict()

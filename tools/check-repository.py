@@ -18,7 +18,8 @@ PRIVATE_NAMES = {
     "schedules.json", "switch-connection-intent.json", "switch-playback.json", "lighting-library.json",
     "fans.json", "fans-demo.json", "last-session.json", "port_led_fw.bin",
 }
-PRIVATE_ROOTS = {"outputs", "dist", "build", ".venv", "node_modules", "device-scenes", "output-ownership", "port-names"}
+PRIVATE_ROOTS = {"outputs", "dist", "build", ".venv", "node_modules", "device-scenes", "device-fans",
+                 "output-ownership", "port-names"}
 
 VERSION_FILES = {
     "pyproject.toml": r'^version = "([^"]+)"$',

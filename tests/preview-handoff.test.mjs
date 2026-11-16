@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {renderSettings,renderHelp} from '../preview/secondary.mjs';
-import {connectionError,handoffComplete,handoffStatus,renderSwitchConnection,showSceneChoice,requestHandoff} from '../preview/connections.mjs';
+import {connectionError,handoffComplete,handoffConfirmation,handoffStatus,renderSwitchConnection,showSceneChoice,requestHandoff} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 import {DEFAULT_THEME} from '../preview/theme-catalog.mjs';
 import {setTheme} from '../preview/theme.mjs';
@@ -65,14 +65,14 @@ function uiDom(context){
 const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
 
 async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,
-  capabilities=privateStatus,onCloseWorkspace}={}){
+  capabilities=privateStatus,onCloseWorkspace,state={num_ports:8,ports:[],sfp:[],mode:'running',stats:{}}}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
     calls.push({path,method,body});
     if(path==='/api/about')return about();
     if(path==='/api/session/handoff')return send();
     if(path==='/api/session')return ++sessionReads===1?first:reconcile;
-    if(path==='/api/state')return {num_ports:8,ports:[],sfp:[],mode:'running',stats:{}};
+    if(path==='/api/state')return state;
     if(path==='/api/private-access')return capabilities;
     if(path==='/api/controller')return {connected:true,configured:true,preferences_supported:true,auto_reconnect:true,saved_login_available:true};
     throw new Error(`Unexpected request ${path}`);
@@ -145,6 +145,48 @@ test('handoff requires a scoped confirmation and Cancel sends no command',async 
   assert.match(copy,/switch helpers/);assert.match(copy,/Saved logins, profiles/);assert.match(copy,/wait until you connect again/);
   assert.equal(ui.calls.some(call=>call.method),false);ui.button('Cancel',dialog).click();await flush();
   assert.equal(ui.dialog(),undefined);assert.equal(ui.calls.some(call=>call.method),false);assert.deepEqual(ui.sessions,[]);
+});
+
+test('handoff confirmation names the fans only on a switch with fan control',async context=>{
+  const copy=async options=>{
+    const ui=await settings(context,options);ui.button('Handoff to UniFi').click();await flush();
+    const text=ui.findAll(ui.dialog(),node=>node.tagName==='p')[0].textContent;ui.button('Cancel',ui.dialog()).click();await flush();return text;
+  };
+  const fans=await copy({state:{num_ports:8,ports:[],sfp:[],mode:'running',stats:{},fans:{supported:true}}});
+  assert.match(fans,/return the fans to the switch’s own controller/);assert.match(fans,/your fan mode are kept/);
+  assert.match(fans,/switch helpers/);assert.match(fans,/Saved logins, profiles/);assert.match(fans,/wait until you connect again/);
+  assert.doesNotMatch(await copy(),/fan/);
+  assert.ok(handoffConfirmation(true,true).endsWith(' Unapplied connection changes will be discarded.'));
+});
+
+test('handoffStatus adds the fan result to a completed handoff',()=>{
+  const lighting=handoffStatus(complete()).message;
+  const returned=handoffStatus({...complete(),fan_handoff:'returned'});
+  assert.match(returned.message,/runs the fans again/);assert.equal(returned.error,false);assert.equal(returned.tone,'online');
+  assert.ok(returned.message.startsWith(`${lighting} `));
+  const unconfirmed=handoffStatus({...complete(),fan_handoff:'unconfirmed'});
+  assert.equal(unconfirmed.error,true);assert.equal(unconfirmed.tone,'');assert.match(unconfirmed.message,/choose Handoff to UniFi to retry/);
+  for(const value of [null,undefined,'not_running']){
+    assert.deepEqual(handoffStatus({...complete(),fan_handoff:value}),{message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'});
+  }
+});
+
+// The page's own status line, not the notices of its controller and private access sections.
+const settingsNotice=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.className.split(' ')[0]==='notice'&&!node.className.includes('connection-notice'))[0];
+
+test('Settings shows unconfirmed fans after a completed handoff as an error',async context=>{
+  const ui=await settings(context,{send:async()=>({...complete(),fan_handoff:'unconfirmed'})});
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Handoff to UniFi',ui.dialog()).click();await flush();
+  const notice=settingsNotice(ui);
+  assert.ok(notice.textContent.startsWith('Lighting returned to UniFi. EE could not confirm'));assert.ok(notice.className.split(' ').includes('error'));
+});
+
+test('Settings names returned fans after a completed handoff',async context=>{
+  const ui=await settings(context,{send:async()=>({...complete(),fan_handoff:'returned'})});
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Handoff to UniFi',ui.dialog()).click();await flush();
+  const notice=settingsNotice(ui);
+  assert.equal(notice.textContent,'Lighting returned to UniFi. The switch’s own controller runs the fans again.');
+  assert.equal(notice.className.split(' ').includes('error'),false);
 });
 
 test('confirmed handoff sends one scoped request, waits for cleanup and preserves saved-data controls',async context=>{
@@ -297,6 +339,7 @@ test('Help explains the same explicit handoff and saved-login recovery actions',
   const paragraphs=ui.findAll(ui.host,node=>node.tagName==='p').map(node=>node.textContent).join('\n');
   assert.match(paragraphs,/Handoff to UniFi in Settings/);assert.match(paragraphs,/saved logins, profiles/);
   assert.match(paragraphs,/Connect with saved login/);assert.match(paragraphs,/Retry handoff/);
+  assert.match(paragraphs,/also returns the fans to the switch’s own controller/);
 });
 
 test('the app binds intentional saved-login resumption without invoking it on handoff rendering',async()=>{

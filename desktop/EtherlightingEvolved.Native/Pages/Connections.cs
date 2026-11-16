@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using EtherlightingEvolved.Native.Core;
@@ -13,6 +14,114 @@ public sealed record HandoffResult(JsonObject? Session, string? Error);
 
 /// <summary>The reconnect preference controls (controllerReconnectControls).</summary>
 public readonly record struct ReconnectControls(bool Supported, bool Checked, bool Changed, bool CanApply);
+
+/// <summary>
+/// A host_key_untrusted or host_key_changed error whose fields can be shown and echoed back (hostKeyProblem).
+/// <see cref="Host"/> is kept exactly as the service sent it, for the request body.
+/// </summary>
+public sealed record HostKeyProblem(string Code, string Host, int Port, string Fingerprint, string? KeyType, string? SavedFingerprint)
+{
+    static readonly Regex FingerprintPattern = new(@"^SHA256:[A-Za-z0-9+/]{43}\z");
+    static readonly Regex KeyTypePattern = new(@"^[A-Za-z0-9@._+-]{1,64}\z");
+
+    public bool Changed => Code == "host_key_changed";
+
+    /// <summary>Identifies the problem, so a dismissed one does not open again from the next session update.</summary>
+    public string Key => string.Join('\n', Code, Host.Trim().ToLowerInvariant(), Port.ToString(CultureInfo.InvariantCulture), Fingerprint, SavedFingerprint ?? "");
+
+    public string Address => Port == 22 ? Host.Trim() : $"{Host.Trim()} port {Port.ToString(CultureInfo.InvariantCulture)}";
+
+    public string Route => Changed ? "/api/session/host-key/replace" : "/api/session/host-key/accept";
+
+    public JsonObject Body()
+    {
+        var body = new JsonObject { ["host"] = Host, ["port"] = Port, ["ssh_host_key"] = Fingerprint };
+        if (Changed) body["saved_ssh_host_key"] = SavedFingerprint;
+        return body;
+    }
+
+    /// <summary>The problem in a refused request's details or a session error object, or null when a field is not valid.</summary>
+    public static HostKeyProblem? From(JsonNode? node)
+    {
+        if ((node.At("details") as JsonObject ?? node) is not JsonObject source) return null;
+        var code = source.Str("code");
+        if (code is not ("host_key_untrusted" or "host_key_changed")) return null;
+        if (source.Str("host") is not { Length: >= 1 and <= 253 } host || host.Trim().Length == 0 || host.Any(c => c < ' ' || c == '\u007f')) return null;
+        if (source["port"] is not JsonValue portValue || portValue.GetValueKind() != JsonValueKind.Number
+            || Core.Model.Js.Num(portValue) is not { } port || !Core.Model.Js.IsInteger(port) || port is < 1 or > 65535)
+            return null;
+        if (source.Str("ssh_host_key") is not { } fingerprint || !FingerprintPattern.IsMatch(fingerprint)) return null;
+        string? saved = null;
+        if (code == "host_key_changed")
+        {
+            saved = source.Str("saved_ssh_host_key");
+            if (saved is null || !FingerprintPattern.IsMatch(saved) || saved == fingerprint) return null;
+        }
+        var type = source.Str("ssh_host_key_type") is { } name && KeyTypePattern.IsMatch(name) ? name : null;
+        return new HostKeyProblem(code, host, (int)port, fingerprint, type, saved);
+    }
+}
+
+/// <summary>What runs after an SSH key is saved: nothing but a prompt to connect, the login form again, or the saved login.</summary>
+public enum HostKeyRetry { None, Form, Saved }
+
+/// <summary>
+/// Which key problem the Connect page reviews and its retry, a port of createHostKeyFlow (preview/connections.mjs). A
+/// login or restore response always opens its problem; a session error opens one only for the saved login or the
+/// address in the form, never replaces an open one, and not again once the user dismissed it.
+/// </summary>
+public sealed class HostKeyFlow
+{
+    string dismissed = "";
+
+    public HostKeyProblem? Open { get; private set; }
+
+    public HostKeyRetry Retry { get; private set; }
+
+    public void FromAction(HostKeyProblem problem, HostKeyRetry retry)
+    {
+        Open = problem;
+        Retry = retry;
+    }
+
+    /// <summary>Returns true only when the session opened a new review.</summary>
+    public bool FromSession(JsonObject? session, string? formHost, string? formPort, bool pending, bool blocked)
+    {
+        if (session.Truthy("logged_in") || session.Truthy("pending_scene_choice"))
+        {
+            Close();
+            return false;
+        }
+        if (Open is not null || pending || blocked) return false;
+        if (HostKeyProblem.From(session.At("error")) is not { } problem || problem.Key == dismissed) return false;
+        var rememberedPort = session.At("remembered.port") is { } value ? Connections.JsNumber(value.Str() ?? value.ToJsonString()) : 22;
+        var formPortNumber = Connections.JsNumber(formPort);
+        HostKeyRetry retry;
+        if (session.Bool("has_saved_login") == true && SameHost(session.Str("remembered.host"), problem) && rememberedPort == problem.Port) retry = HostKeyRetry.Saved;
+        else if (SameHost(formHost, problem) && Core.Model.Js.IsInteger(formPortNumber) && formPortNumber == problem.Port) retry = HostKeyRetry.None;
+        else return false;
+        FromAction(problem, retry);
+        return true;
+    }
+
+    /// <summary>The user edited the switch address or SSH port.</summary>
+    public void TargetEdited() => Close();
+
+    public void Dismiss()
+    {
+        if (Open is not null) dismissed = Open.Key;
+        Close();
+    }
+
+    public void Close()
+    {
+        Open = null;
+        Retry = HostKeyRetry.None;
+    }
+
+    static bool SameHost(string? value, HostKeyProblem problem) =>
+        value is not null && value.Trim().Length > 0 && value.Trim().ToLowerInvariant() == problem.Host.Trim().ToLowerInvariant();
+}
 
 /// <summary>
 /// Messages, checks and requests of the browser workspace's connection views (preview/connections.mjs), shared by the
@@ -31,7 +140,8 @@ public static class Connections
         ["missing_host"] = "Enter the switch address.",
         ["missing_username"] = "Enter your SSH username.",
         ["bad_port"] = "Enter an SSH port between 1 and 65535.",
-        ["host_key_changed"] = "The switch identity has changed. Verify its SSH host key before reconnecting.",
+        ["host_key_untrusted"] = "Check the switch’s SSH key before EE sends your password.",
+        ["host_key_changed"] = "The switch’s SSH key changed. Review the saved and new keys before connecting.",
         ["unreachable"] = "The switch could not be reached. Check its address and that SSH is enabled.",
         ["connect_failed"] = "The switch could not be reached. Check its address and that SSH is enabled.",
         ["ssh_error"] = "SSH could not connect. Check the switch address and SSH settings.",
@@ -103,6 +213,36 @@ public static class Connections
     public static string ConnectionError(JsonNode? error, string fallback = DefaultError) =>
         ConnectionError(error.Str("code"), false, fallback, error.Str("message"));
 
+    // ---- SSH host keys
+
+    static readonly Dictionary<string, string> HostKeyMessages = new(StringComparer.Ordinal)
+    {
+        ["host_key_stale"] = "The switch’s SSH key changed again. Connect again to review the current key.",
+        ["host_key_in_use"] = "EE still has an open switch connection. Accept the new key after it closes. If it stays open, quit EE on the computer that runs it and open it again.",
+        ["switch_playback_reserved"] = "EE is handing lighting back to UniFi or has lighting saved on another switch. A new SSH key cannot be accepted until that is finished.",
+        ["host_key_save_failed"] = "The SSH key could not be saved. Check the EE data folder and try again.",
+        ["invalid_credentials"] = "The SSH key details were not accepted. Connect again to review the key.",
+    };
+
+    /// <summary>The note shown when this client cannot accept the key, because it is not on the computer running EE.</summary>
+    public static string HostKeyRemoteNote(HostKeyProblem? problem) => problem is { Changed: false }
+        ? "This key can be accepted only in EE on the computer that runs it."
+        : "A new key can be accepted only in EE on the computer that runs it.";
+
+    /// <summary>The message for a refused accept or replace request about <paramref name="problem"/> (hostKeyError).</summary>
+    public static string HostKeyError(Exception? error, HostKeyProblem? problem)
+    {
+        var code = (error as ApiException)?.Code;
+        if (code == "local_access_required") return HostKeyRemoteNote(problem);
+        return code is not null && HostKeyMessages.TryGetValue(code, out var message) ? message : "The SSH key could not be saved. Connect again to review the key.";
+    }
+
+    /// <summary>
+    /// Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
+    /// request (null) counts as remote.
+    /// </summary>
+    public static bool CanAcceptHostKey(JsonNode? privateAccess) => privateAccess.Bool("local") == true;
+
     // ---- Handoff to UniFi
 
     static bool HandoffNeedsReview(JsonNode? session) => session.Str("error.code") == "handoff_recovery_required";
@@ -116,6 +256,26 @@ public static class Connections
         session.Bool("connected") == false && session.Bool("connecting") != true && session.Bool("automatic_connect_paused") == true &&
         !HandoffNeedsReview(session);
 
+    /// <summary>The fan result of a completed handoff as a sentence with its notice tone, or null when there is none (handoffFans).</summary>
+    public static ConnectionNotice? HandoffFans(JsonNode? session) => session.Str("fan_handoff") switch
+    {
+        "returned" => new("The switch’s own controller runs the fans again.", false, "online"),
+        "unconfirmed" => new("EE could not confirm that the switch’s own controller runs the fans again. Connect again and choose Handoff to UniFi to retry, or restart the switch.", true, ""),
+        _ => null,
+    };
+
+    /// <summary>
+    /// The Handoff to UniFi confirmation (handoffConfirmation). <paramref name="fans"/> is true on a switch with fan
+    /// control; <paramref name="noRestore"/> is true on a remote window when the computer running EE has no saved login
+    /// it can reconnect with.
+    /// </summary>
+    public static string HandoffConfirmation(bool fans, bool unsaved, bool noRestore = false) =>
+        (fans
+            ? "Stop EE lighting and its switch helpers, return the fans to the switch’s own controller, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, your lighting setup, and your fan mode are kept. EE will wait until you connect again."
+            : "Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.")
+        + (unsaved ? " Unapplied connection changes will be discarded." : "")
+        + (noRestore ? " The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again." : "");
+
     /// <summary>The handoff message for a session, or null when there is none (handoffStatus).</summary>
     public static ConnectionNotice? HandoffStatus(JsonNode? session)
     {
@@ -123,7 +283,10 @@ public static class Connections
         if (session.Str("handoff_state") == "pending") return new("Handing lighting back to UniFi…", false, "waiting");
         if (session.Str("handoff_state") == "unconfirmed") return new(Messages["handoff_unconfirmed"], true, "");
         if (HandoffComplete(session))
-            return new("Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.", false, "online");
+        {
+            const string lighting = "Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.";
+            return HandoffFans(session) is { } fans ? new($"{lighting} {fans.Message}", fans.Error, fans.Tone) : new(lighting, false, "online");
+        }
         if (session.Truthy("automatic_connect_paused") && !session.Truthy("logged_in"))
             return new("Automatic switch connection is paused. Connect when you want EE to control lighting again.", false, "");
         return null;

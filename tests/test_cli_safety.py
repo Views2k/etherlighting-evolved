@@ -6,8 +6,19 @@ from types import SimpleNamespace
 import pytest
 
 from etherlighting_evolved import cli
+from etherlighting_evolved.device_playback import PlaybackRecord
+from etherlighting_evolved.ownership import device_identity
 from etherlighting_evolved.switch import EtherlightSwitch
-from etherlighting_evolved.transport import SimulatedTransport, TransportError
+from etherlighting_evolved.transport import (
+    HostKeyMismatchError,
+    HostKeyStore,
+    HostKeyUntrustedError,
+    SimulatedTransport,
+    TransportError,
+)
+
+FP_A = "SHA256:" + "A" * 43
+FP_B = "SHA256:" + "B" * 42 + "A"
 
 
 @pytest.fixture(autouse=True)
@@ -140,3 +151,77 @@ async def test_probe_reports_output_qualification_before_closing(monkeypatch, ca
     if schema and not qualified:
         assert "Firmware verification is required" in output
     assert "   4  down" in output
+
+
+class KeyedSimulator(SimulatedTransport):
+    """The simulator behind the saved-key check of SSHTransport, built with SSHTransport's arguments."""
+
+    presented = FP_B
+    attempts = 0
+
+    def __init__(self, host, *, port=22, host_keys=None, **credentials):
+        super().__init__(latency=0)
+        self.host, self.port, self.host_keys = host, port, host_keys
+
+    async def connect(self):
+        type(self).attempts += 1
+        pinned = self.host_keys.get(self.host, self.port)
+        if pinned != self.presented:
+            if pinned is None:
+                raise HostKeyUntrustedError(f"EE has no saved SSH key for {self.host}:{self.port}.",
+                                            presented=self.presented)
+            raise HostKeyMismatchError(f"The SSH key of {self.host}:{self.port} changed.", presented=self.presented,
+                                       pinned=pinned)
+        await super().connect()
+
+
+@pytest.fixture
+def keyed_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "SSHTransport", KeyedSimulator)
+    monkeypatch.setattr(KeyedSimulator, "attempts", 0)
+    return HostKeyStore(tmp_path / "known_switches.json")
+
+
+def probe(*extra):
+    return cli.main(["probe", "192.168.1.2", "-u", "fixture", "-p", "fixture-only", *extra])
+
+
+def test_probe_prints_the_presented_key_and_saves_nothing(keyed_cli, capsys):
+    assert probe() == 2
+    error = capsys.readouterr().err
+    assert FP_B in error and f"--accept-host-key {FP_B}" in error
+    assert not keyed_cli.path.exists() and KeyedSimulator.attempts == 1
+
+
+def test_accept_host_key_flag_saves_only_the_presented_key(keyed_cli, capsys):
+    assert probe("--accept-host-key", FP_A) == 2
+    assert not keyed_cli.path.exists() and KeyedSimulator.attempts == 1
+    assert probe("--accept-host-key", FP_B) in (0, 1)
+    assert keyed_cli.get("192.168.1.2", 22) == FP_B and KeyedSimulator.attempts == 3
+
+
+def test_accept_host_key_flag_replaces_a_changed_key(keyed_cli, capsys):
+    keyed_cli.accept("192.168.1.2", 22, FP_A)
+    assert probe("--accept-host-key", "SHA256:" + "C" * 43) == 2
+    error = capsys.readouterr().err
+    assert keyed_cli.get("192.168.1.2", 22) == FP_A and "forget-host" not in error
+    assert f"--accept-host-key {FP_B}" in error
+    assert probe("--accept-host-key", FP_B) in (0, 1)
+    assert keyed_cli.get("192.168.1.2", 22) == FP_B and KeyedSimulator.attempts == 3
+
+
+def test_accept_host_key_flag_leaves_switch_playback_to_the_app(keyed_cli, tmp_path, capsys):
+    keyed_cli.accept("192.168.1.2", 22, FP_A)
+    PlaybackRecord(tmp_path / "switch-playback.json").save(
+        {"state": "last_playing", "device": device_identity(FP_A), "owner": "a" * 48})
+    assert probe("--accept-host-key", FP_B) == 2
+    assert "Accept the new key on the Connect page" in capsys.readouterr().err
+    assert keyed_cli.get("192.168.1.2", 22) == FP_A
+
+
+@pytest.mark.parametrize("value", ["SHA256:short", "MD5:" + "A" * 43, FP_A + "A"])
+def test_accept_host_key_flag_requires_a_sha256_fingerprint(value):
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["probe", "192.168.1.2", "--accept-host-key", value])
+    assert exc.value.code == 2
