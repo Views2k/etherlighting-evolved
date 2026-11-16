@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import html
-import json
 import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -33,6 +31,7 @@ from .port_names import attach_port_name_routes
 from .presets import PresetStore, ProfileConflict, ProfileStoreError
 from .rules import FIELDS, STYLES, TEMPLATES, Rule
 from .scene_history import attach_routes as attach_history_routes
+from .scene_history import scene_revision
 from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
 from .session import LoginError, SessionManager
 from .transport import SimulatedTransport, TransportError
@@ -149,17 +148,7 @@ class HostKeyForget(BaseModel):
 
 
 def scene_envelope(scene: dict) -> dict:
-    def canonical(value):
-        if isinstance(value, float) and value.is_integer():
-            return int(value)
-        if isinstance(value, dict):
-            return {key: canonical(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [canonical(item) for item in value]
-        return value
-
-    encoded = json.dumps(canonical(scene), sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    return {"scene": scene, "revision": hashlib.sha256(encoded).hexdigest()}
+    return {"scene": scene, "revision": scene_revision(scene)}
 
 
 def handle_ws_command(engine: Engine, msg: dict) -> dict | None:
@@ -791,7 +780,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     async def list_schedules():
         return {"schedules": scheduler.list(), "actions": list(ACTIONS), "history": scheduler.history,
                 "history_available": not scheduler._journal_error,
-                "clock": sessions.engine.state().get("schedule_clock") if sessions.engine else None}
+                "clock": Engine.schedule_clock() if sessions.engine else None}
 
     def bind_schedule(data):
         require_workspace()
