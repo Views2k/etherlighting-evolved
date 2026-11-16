@@ -134,11 +134,31 @@ export function handoffComplete(session) {
   return session?.handed_off===true&&session.handoff_state==='complete'&&session.logged_in===false&&session.connected===false&&session.connecting!==true&&session.automatic_connect_paused===true&&!handoffNeedsReview(session);
 }
 
+/** The fan result of a completed handoff as a sentence with its notice tone, or null when there is none. */
+export function handoffFans(session) {
+  switch(session?.fan_handoff){
+    case 'returned':return {message:'The switch’s own controller runs the fans again.',error:false,tone:'online'};
+    case 'unconfirmed':return {message:'EE could not confirm that the switch’s own controller runs the fans again. Connect again and choose Handoff to UniFi to retry, or restart the switch.',error:true,tone:''};
+    default:return null;
+  }
+}
+
+/** The Handoff to UniFi confirmation. `fans` is true on a switch with fan control. */
+export function handoffConfirmation(fans, unsaved = false) {
+  const message=fans
+    ?'Stop EE lighting and its switch helpers, return the fans to the switch’s own controller, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, your lighting setup, and your fan mode are kept. EE will wait until you connect again.'
+    :'Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.';
+  return message+(unsaved?' Unapplied connection changes will be discarded.':'');
+}
+
 export function handoffStatus(session) {
   if(handoffNeedsReview(session))return {message:messages.handoff_recovery_required,error:true,tone:''};
   if(session?.handoff_state==='pending')return {message:'Handing lighting back to UniFi…',error:false,tone:'waiting'};
   if(session?.handoff_state==='unconfirmed')return {message:messages.handoff_unconfirmed,error:true,tone:''};
-  if(handoffComplete(session))return {message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'};
+  if(handoffComplete(session)){
+    const lighting='Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',fans=handoffFans(session);
+    return fans?{message:`${lighting} ${fans.message}`,error:fans.error,tone:fans.tone}:{message:lighting,error:false,tone:'online'};
+  }
   if(session?.automatic_connect_paused&&!session.logged_in)return {message:'Automatic switch connection is paused. Connect when you want EE to control lighting again.',error:false,tone:''};
   return null;
 }
