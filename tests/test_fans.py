@@ -298,7 +298,11 @@ def mock_switch(tmp_path):
            "EE_FAN_SYSINFO": (tmp_path / "system.info").as_posix()}
     path = subprocess.run([SHELL, "-c", f'cd "{bin_dir.as_posix()}" && pwd'], capture_output=True, text=True)
     env["EE_TEST_BIN"] = path.stdout.strip()
-    yield {"hw": hw, "phy": phy, "env": env, "daemon": pid, "root": tmp_path}
+    # EE's controller folder, by its real path: the controller finds itself through /proc/<pid>/cwd, which reports
+    # the real path, and /tmp is not a real folder on every test machine. On the switch EE checks that it is.
+    real = subprocess.run([SHELL, "-c", f'cd "{tmp_path.as_posix()}" && pwd -P'], capture_output=True, text=True,
+                          env=BASE_ENV).stdout.strip()
+    yield {"hw": hw, "phy": phy, "env": env, "daemon": pid, "root": tmp_path, "location": f"{real}/ee-fan-control-v1"}
     shell("-c", f"kill -CONT {pid} 2>/dev/null; kill {pid} 2>/dev/null")
 
 
@@ -422,7 +426,7 @@ async def test_switch_fans_over_one_long_running_shell(mock_switch, program, iso
     path = _shell_named(program)
     if path is None:
         pytest.skip(f"{program} is not installed")
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     channel = ChannelTransport(mock_switch, path, isolated)
     backend = SwitchFans(channel, location=location, hw=mock_switch["hw"].as_posix(), phy=mock_switch["phy"].as_posix())
     try:
@@ -443,7 +447,7 @@ async def test_switch_fans_over_one_long_running_shell(mock_switch, program, iso
 
 @needs_shell
 async def test_switch_fans_end_to_end(mock_switch):
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     backend = backend_for(mock_switch, location)
     reading = await backend.read()
     assert reading["controller"] == "absent" and reading["fans"][0]["percent"] == 42
@@ -471,7 +475,7 @@ async def test_switch_fans_end_to_end(mock_switch):
 
 @needs_shell
 async def test_guard_returns_fans_when_controller_is_killed(mock_switch):
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     backend = backend_for(mock_switch, location)
     try:
         await backend.apply("manual 90")
@@ -486,7 +490,7 @@ async def test_guard_returns_fans_when_controller_is_killed(mock_switch):
 
 @needs_shell
 async def test_controller_releases_on_bad_sensor(mock_switch):
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     backend = backend_for(mock_switch, location)
     try:
         await backend.apply("manual 40")
@@ -500,7 +504,7 @@ async def test_controller_releases_on_bad_sensor(mock_switch):
 @needs_shell
 async def test_unsupported_model_is_refused(mock_switch):
     put(mock_switch["root"] / "system.info", "systemid=ed72")
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     backend = backend_for(mock_switch, location)
     with pytest.raises(ValueError, match="not supported"):
         await backend.apply("manual 40")
@@ -557,7 +561,7 @@ async def test_running_controller_takes_a_new_setting_within_seconds(mock_switch
     """With the normal 5-second step, a change still reaches the fans in about a second."""
     path = _shell_named("dash") or SHELL
     switch = {**mock_switch, "env": {**mock_switch["env"], "EE_FAN_TICK": "5"}}
-    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    location = mock_switch["location"]
     channel = ChannelTransport(switch, path, True)
     backend = SwitchFans(channel, location=location, hw=switch["hw"].as_posix(), phy=switch["phy"].as_posix())
     try:
