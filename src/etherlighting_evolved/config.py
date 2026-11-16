@@ -102,12 +102,7 @@ class Config:
     switch: SwitchConfig = field(default_factory=SwitchConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
-    base_dir: Path = field(default_factory=Path.cwd)
     data_dir: Path = field(default_factory=data_dir)
-
-    def resolve(self, value: str) -> Path:
-        path = Path(value).expanduser()
-        return path if path.is_absolute() else self.base_dir / path
 
 
 def _section(cls, data: dict, name: str):
@@ -120,11 +115,8 @@ def _section(cls, data: dict, name: str):
 
 def load_config(path: str | Path | None = None) -> Config:
     data: dict = {}
-    base = Path.cwd()
     if path:
-        p = Path(path).expanduser()
-        data = tomllib.loads(p.read_text("utf-8"))
-        base = p.resolve().parent
+        data = tomllib.loads(Path(path).expanduser().read_text("utf-8"))
     unknown = set(data) - {"switch", "engine", "api"}
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
@@ -134,7 +126,6 @@ def load_config(path: str | Path | None = None) -> Config:
         switch=_section(SwitchConfig, data.get("switch", {}), "switch"),
         engine=_section(EngineConfig, data.get("engine", {}), "engine"),
         api=_section(ApiConfig, api, "api"),
-        base_dir=base,
     )
     env = os.environ
     cfg.switch.host = env.get("EE_HOST", cfg.switch.host)

@@ -11,7 +11,7 @@ def isolated_ownership_journal(tmp_path, monkeypatch):
 
 @pytest.fixture
 def config(tmp_path):
-    return Config(data_dir=tmp_path / "data", base_dir=tmp_path)
+    return Config(data_dir=tmp_path / "data")
 
 
 @pytest.fixture
