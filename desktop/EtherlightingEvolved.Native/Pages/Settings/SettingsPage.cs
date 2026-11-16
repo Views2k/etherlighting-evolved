@@ -214,8 +214,12 @@ public sealed class SettingsPage : Page
             var state = await stateTask;
             if (!gate.Active) return;
             var simulated = session.Truthy("simulated");
+            // A window that uses private access cannot forget the saved switch login or set up UniFi Network.
+            var remote = Workspace.Remote;
             health.IsVisible = !simulated;
-            sections[1].Button.IsVisible = sections[2].Button.IsVisible = !simulated;
+            sections[1].Button.IsVisible = !simulated;
+            sections[2].Button.IsVisible = !simulated && !remote;
+            controllerHost.IsVisible = !remote;
             UpdateHealth(state);
             content.Children.Clear();
             switchState = new StateLine();
@@ -231,7 +235,8 @@ public sealed class SettingsPage : Page
                 {
                     var unsaved = controller?.HasChanges == true || privateAccess.HasChanges;
                     var message = "Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again." +
-                                  (unsaved ? " Unapplied connection changes will be discarded." : "");
+                                  (unsaved ? " Unapplied connection changes will be discarded." : "") +
+                                  (remote && !Connections.RemoteCanRestore(session) ? " The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again." : "");
                     if (!await Confirm("Handoff to UniFi?", message, "Handoff to UniFi") || !gate.Active) return;
                     handoff!.SetLabel("Handing off…");
                     Status("Handing lighting back to UniFi…");
@@ -252,7 +257,7 @@ public sealed class SettingsPage : Page
                 }));
                 content.Children.Add(UiKit.HelpText("Return lighting control to UniFi and keep your EE setup for next time."));
                 content.Children.Add(handoff);
-                if (session.Truthy("has_saved_login"))
+                if (session.Truthy("has_saved_login") && !remote)
                 {
                     Button? forget = null;
                     forget = SettingsKit.ActionButton("Forget saved switch login", () => gate.Run(async () =>
@@ -264,7 +269,7 @@ public sealed class SettingsPage : Page
                     }), "quiet");
                     content.Children.Add(forget);
                 }
-                if (controller is null)
+                if (controller is null && !remote)
                 {
                     controller = new ControllerConnection(request, _ => Workspace.Refresh(false));
                     controllerHost.Children.Add(SettingsKit.LeftMax(controller, 720));

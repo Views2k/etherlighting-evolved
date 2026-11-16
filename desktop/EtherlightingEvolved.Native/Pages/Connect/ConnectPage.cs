@@ -18,7 +18,9 @@ namespace EtherlightingEvolved.Native.Pages.Connect;
 /// <summary>
 /// The switch connection view shown while no switch is signed in, a port of renderSwitchConnection
 /// (preview/connections.mjs): the SSH login form, the saved login, the handoff retry, the demo, connection help and
-/// private access. The shell passes the same options as showConnection in preview/app.mjs.
+/// private access. The shell passes the same options as showConnection in preview/app.mjs. A window that reaches the
+/// workspace through private access can only reconnect to the login saved on the computer running EE, so its form
+/// holds only Connect with saved login, Retry handoff and Change workspace address.
 /// </summary>
 public sealed class ConnectPage : Page
 {
@@ -48,6 +50,10 @@ public sealed class ConnectPage : Page
     readonly Button? firstPanelButton;
     readonly List<Control> formElements;
     readonly PrivateAccessPanel privateAccess;
+    readonly TextBlock intro = UiKit.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
+    readonly bool remote;
+    // The button that takes focus after a connection attempt: Connect with saved login on a remote window.
+    readonly Button primary;
     bool active = true, completed, dirty, forgetting, retryingHandoff, updating;
     Task? pending;
     JsonObject saved;
@@ -61,6 +67,8 @@ public sealed class ConnectPage : Page
             onDemo = async () => await Shell.AcceptSession(await Workspace.Request("/api/session/login", "POST", new JsonObject { ["host"] = "demo" }) as JsonObject);
         var session = Workspace.Session;
         saved = session;
+        remote = Workspace.Remote;
+        primary = remote ? restore : submit;
 
         var panel = new StackPanel { Classes = { "connection-panel", "panel" } };
         var logo = ConnectionUi.Logo(52);
@@ -69,7 +77,6 @@ public sealed class ConnectPage : Page
         {
             Text = "Connect your switch", Classes = { "h1" }, FontSize = 24, LineHeight = 34.8, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 14, 0, 8),
         };
-        var intro = UiKit.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
         intro.Margin = default;
         panel.Children.Add(logo);
         panel.Children.Add(heading);
@@ -84,26 +91,39 @@ public sealed class ConnectPage : Page
         portField.Width = 150;
         portField.HorizontalAlignment = HorizontalAlignment.Left;
         options.Body.Children.Add(portField);
-        var actions = new FlowRow(10, submit) { Classes = { "connection-actions" } };
-        if (restoreSaved is not null) actions.Children.Add(restore);
-        actions.Children.Add(forget);
-        actions.Children.Add(retryHandoff);
+        var actions = new FlowRow(10) { Classes = { "connection-actions" } };
         retryHandoff.IsVisible = false;
         var passwordField = new SecretField("SSH password", password);
         reveal = passwordField.Reveal;
         var form = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Classes = { "connection-form" } };
-        form.Children.Add(UiKit.Field("Switch address", address));
-        form.Children.Add(UiKit.Field("SSH username", username));
-        form.Children.Add(passwordField);
-        form.Children.Add(rememberLabel);
-        form.Children.Add(options);
+        if (remote)
+        {
+            actions.Children.Add(restore);
+            actions.Children.Add(retryHandoff);
+            formElements = [restore, retryHandoff];
+            if (Shell.OpenWorkspaceAddress is not null)
+            {
+                var change = UiKit.Button("Change workspace address", "quiet", Shell.ChooseWorkspaceAddress);
+                actions.Children.Add(change);
+                formElements.Add(change);
+            }
+        }
+        else
+        {
+            actions.Children.Add(submit);
+            actions.Children.Add(restore);
+            actions.Children.Add(forget);
+            actions.Children.Add(retryHandoff);
+            form.Children.Add(UiKit.Field("Switch address", address));
+            form.Children.Add(UiKit.Field("SSH username", username));
+            form.Children.Add(passwordField);
+            form.Children.Add(rememberLabel);
+            form.Children.Add(options);
+            formElements = [address, username, password, reveal, remember, port, submit, restore, forget, retryHandoff];
+        }
         form.Children.Add(actions);
         panel.Children.Add(message);
         panel.Children.Add(form);
-        formElements = [address, username, password, reveal, remember, port, submit];
-        if (restoreSaved is not null) formElements.Add(restore);
-        formElements.Add(forget);
-        formElements.Add(retryHandoff);
 
         // The demo and help buttons sit side by side below the form, as inline buttons do.
         var inline = new FlowRow(0);
@@ -217,8 +237,15 @@ public sealed class ConnectPage : Page
         forget.Content = forgetting ? "Removing saved login…" : "Forget saved login";
         restore.IsVisible = restoreSaved is not null && saved.Truthy("has_saved_login");
         forget.IsVisible = saved.Truthy("has_saved_login");
+        if (remote) intro.Text = saved.Truthy("has_saved_login") ? "Reconnect to the switch saved on the computer running EE." : RemoteMessages["no_saved_login"];
         if (firstPanelButton is not null) firstPanelButton.IsEnabled = !waiting;
     }
+
+    /// <summary>The notice after the scene choice was canceled and no switch is signed in.</summary>
+    string CanceledChoice(JsonObject resolved) =>
+        !remote ? "Lighting setup canceled. You can edit this login and connect again."
+        : RemoteCanRestore(resolved) ? "Lighting setup canceled. Choose Connect with saved login to try again."
+        : resolved.Truthy("saved_login_error") ? RemoteMessages["saved_login_unavailable"] : RemoteMessages["no_saved_login"];
 
     async Task Enter(JsonObject? value)
     {
@@ -235,9 +262,9 @@ public sealed class ConnectPage : Page
         }
         if (!resolved.Truthy("logged_in"))
         {
-            if (value.Truthy("pending_scene_choice")) Status("Lighting setup canceled. You can edit this login and connect again.");
+            if (value.Truthy("pending_scene_choice")) Status(CanceledChoice(resolved));
             SetBusy();
-            submit.Focus();
+            primary.Focus();
             return;
         }
         completed = true;
@@ -276,8 +303,8 @@ public sealed class ConnectPage : Page
         if (HandoffBlocked(saved) && handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
         else if (saved.Truthy("pending_scene_choice")) Status("Choose lighting to finish connecting.");
         else if (saved.Truthy("connecting")) Status("Connecting with saved login…");
-        else if (saved.Truthy("saved_login_error")) Status(Messages["saved_login_unavailable"], true);
-        else if (saved.Truthy("error")) Status(ConnectionError(saved["error"]), true);
+        else if (saved.Truthy("saved_login_error")) Status((remote ? RemoteMessages : Messages)["saved_login_unavailable"], true);
+        else if (saved.Truthy("error")) Status(remote ? RemoteConnectionError(saved["error"]) : ConnectionError(saved["error"]), true);
         else if (handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
         SetBusy();
         if (SceneChoice.IsOpen || (!HandoffBlocked(saved) && (saved.Truthy("logged_in") || saved.Truthy("pending_scene_choice"))))
@@ -303,13 +330,13 @@ public sealed class ConnectPage : Page
             }
             catch (Exception error)
             {
-                if (active) Status(ConnectionError(error), true);
+                if (active) Status(remote ? RemoteConnectionError(error) : ConnectionError(error), true);
             }
             finally
             {
                 pending = null;
                 SetBusy();
-                if (active && !completed) submit.Focus();
+                if (active && !completed) primary.Focus();
             }
         });
         SetBusy();
@@ -376,7 +403,7 @@ public sealed class ConnectPage : Page
                 if (active)
                 {
                     Control target = HandoffRetryable(saved) ? retryHandoff : HandoffBlocked(saved) ? message
-                        : restoreSaved is not null && saved.Truthy("has_saved_login") ? restore : submit;
+                        : restoreSaved is not null && saved.Truthy("has_saved_login") ? restore : primary;
                     if (target == message) message.Focusable = true;
                     target.Focus();
                 }
@@ -387,7 +414,7 @@ public sealed class ConnectPage : Page
 
     async Task Forget()
     {
-        if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
+        if (remote || !active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         if (!await Shell.Overlay.Confirm("Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", this, lifecycle.Token)) return;
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         forgetting = true;

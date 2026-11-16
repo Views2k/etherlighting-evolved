@@ -60,6 +60,7 @@ public sealed class PrivateAccessPanel : UserControl
         header.Children.Add(title);
         header.Children.Add(refresh);
         var help = UiKit.HelpText("Use Tailscale to open this workspace on your phone or another device.");
+        var scope = UiKit.HelpText("Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.");
         setup.Children.Add(setupHelp);
         setup.Children.Add(new FlowRow(10, setupLink, signIn) { Classes = { "connection-actions" } });
         toggle = label.Box;
@@ -79,7 +80,7 @@ public sealed class PrivateAccessPanel : UserControl
         advanced.Body.Children.Add(UiKit.HelpText("Use a free HTTPS port between 1024 and 65535. Turn off private access before changing it."));
         address = new FlowRow(10, open, copy) { IsVisible = false, Classes = { "connection-actions" } };
         install.IsVisible = false;
-        foreach (var child in new Control[] { header, help, state, setup, label, audienceField, advanced, readOnly, actions, address, install, message }) section.Children.Add(child);
+        foreach (var child in new Control[] { header, help, scope, state, setup, label, audienceField, advanced, readOnly, actions, address, install, message }) section.Children.Add(child);
         Content = section;
         if (!active) return;
 

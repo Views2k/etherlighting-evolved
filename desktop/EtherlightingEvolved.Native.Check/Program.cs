@@ -42,6 +42,7 @@ AppBuilder.Configure<App>()
 ShellChecks.Contracts(Check);
 ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
+RemoteAccessChecks.Contracts(Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");
@@ -71,6 +72,7 @@ if (args.Contains("--service"))
     if (page is not (null or "Lighting" or "Effects" or "Automation" or "Profiles" or "Fans"))
         throw new ArgumentException("Unknown editing workflow.");
     ShellChecks.ExerciseDesktop(output, Check, page);
+    RemoteAccessChecks.Exercise(output, Check);
 }
 
 Console.WriteLine(failures.Count == 0 ? $"All checks passed. Images: {output}" : $"{failures.Count} check(s) failed.");

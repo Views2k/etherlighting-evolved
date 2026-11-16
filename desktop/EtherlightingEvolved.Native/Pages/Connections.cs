@@ -57,7 +57,34 @@ public static class Connections
         ["controller_invalid_response"] = "The controller response could not be read. Check the UniFi Network address.",
         ["site_required"] = "Choose the UniFi site that contains your switch.",
         ["switch_not_found"] = "The connected switch was not found in this site. Check the selected site.",
+        ["local_access_required"] = "This action is available only on the computer running EE.",
     };
+
+    /// <summary>
+    /// Messages for a window that reaches the workspace through private access (remoteMessages). Such a window cannot
+    /// sign in, change the saved login or accept a host key, so these point to the computer running EE.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> RemoteMessages = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["no_saved_login"] = "No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.",
+        ["saved_login_unavailable"] = "The saved login could not be opened. Sign in to the switch on the computer running EE.",
+        ["auth_failed"] = "The switch rejected the saved login. Sign in to the switch on the computer running EE.",
+        ["authentication_failed"] = "The switch rejected the saved login. Sign in to the switch on the computer running EE.",
+        ["host_key_untrusted"] = "Accept the switch’s SSH host key on the computer running EE, then connect again.",
+        ["host_key_changed"] = "The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.",
+    };
+
+    public static string RemoteConnectionError(Exception? error) =>
+        (error as ApiException)?.Code is { } code && RemoteMessages.TryGetValue(code, out var message) ? message : ConnectionError(error);
+
+    public static string RemoteConnectionError(JsonNode? error) =>
+        error.Str("code") is { } code && RemoteMessages.TryGetValue(code, out var message) ? message : ConnectionError(error);
+
+    /// <summary>
+    /// A saved login on the host that a remote window can reconnect with (remoteCanRestore). The session reports
+    /// has_saved_login with saved_login_error when a saved login exists but cannot be opened.
+    /// </summary>
+    public static bool RemoteCanRestore(JsonNode? session) => session.Truthy("has_saved_login") && !session.Truthy("saved_login_error");
 
     /// <summary>
     /// Codes whose message comes from the service. For invalid_saved_scene it says which saved lighting failed (damaged
