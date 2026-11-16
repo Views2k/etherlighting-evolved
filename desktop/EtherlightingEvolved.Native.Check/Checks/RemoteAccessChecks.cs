@@ -21,6 +21,8 @@ internal static class RemoteAccessChecks
     const string NoHostLogin = "No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.";
     const string HostLoginUnavailable = "The saved login could not be opened. Sign in to the switch on the computer running EE.";
     const string HostLoginRejected = "The switch rejected the saved login. Sign in to the switch on the computer running EE.";
+    const string HostKeyUntrusted = "Accept the switch’s SSH host key on the computer running EE, then connect again.";
+    const string HostKeyChanged = "The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.";
     const string HandoffWarning = " The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.";
     const string Scope = "Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.";
 
@@ -57,6 +59,8 @@ internal static class RemoteAccessChecks
               && Connections.RemoteConnectionError(Refused("saved_login_unavailable")) == HostLoginUnavailable
               && Connections.RemoteConnectionError(Refused("auth_failed")) == HostLoginRejected
               && Connections.RemoteConnectionError(JsonNode.Parse("""{"code":"authentication_failed"}""")) == HostLoginRejected
+              && Connections.RemoteConnectionError(Refused("host_key_untrusted")) == HostKeyUntrusted
+              && Connections.RemoteConnectionError(JsonNode.Parse("""{"code":"host_key_changed"}""")) == HostKeyChanged
               && Connections.RemoteConnectionError(Refused("unreachable")) == Connections.Messages["unreachable"],
             "a remote window is sent to the computer running EE for login problems, as the browser is");
         check(Connections.RemoteCanRestore(JsonNode.Parse("""{"has_saved_login":true}"""))

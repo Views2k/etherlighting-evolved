@@ -12,7 +12,8 @@ test('remote devices are sent to the computer running EE for login problems', ()
   assert.equal(remoteConnectionError({code:'saved_login_unavailable'}), 'The saved login could not be opened. Sign in to the switch on the computer running EE.');
   for (const code of ['auth_failed','authentication_failed'])
     assert.equal(remoteConnectionError({code}), 'The switch rejected the saved login. Sign in to the switch on the computer running EE.');
-  for (const code of ['host_key_untrusted','host_key_changed']) assert.match(remoteConnectionError({code}), /SSH host key on the computer running EE/);
+  assert.equal(remoteConnectionError({code:'host_key_untrusted'}), 'Accept the switch’s SSH host key on the computer running EE, then connect again.');
+  assert.equal(remoteConnectionError({code:'host_key_changed'}), 'The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.');
   assert.equal(remoteConnectionError({code:'unreachable'}), connectionError({code:'unreachable'}));
 });
 
