@@ -80,6 +80,22 @@ async def test_missing_and_unavailable_saved_login_never_connect(config, monkeyp
 
 
 @pytest.mark.anyio
+async def test_session_info_reports_the_saved_login_without_reading_it_again(config, monkeypatch):
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
+    reads = []
+    monkeypatch.setattr(sessions.saved, "load", lambda: reads.append(True) or FIXTURE.copy())
+    try:
+        await sessions.restore_saved()
+        for _ in range(5):
+            info = sessions.info()
+        assert len(reads) == 1
+        assert info["remembered"] == {"host": FIXTURE["host"], "port": 22, "username": FIXTURE["username"]}
+        assert FIXTURE["password"] not in json.dumps(info)
+    finally:
+        await sessions.close()
+
+
+@pytest.mark.anyio
 async def test_canceling_one_restore_caller_keeps_shared_attempt(config, monkeypatch):
     gate = asyncio.Event()
     transport = LocalTransport(gate)

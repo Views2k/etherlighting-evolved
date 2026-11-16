@@ -124,15 +124,30 @@ class SessionManager:
         self._cleanup_engines: list[Engine] = []
         self._owned_switches: set[EtherlightSwitch] = set()
         self._unsaved_scenes: dict[object, tuple[SceneStore, dict]] = {}
+        # info() runs on every notification, so it reports this summary instead of decrypting the saved login.
+        self._remembered: dict | None = None
+        self._saved_error: str | None = None
+        with contextlib.suppress(CredentialStoreError):
+            self._load_saved()
+
+    def _load_saved(self) -> dict | None:
+        try:
+            saved = self.saved.load()
+        except CredentialStoreError as exc:
+            self._remembered, self._saved_error = None, str(exc)
+            raise
+        self._set_remembered(saved)
+        return saved
+
+    def _set_remembered(self, saved: dict | None) -> None:
+        self._remembered = (None if saved is None else
+                            {"host": saved["host"], "port": saved.get("port", 22), "username": saved.get("username")})
+        self._saved_error = None
 
     # Info
 
     def info(self) -> dict:
-        saved, saved_error = None, None
-        try:
-            saved = self.saved.load()
-        except CredentialStoreError as exc:
-            saved_error = str(exc)
+        saved, saved_error = self._remembered, self._saved_error
         engine = self.engine
         return {
             "logged_in": engine is not None,
@@ -145,9 +160,7 @@ class SessionManager:
             "workspace_id": self.workspace_id(),
             "switch": engine.switch_info if engine else None,
             "error": (engine.error if engine and engine.error else None) or self.last_error,
-            "remembered": {"host": saved["host"], "port": saved.get("port", 22), "username": saved.get("username")}
-            if saved
-            else None,
+            "remembered": dict(saved) if saved else None,
             "has_saved_login": saved is not None or saved_error is not None,
             "saved_login_error": saved_error,
             "pending_scene_choice": self._pending.public() if self._pending and not self.handoff_pending else None,
@@ -226,7 +239,7 @@ class SessionManager:
         self._notify()
         try:
             try:
-                saved = self.saved.load()
+                saved = self._load_saved()
             except CredentialStoreError as exc:
                 raise self._fail("saved_login_unavailable", str(exc), 409) from exc
             if not saved:
@@ -544,8 +557,10 @@ class SessionManager:
                 raise self._fail("handoff_unconfirmed", "Finish the pending handoff before reconnecting.", 409)
             if candidate.remember is True and candidate.host.lower() not in DEMO_HOSTS:
                 self.saved.save(candidate.host, candidate.port, candidate.username, candidate.password)
+                self._set_remembered({"host": candidate.host, "port": candidate.port, "username": candidate.username})
             elif candidate.remember is False and candidate.host.lower() not in DEMO_HOSTS:
                 self.saved.clear()
+                self._set_remembered(None)
             if not candidate.simulated and not self._playback.data:
                 self.output_journal.check(candidate.host, candidate.port, candidate.fingerprint,
                                           current=self.engine.switch.output_lease if self.engine else None)
@@ -626,11 +641,12 @@ class SessionManager:
                     self.saved.clear()
                 except CredentialStoreError as exc:
                     raise self._fail("saved_login_forget_failed", str(exc), 500) from exc
+                self._set_remembered(None)
             self._notify()
             return self.info()
 
     def _playback_switch(self, identity):
-        saved = self.saved.load()
+        saved = self._load_saved()
         if not saved:
             raise ValueError("Save the switch login before using switch playback.")
         host, port = saved["host"], saved.get("port", 22)
@@ -661,7 +677,7 @@ class SessionManager:
                 or (record and record.get("device") != identity)):
             raise OutputOwnershipError("The connected switch does not match the saved lighting.")
         if record is None:
-            saved = self.saved.load()
+            saved = self._load_saved()
             pinned = self.host_keys.get(saved["host"], saved.get("port", 22)) if saved else None
             if not pinned or device_identity(pinned) != identity:
                 return
@@ -899,6 +915,7 @@ class SessionManager:
                 self.saved.clear()
             except CredentialStoreError as exc:
                 raise self._fail("saved_login_forget_failed", str(exc), 500) from exc
+            self._set_remembered(None)
             if self.last_error and self.last_error.get("code", "").startswith("saved_login_"):
                 self.last_error = None
             self._notify()
@@ -1006,7 +1023,7 @@ class SessionManager:
                       "key_file": sw.key_file}
         else:
             try:
-                saved = self.saved.load()
+                saved = self._load_saved()
             except CredentialStoreError as exc:
                 self._fail("saved_login_unavailable", str(exc), 409)
                 log.warning("automatic login stopped because the saved login could not be unlocked")
