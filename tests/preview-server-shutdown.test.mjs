@@ -4,13 +4,14 @@ import {createWorkspaceServer} from '../preview/server.mjs';
 
 function fixture(){
   let finishClose,failClose,active;
-  const calls=[],retries=[],configured=[];
+  const calls=[],retries=[],configured=[],exits=[];
   const child={exitCode:null,stdin:{writableEnded:false,end:line=>calls.push(`engine ${line.trim()}`)}};
   const workspace=createWorkspaceServer({root:'.',port:4180,live:true,backendPort:1,token:'fixture',child,diagnostics:{record(){}},
     privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),close:async()=>calls.push('private closed'),
       configure:async(...args)=>{configured.push(JSON.stringify(args));calls.push('configure');}},
     closeWorkspace:()=>new Promise((resolve,reject)=>{finishClose=resolve;failClose=reject;}),
-    keepAvailable:options=>{active=options.active;return {observe:()=>retries.push('observe'),stop:()=>retries.push('stop')};}});
+    keepAvailable:options=>{active=options.active;return {observe:()=>retries.push('observe'),stop:()=>retries.push('stop')};},
+    exit:code=>exits.push(code)});
   workspace.server.close=()=>calls.push('close');
   const [handler]=workspace.server.listeners('request');
   async function request(url,method,body){
@@ -18,8 +19,23 @@ function fixture(){
     const req={url,method,headers:{host:'127.0.0.1:4180'},async *[Symbol.asyncIterator](){if(body)yield await body;}};
     await handler(req,response);return response;
   }
-  return {request,calls,retries,configured,child,workspace,active:()=>active(),finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
+  return {request,calls,retries,configured,exits,child,workspace,active:()=>active(),finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
 }
+
+test('an engine that stops on its own stops the gateway with exit code 1',async()=>{
+  const f=fixture();
+  f.workspace.engineExited();
+  assert.deepEqual(f.exits,[1]);assert.deepEqual(f.calls,['close']);assert.deepEqual(f.retries,['stop']);
+  assert.equal(f.active(),false);
+  assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}')).status,503);
+});
+
+test('an engine that stops during a workspace close leaves the exit to that close',async()=>{
+  const f=fixture(),closing=f.request('/api/workspace/close','POST');
+  f.workspace.engineExited();
+  f.finish();assert.equal((await closing).status,200);
+  assert.deepEqual(f.exits,[]);
+});
 
 test('shutdown rejects new private-access enable and refresh requests',async()=>{
   const f=fixture(),closing=f.request('/api/workspace/close','POST');

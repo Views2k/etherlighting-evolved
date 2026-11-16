@@ -67,6 +67,14 @@ test('API requests reach the engine with its token and without the browser origi
   assert.equal(headers.host,`127.0.0.1:${f.backendPort}`);
 });
 
+test('API requests answer 503 when the engine is not listening',async t=>{
+  const f=await gateway(t);
+  f.backend.closeAllConnections();await new Promise(done=>f.backend.close(done));
+  const response=await request(f.port,'/api/state');
+  assert.equal(response.status,503);
+  assert.deepEqual(JSON.parse(response.text),{detail:'The EE service is unavailable.'});
+});
+
 test('API calls from another site are refused while links from other sites still open the page',async t=>{
   const f=await gateway(t);
   for(const site of ['cross-site','same-site'])

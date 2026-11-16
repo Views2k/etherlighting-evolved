@@ -21,7 +21,7 @@ const MAX_BODY_BYTES=1048576;
 // The returned server is not listening yet. Every way the workspace closes (the close request, the desktop parent
 // exiting, a signal or a listen failure) goes through the same state, so private access cannot be reopened while
 // the engine is shutting down.
-export function createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,closeWorkspace,keepAvailable=keepPrivateAccessAvailable}) {
+export function createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,closeWorkspace,keepAvailable=keepPrivateAccessAvailable,exit=code=>process.exit(code)}) {
   const allowed = new Set([`127.0.0.1:${port}`,`localhost:${port}`]);
   // Browsers omit Origin on simple cross-site GETs such as an <img> source, but they still send Sec-Fetch-Site, and
   // some engine GET routes have side effects. API calls are accepted only from the workspace page or from clients
@@ -43,6 +43,12 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
   }
   function readmit(){if(child.exitCode===null&&!child.stdin.writableEnded)workspaceClosing=false;}
   function stop(){workspaceClosing=true;privateRetry.stop();void privateAccess.close();server.close();child.stdin.end('quit\n');}
+  // Without the engine every API request would fail with 503. Stopping the gateway as well lets the desktop see that
+  // the service stopped and offer to start it again. An exit during a workspace close is that close finishing.
+  function engineExited(){
+    if(workspaceClosing)return;
+    workspaceClosing=true;privateRetry.stop();server.close();exit(1);
+  }
   const server=http.createServer(async(req,res)=>{
     if (!permitted(req,req.url.startsWith('/api/'))) {res.writeHead(403);res.end();return;}
     if(['/api/private-access','/api/private-access/refresh','/api/private-access/login'].includes(req.url)){
@@ -89,7 +95,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
       if(Number(req.headers['content-length'])>MAX_BODY_BYTES){res.writeHead(413,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The request is too large.'}));return;}
       const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`}; delete headers.origin;
       const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});
-      upstream.on('error',()=>{if(!res.headersSent)res.writeHead(503,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The preview service is unavailable.'}));});
+      upstream.on('error',()=>{if(!res.headersSent)res.writeHead(503,{'Content-Type':'application/json'});res.end(JSON.stringify({detail:'The EE service is unavailable.'}));});
       let received=0;
       req.on('data',chunk=>{received+=chunk.length;if(received>MAX_BODY_BYTES){res.destroy();upstream.destroy();}});
       req.pipe(upstream);return;
@@ -123,7 +129,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     });
     upstream.on('error',()=>socket.destroy()); upstream.on('response',()=>socket.destroy()); socket.once('close',()=>upstream.destroy()); upstream.end();
   });
-  return {server,privateRetry,shutDown,readmit,stop};
+  return {server,privateRetry,shutDown,readmit,stop,engineExited};
 }
 
 export async function startWorkspace() {
@@ -159,6 +165,8 @@ export async function startWorkspace() {
   });
   const workspace=createWorkspaceServer({root,port,live,backendPort,token,child,diagnostics,privateAccess,closeWorkspace});
   const {server}=workspace;
+  // 'close' follows the end of the engine's output, so its last diagnostics are recorded before the gateway exits.
+  child.once('close',workspace.engineExited);
   server.on('error',()=>{workspace.stop();process.exitCode=1;});
   if(process.env.EE_DESKTOP_HOST==='1') watchDesktopParent({input:process.stdin,close:async()=>{
     await workspace.shutDown();server.close();process.stdin.destroy();
