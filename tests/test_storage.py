@@ -52,7 +52,7 @@ def test_host_keys_gain_a_version_that_earlier_releases_still_read(tmp_path):
     path.write_text(json.dumps({"switch.invalid:22": "SHA256:original"}), "utf-8")
     store = HostKeyStore(path)
     assert store.get("switch.invalid", 22) == "SHA256:original"
-    assert store.verify_or_pin("second.invalid", 22, "SHA256:second")
+    store.accept("second.invalid", 22, "SHA256:second")
     saved = json.loads(path.read_text("utf-8"))
     assert saved == {"version": "1", "switch.invalid:22": "SHA256:original", "second.invalid:22": "SHA256:second"}
     # Releases up to 0.5.1 refuse the whole file unless every value is a string.
@@ -69,7 +69,7 @@ def test_host_keys_in_an_unknown_format_are_refused_and_never_overwritten(tmp_pa
     message = ("SSH host keys were saved by a newer version of EE. Update EE to use them." if version == "2"
                else "SSH host keys have an invalid format version.")
     with pytest.raises(TransportError, match=message):
-        store.verify_or_pin("second.invalid", 22, "SHA256:second")
+        store.accept("second.invalid", 22, "SHA256:second")
     with pytest.raises(TransportError, match=message):
         store.forget("switch.invalid", 22)
     assert path.read_text("utf-8") == content

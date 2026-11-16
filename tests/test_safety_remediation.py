@@ -20,6 +20,7 @@ from etherlighting_evolved.switch import (
 from etherlighting_evolved.transport import (
     AuthenticationError,
     HostKeyMismatchError,
+    HostKeyUntrustedError,
     SimulatedTransport,
     TransportError,
     UnreachableError,
@@ -125,7 +126,8 @@ class ReconnectSwitch(EtherlightSwitch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("error", [AuthenticationError("fixture"), HostKeyMismatchError("fixture"),
-                                  ValueError("invalid configuration"), RuntimeError("unexpected failure")])
+                                  HostKeyUntrustedError("fixture"), ValueError("invalid configuration"),
+                                  RuntimeError("unexpected failure")])
 async def test_permanent_reconnect_failure_stops_and_requires_manual_connection(error):
     switch = ReconnectSwitch([error])
     engine = Engine(switch, rules=[])
@@ -137,6 +139,17 @@ async def test_permanent_reconnect_failure_stops_and_requires_manual_connection(
         engine.resume()
     await engine._keep_connected()
     assert switch.attempts == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error,message", [
+    (HostKeyMismatchError("fixture"), engine_module.HOST_KEY_CHANGED_ERROR),
+    (HostKeyUntrustedError("fixture"), engine_module.HOST_KEY_UNTRUSTED_ERROR),
+])
+async def test_reconnect_refused_for_a_key_explains_the_next_step(error, message):
+    engine = Engine(ReconnectSwitch([error]), rules=[])
+    await engine._keep_connected()
+    assert engine.error == message
 
 
 @pytest.mark.anyio

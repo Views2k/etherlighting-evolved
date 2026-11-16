@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from ..config import Config
 from ..controller_api import ControllerIntegration
@@ -34,6 +35,23 @@ def scene_envelope(scene: dict) -> dict:
 def token_matches(authorization: str | None, token: str) -> bool:
     # Header values arrive decoded as latin-1, and the configured token is printable ASCII.
     return hmac.compare_digest((authorization or "").encode("latin-1"), f"Bearer {token}".encode("ascii"))
+
+
+def require_local_caller(request: Request) -> None:
+    """Refuse a caller whose address is not a loopback address.
+
+    The desktop app, the browser workspace and the private gateway all reach the service from 127.0.0.1, so this
+    refuses only a remote device that reaches the service directly, as it can when the server listens on the network.
+    """
+    try:
+        address = ipaddress.ip_address(request.client.host) if request.client else None
+    except ValueError:
+        address = None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if address is None or not address.is_loopback:
+        raise HTTPException(403, detail={"code": "local_access_required",
+                                         "message": "Manage this setting on the computer running EE."})
 
 
 def apply(fn, *args, **kwargs):

@@ -16,6 +16,7 @@ from etherlighting_evolved.switch import EtherlightSwitch, PortOutput, parse_mcu
 from etherlighting_evolved.transport import (
     HostKeyMismatchError,
     HostKeyStore,
+    HostKeyUntrustedError,
     SimulatedTransport,
     SSHTransport,
     TransportError,
@@ -292,7 +293,7 @@ async def test_changed_host_key_is_rejected_before_authentication(monkeypatch, t
     import asyncssh
 
     store = HostKeyStore(tmp_path / "keys.json")
-    store.verify_or_pin("switch.invalid", 22, "SHA256:original")
+    store.accept("switch.invalid", 22, "SHA256:original")
     authenticated = False
 
     async def connect(**kwargs):
@@ -307,9 +308,10 @@ async def test_changed_host_key_is_rejected_before_authentication(monkeypatch, t
 
     monkeypatch.setattr(asyncssh, "connect", connect)
     transport = SSHTransport("switch.invalid", host_keys=store, username="test", password="fixture")
-    with pytest.raises(HostKeyMismatchError):
+    with pytest.raises(HostKeyMismatchError) as error:
         await transport.connect()
     assert not authenticated and not transport.connected
+    assert error.value.presented == "SHA256:replacement" and error.value.pinned == "SHA256:original"
 
 
 @pytest.mark.anyio
@@ -415,6 +417,11 @@ async def test_real_ssh_handshake_checks_key_before_password(tmp_path):
     server = await asyncssh.create_server(Server, "127.0.0.1", 0, server_host_keys=[key])
     port = server.get_port()
     try:
+        transport = SSHTransport("127.0.0.1", port=port, host_keys=store, username="fixture", password="fixture")
+        with pytest.raises(HostKeyUntrustedError) as untrusted:
+            await transport.connect()
+        assert authentications == []
+        store.accept("127.0.0.1", port, untrusted.value.presented)
         for _ in range(2):
             transport = SSHTransport("127.0.0.1", port=port, host_keys=store,
                                      username="fixture", password="fixture")
