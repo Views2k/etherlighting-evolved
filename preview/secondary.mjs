@@ -8,7 +8,7 @@ import {createOperationGate, matchingProfile, sceneFingerprint, profileNameError
 import {effectById} from './effect-renderer.mjs';
 import {createProfilePreviews, profileLayoutNotice} from './profile-preview.mjs';
 import {lightingPorts} from './port-topology.mjs';
-import {handoffConfirmation, handoffFans, remoteCanRestore, requestHandoff, renderControllerConnection, renderPrivateAccess, showConnectionStatus} from './connections.mjs';
+import {handoffConfirmation, handoffFans, remoteCanRestore, requestHandoff, renderControllerConnection, renderPrivateAccess, showConnectionStatus, sshHostKey} from './connections.mjs';
 import {switchConnectionStatus} from './workspace-session.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {receiveScheduleClock,scheduleClockLabel} from './schedule-clock.mjs';
@@ -19,6 +19,7 @@ const copy = value => structuredClone(value);
 const portName = (port, sfp) => sfp.includes(port) ? `SFP ${port}` : `Port ${port}`;
 const operatorNames = {is:'is', is_not:'is not', in:'is any of', not_in:'is none of', gt:'is above', ge:'is at least', lt:'is below', le:'is at most', eq:'equals', ne:'does not equal', between:'is between'};
 const styleNames = {solid:'Solid color', pulse:'Gentle pulse', blink:'Blink', flash:'Flash', effect:'Use port effect'};
+const SSH_KEY_HELP='EE saved this key for the switch and sends your password only to a switch that presents it. An SSH client that connects to the switch shows the same fingerprint for the same key type.';
 
 function check(label, checked = false) {
   const wrapper = node('label', 'check'); const control = input('', 'checkbox'); control.checked = checked;
@@ -780,6 +781,9 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
       if (session.simulated) content.append(node('p','muted','Use this preview to review the lighting workspace, effects, rules, and profiles.'));
       else {
         if(session.offline_lighting_error) content.append(node('p','help-text',session.offline_lighting_error));
+        const key=sshHostKey(session);
+        if(key)content.append(node('p','muted',key.keyType?`SSH key fingerprint (${key.keyType})`:'SSH key fingerprint'),
+          node('code','certificate-fingerprint',key.fingerprint),node('p','help-text',SSH_KEY_HELP));
         const handoff=button('Handoff to UniFi',()=>gate.run(async()=>{
           const unsaved=controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges();
           const message=handoffConfirmation(state.fans?.supported===true,unsaved,remote&&!remoteCanRestore(session));
@@ -892,7 +896,7 @@ export function renderHelp(host, {state = {}} = {}) {
       'Settings shows the current connection and which application controls the lighting. Refresh connection checks again. Last session shows the latest shutdown or cleanup result.',
       'Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. On a USW-Pro-XG-8-PoE this also returns the fans to the switch’s own controller. Your saved logins, profiles, lighting setup, and fan modes are kept. EE waits until you connect again.',
       'When you want to resume EE, choose Connect with saved login or enter your SSH login. Choose Retry handoff when it is offered. If EE requests a recovery review, keep it disconnected until that review is complete.',
-      'The first time EE connects to a switch, it shows the switch’s SSH key fingerprint and sends your password only after you accept it. After a switch is reset or replaced, EE shows the saved and new fingerprints. Accept a new key only if you reset or replaced the switch. SSH keys can be accepted only in EE on the computer that runs it. If the key changes while EE is connected, quit EE on that computer and open it again to review the new key.',
+      'The first time EE connects to a switch, it saves the switch’s SSH key. Settings shows its fingerprint while the switch is connected, so you can compare it with what an SSH client shows. If the switch later presents a different key, EE does not send your password and shows the saved and new fingerprints. Accept a new key only if you reset or replaced the switch, and only in EE on the computer that runs it. If the key changes while EE is connected, quit EE on that computer and open it again to review the new key.',
       'Connect UniFi Network in Settings to display device names from your controller. Enter its HTTPS address and account details. If prompted, verify the controller certificate fingerprint before approving it.',
       'To reconnect after restarting or updating EE, check Reconnect controller automatically and choose Connect and save login. For an already connected controller, choose Save reconnect preference. To remove its saved login, clear the checkbox and save the preference.',
       'If applying lighting fails, keep your changes and retry after the connection returns. A saved profile gives you a known setup to apply.',

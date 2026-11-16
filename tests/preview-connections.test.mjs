@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {connectionError, controllerError, controllerReconnectControls, controllerReconnectConfirmed, remoteCanRestore, remoteConnectionError, showSceneChoice, renderSwitchConnection,
-  hostKeyProblem, hostKeyError, canAcceptHostKey, createHostKeyFlow} from '../preview/connections.mjs';
+  hostKeyProblem, hostKeyError, canAcceptHostKey, createHostKeyFlow, sshHostKey} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 
 test('a request refused by private access names the computer running EE', () => {
@@ -13,7 +13,6 @@ test('remote devices are sent to the computer running EE for login problems', ()
   assert.equal(remoteConnectionError({code:'saved_login_unavailable'}), 'The saved login could not be opened. Sign in to the switch on the computer running EE.');
   for (const code of ['auth_failed','authentication_failed'])
     assert.equal(remoteConnectionError({code}), 'The switch rejected the saved login. Sign in to the switch on the computer running EE.');
-  assert.equal(remoteConnectionError({code:'host_key_untrusted'}), 'Accept the switch’s SSH host key on the computer running EE, then connect again.');
   assert.equal(remoteConnectionError({code:'host_key_changed'}), 'The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.');
   assert.equal(remoteConnectionError({code:'unreachable'}), connectionError({code:'unreachable'}));
 });
@@ -355,17 +354,15 @@ test('a recovery error already in the session blocks both lighting choices befor
 
 // SSH host key review
 
-const FP_A='SHA256:'+'A'.repeat(43),FP_B='SHA256:'+'B'.repeat(42)+'A',SWITCH='192.168.1.2';
-const untrustedKey=(changes={})=>({code:'host_key_untrusted',message:'Check this switch’s SSH key fingerprint before signing in.',
-  host:SWITCH,port:22,ssh_host_key:FP_A,ssh_host_key_type:'ssh-ed25519',...changes});
-const changedKey=(changes={})=>({...untrustedKey(),code:'host_key_changed',ssh_host_key:FP_B,ssh_host_key_type:'ssh-rsa',saved_ssh_host_key:FP_A,...changes});
+const FP_A='SHA256:'+'A'.repeat(43),FP_B='SHA256:'+'B'.repeat(42)+'A',FP_C='SHA256:'+'C'.repeat(43),SWITCH='192.168.1.2';
+const changedKey=(changes={})=>({code:'host_key_changed',message:'The switch’s SSH key changed. Check the new fingerprint before signing in.',
+  host:SWITCH,port:22,ssh_host_key:FP_B,ssh_host_key_type:'ssh-rsa',saved_ssh_host_key:FP_A,...changes});
 const refused=detail=>Object.assign(new Error(detail.message||'refused'),{code:detail.code,details:detail});
 const LOCAL_ACCESS={available:false,enabled:false,ready:false,can_configure:true,url:null,can_close_workspace:true,local:true};
 // The private gateway's own answer (preview/private-gateway.mjs), and a read-only answer from the local gateway to a
 // tab that may not change private access or close the workspace.
 const GATEWAY_ACCESS={available:true,enabled:true,ready:true,url:null,can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null};
 const READ_ONLY_LOCAL_ACCESS={...GATEWAY_ACCESS,admin_required:true,local:true};
-const UNTRUSTED_BODY='EE has no saved SSH key for 192.168.1.2. Check that this fingerprint belongs to your switch. EE sends your password only after you accept the key.';
 const CHANGED_BODY='The device at 192.168.1.2 presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.';
 const KEPT_DATA='Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.';
 
@@ -395,72 +392,53 @@ function fillLogin(view,password='fixture-password'){
   view.field('host').value=SWITCH;view.field('username').value='local-user';view.field('password').value=password;
 }
 
-test('host key problems are read only from complete key errors',()=>{
-  const untrusted=hostKeyProblem(untrustedKey());
-  assert.deepEqual({...untrusted,body:undefined},{code:'host_key_untrusted',changed:false,host:SWITCH,port:22,fingerprint:FP_A,savedFingerprint:null,
-    keyType:'ssh-ed25519',key:['host_key_untrusted',SWITCH,22,FP_A,''].join('\n'),address:SWITCH,route:'/api/session/host-key/accept',body:undefined});
-  assert.deepEqual(untrusted.body,{host:SWITCH,port:22,ssh_host_key:FP_A});
-  const changed=hostKeyProblem(refused(changedKey({port:2222,host:' Switch.Example '})));
-  assert.deepEqual(changed.body,{host:' Switch.Example ',port:2222,ssh_host_key:FP_B,saved_ssh_host_key:FP_A});
-  assert.equal(changed.route,'/api/session/host-key/replace');assert.equal(changed.address,'Switch.Example port 2222');
-  assert.equal(changed.key,['host_key_changed','switch.example',2222,FP_B,FP_A].join('\n'));
-  assert.equal(hostKeyProblem(untrustedKey({ssh_host_key_type:'bad type'})).keyType,null);
-  assert.equal(hostKeyProblem(untrustedKey({ssh_host_key_type:undefined})).keyType,null);
-  for(const invalid of [untrustedKey({code:'auth_failed'}),untrustedKey({ssh_host_key:FP_A.slice(0,-1)}),untrustedKey({port:'22'}),
-    untrustedKey({port:true}),untrustedKey({port:0}),untrustedKey({port:22.5}),untrustedKey({host:''}),untrustedKey({host:'   '}),
-    untrustedKey({host:'switch\u0000'}),untrustedKey({host:'a'.repeat(254)}),changedKey({saved_ssh_host_key:undefined}),
-    changedKey({saved_ssh_host_key:FP_B}),untrustedKey({code:'toString'}),untrustedKey({code:'__proto__'}),untrustedKey({code:'constructor'}),
-    Object.create({code:'host_key_untrusted',host:SWITCH,port:22,ssh_host_key:FP_A}),null,'host_key_untrusted'])
+test('changed key problems are read only from complete key errors',()=>{
+  const changed=hostKeyProblem(changedKey());
+  assert.deepEqual({...changed,body:undefined},{host:SWITCH,port:22,fingerprint:FP_B,savedFingerprint:FP_A,keyType:'ssh-rsa',
+    key:[SWITCH,22,FP_B,FP_A].join('\n'),address:SWITCH,body:undefined});
+  assert.deepEqual(changed.body,{host:SWITCH,port:22,ssh_host_key:FP_B,saved_ssh_host_key:FP_A});
+  const other=hostKeyProblem(refused(changedKey({port:2222,host:' Switch.Example '})));
+  assert.deepEqual(other.body,{host:' Switch.Example ',port:2222,ssh_host_key:FP_B,saved_ssh_host_key:FP_A});
+  assert.equal(other.address,'Switch.Example port 2222');assert.equal(other.key,['switch.example',2222,FP_B,FP_A].join('\n'));
+  assert.equal(hostKeyProblem(changedKey({ssh_host_key_type:'bad type'})).keyType,null);
+  assert.equal(hostKeyProblem(changedKey({ssh_host_key_type:undefined})).keyType,null);
+  for(const invalid of [changedKey({code:'host_key_untrusted'}),changedKey({code:'auth_failed'}),changedKey({ssh_host_key:FP_B.slice(0,-1)}),
+    changedKey({port:'22'}),changedKey({port:true}),changedKey({port:0}),changedKey({port:22.5}),changedKey({host:''}),changedKey({host:'   '}),
+    changedKey({host:'switch\u0000'}),changedKey({host:'a'.repeat(254)}),changedKey({saved_ssh_host_key:undefined}),
+    changedKey({saved_ssh_host_key:FP_B}),changedKey({code:'toString'}),changedKey({code:'__proto__'}),changedKey({code:'constructor'}),
+    Object.create(changedKey()),null,'host_key_changed'])
     assert.equal(hostKeyProblem(invalid),null);
 });
 
-test('host key errors and route failures have their own messages',()=>{
-  assert.equal(connectionError({code:'host_key_untrusted'}),'Check the switch’s SSH key before EE sends your password.');
+test('the connected switch key is read only when its fingerprint is valid',()=>{
+  assert.deepEqual(sshHostKey({ssh_host_key:FP_A,ssh_host_key_type:'ssh-ed25519'}),{fingerprint:FP_A,keyType:'ssh-ed25519'});
+  assert.deepEqual(sshHostKey({ssh_host_key:FP_A,ssh_host_key_type:'bad type'}),{fingerprint:FP_A,keyType:null});
+  for(const session of [{ssh_host_key:'SHA256:short'},{ssh_host_key:null},{},null])assert.equal(sshHostKey(session),null);
+});
+
+test('host key errors and replacement failures have their own messages',()=>{
   assert.equal(connectionError({code:'host_key_changed'}),'The switch’s SSH key changed. Review the saved and new keys before connecting.');
-  const changed=hostKeyProblem(changedKey()),untrusted=hostKeyProblem(untrustedKey());
-  assert.equal(hostKeyError({code:'host_key_stale'},changed),'The switch’s SSH key changed again. Connect again to review the current key.');
-  assert.match(hostKeyError({code:'host_key_in_use'},changed),/^EE still has an open switch connection\./);
-  assert.match(hostKeyError({code:'switch_playback_reserved'},changed),/^EE is handing lighting back to UniFi/);
-  assert.equal(hostKeyError({code:'host_key_save_failed'},changed),'The SSH key could not be saved. Check the EE data folder and try again.');
-  assert.equal(hostKeyError({code:'invalid_credentials'},changed),'The SSH key details were not accepted. Connect again to review the key.');
-  assert.equal(hostKeyError({code:'local_access_required'},changed),'A new key can be accepted only in EE on the computer that runs it.');
-  assert.equal(hostKeyError({code:'local_access_required'},untrusted),'This key can be accepted only in EE on the computer that runs it.');
+  assert.equal(connectionError({code:'host_key_untrusted'}),'The connection could not be confirmed. Check the details and try again.');
+  assert.equal(remoteConnectionError({code:'host_key_untrusted'}),connectionError({code:'host_key_untrusted'}));
+  assert.equal(hostKeyError({code:'host_key_stale'}),'The switch’s SSH key changed again. Connect again to review the current key.');
+  assert.match(hostKeyError({code:'host_key_in_use'}),/^EE still has an open switch connection\./);
+  assert.match(hostKeyError({code:'switch_playback_reserved'}),/^EE is handing lighting back to UniFi/);
+  assert.equal(hostKeyError({code:'host_key_save_failed'}),'The SSH key could not be saved. Check the EE data folder and try again.');
+  assert.equal(hostKeyError({code:'invalid_credentials'}),'The SSH key details were not accepted. Connect again to review the key.');
+  assert.equal(hostKeyError({code:'local_access_required'}),'A new key can be accepted only in EE on the computer that runs it.');
   for(const error of [{code:'toString'},new Error('timeout'),undefined])
-    assert.equal(hostKeyError(error,changed),'The SSH key could not be saved. Connect again to review the key.');
+    assert.equal(hostKeyError(error),'The SSH key could not be saved. Connect again to review the key.');
   for(const value of [LOCAL_ACCESS,READ_ONLY_LOCAL_ACCESS])assert.equal(canAcceptHostKey(value),true);
   for(const value of [GATEWAY_ACCESS,{can_close_workspace:true},{local:false},{local:'true'},{},null])assert.equal(canAcceptHostKey(value),false);
 });
 
-test('a login refused for an unknown SSH key sends the password only after Accept key',async context=>{
-  const dom=connectionDom(context);let entered=0,logins=0;
-  const {request,sent}=keyRequest(async path=>{
-    if(path==='/api/session/login'&&++logins===1)throw refused(untrustedKey());
-    return path==='/api/session/login'?completeScene():{logged_in:false,error:null};
-  });
+test('a login to a new switch sends the password at once and opens no key review',async context=>{
+  const dom=connectionDom(context);let entered=0;
+  const {request,sent}=keyRequest(async path=>path==='/api/session/login'?completeScene():{logged_in:false,error:null});
   const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{entered++;}});dom.after(cleanup);
-  const view=keyView(dom);fillLogin(view,'  fixture password  ');
-  view.submit();await flush();
-  assert.equal(view.review.hidden,false);assert.equal(dom.byClass(dom.host,'host-key-review').length,1);
-  assert.equal(view.review.getAttribute('role'),'group');assert.equal(view.review.getAttribute('aria-labelledby'),view.heading().id);
-  assert.equal(view.heading().textContent,'Check the switch’s SSH key');assert.equal(dom.doc.activeElement,view.heading());
-  assert.deepEqual(view.texts(),[UNTRUSTED_BODY,'Fingerprint (ssh-ed25519)','An SSH client that has connected to this switch shows the same fingerprint for the same key type.']);
-  assert.deepEqual(view.fingerprints(),[FP_A]);
-  assert.ok(view.shown('Accept key')&&view.shown('Cancel'));assert.equal(view.status(),'The switch’s SSH key needs your approval.');
+  const view=keyView(dom);fillLogin(view);view.submit();await flush();await flush();
   assert.deepEqual(sent.map(([path])=>path),['/api/session/login']);
-  dom.button('Accept key').click();await flush();await flush();
-  assert.deepEqual(sent.slice(1),[['/api/session/host-key/accept','POST',{host:SWITCH,port:22,ssh_host_key:FP_A}],
-    ['/api/session/login','POST',{host:SWITCH,username:'local-user',password:'  fixture password  ',port:22,remember:false}]]);
   assert.equal(entered,1);assert.equal(view.review.hidden,true);
-});
-
-test('Cancel closes the key review without a request and keeps the password',async context=>{
-  const dom=connectionDom(context);
-  const {request,sent}=keyRequest(async()=>{throw refused(untrustedKey());});
-  const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
-  const view=keyView(dom);fillLogin(view);view.submit();await flush();
-  dom.button('Cancel').click();
-  assert.equal(view.review.hidden,true);assert.equal(sent.length,1);
-  assert.equal(view.status(),'Connection canceled. EE did not send your password.');assert.equal(view.field('password').value,'fixture-password');
 });
 
 test('a changed key is replaced on this computer with both fingerprints echoed back',async context=>{
@@ -470,17 +448,39 @@ test('a changed key is replaced on this computer with both fingerprints echoed b
     return path==='/api/session/login'?completeScene():{logged_in:false,error:null};
   });
   const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
-  const view=keyView(dom);fillLogin(view);view.submit();await flush();
+  const view=keyView(dom);fillLogin(view,'  fixture password  ');view.submit();await flush();
+  assert.equal(view.review.hidden,false);assert.equal(dom.byClass(dom.host,'host-key-review').length,1);
+  assert.equal(view.review.getAttribute('role'),'group');assert.equal(view.review.getAttribute('aria-labelledby'),view.heading().id);
   assert.equal(view.heading().textContent,'The switch’s SSH key changed');assert.match(view.review.className,/\berror\b/);
+  assert.equal(dom.doc.activeElement,view.heading());
   assert.deepEqual(view.texts(),[CHANGED_BODY,KEPT_DATA,'Saved key','New key (ssh-rsa)']);
   assert.deepEqual(view.fingerprints(),[FP_A,FP_B]);
   assert.ok(view.shown('Accept new key')&&view.shown('Keep saved key'));
   assert.doesNotMatch(dom.button('Accept new key').className,/primary/);
   assert.equal(view.status(),'The switch’s SSH key changed. Review it before connecting.');
+  assert.deepEqual(sent.map(([path])=>path),['/api/session/login']);
   dom.button('Accept new key').click();await flush();await flush();
-  assert.deepEqual(sent.slice(1).map(([path,,body])=>[path,body?.password??body]),[
-    ['/api/session/host-key/replace',{host:SWITCH,port:22,saved_ssh_host_key:FP_A,ssh_host_key:FP_B}],
-    ['/api/session/login','fixture-password']]);
+  assert.deepEqual(sent.slice(1),[['/api/session/host-key/replace','POST',{host:SWITCH,port:22,ssh_host_key:FP_B,saved_ssh_host_key:FP_A}],
+    ['/api/session/login','POST',{host:SWITCH,username:'local-user',password:'  fixture password  ',port:22,remember:false}]]);
+  assert.equal(view.review.hidden,true);
+});
+
+test('a changed key without a known type is labeled New key',async context=>{
+  const dom=connectionDom(context);
+  const {request}=keyRequest(async()=>{throw refused(changedKey({ssh_host_key_type:null,port:2222}));});
+  const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
+  const view=keyView(dom);fillLogin(view);view.field('port').value='2222';view.submit();await flush();
+  assert.deepEqual(view.texts(),[CHANGED_BODY.replace('192.168.1.2','192.168.1.2 port 2222'),KEPT_DATA,'Saved key','New key']);
+});
+
+test('Keep saved key closes the review without a request and keeps the password',async context=>{
+  const dom=connectionDom(context);
+  const {request,sent}=keyRequest(async()=>{throw refused(changedKey());});
+  const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
+  const view=keyView(dom);fillLogin(view);view.submit();await flush();
+  dom.button('Keep saved key').click();
+  assert.equal(view.review.hidden,true);assert.equal(sent.length,1);
+  assert.equal(view.status(),'EE kept the saved SSH key and did not connect.');assert.equal(view.field('password').value,'fixture-password');
 });
 
 test('a local tab without administration access can still accept a key',async context=>{
@@ -498,18 +498,15 @@ test('a local tab without administration access can still accept a key',async co
 
 for(const [name,access] of [['from the private gateway',GATEWAY_ACCESS],['local false',{...LOCAL_ACCESS,local:false}],
   ['refused',()=>{throw refused({code:'local_access_required'});}]]){
-  test(`a remote client reviews a key but cannot accept it (private access ${name})`,async context=>{
+  test(`a remote client reviews a changed key but cannot accept it (private access ${name})`,async context=>{
     const dom=connectionDom(context);
-    for(const [error,accept,dismiss,note,kept] of [
-      [changedKey(),'Accept new key','Keep saved key','A new key can be accepted only in EE on the computer that runs it.','EE kept the saved SSH key and did not connect.'],
-      [untrustedKey(),'Accept key','Cancel','This key can be accepted only in EE on the computer that runs it.','Connection canceled. EE did not send your password.']]){
-      const {request,sent}=keyRequest(async()=>{throw refused(error);},access);
-      const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});
-      const view=keyView(dom);fillLogin(view);view.submit();await flush();
-      assert.equal(view.shown(accept),false);assert.equal(view.texts().at(-1),note);
-      dom.button(accept).click();assert.equal(sent.length,1);
-      dom.button(dismiss).click();assert.equal(view.status(),kept);cleanup();
-    }
+    const {request,sent}=keyRequest(async()=>{throw refused(changedKey());},access);
+    const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
+    const view=keyView(dom);fillLogin(view);view.submit();await flush();
+    assert.equal(view.shown('Accept new key'),false);
+    assert.equal(view.texts().at(-1),'A new key can be accepted only in EE on the computer that runs it.');
+    dom.button('Accept new key').click();assert.equal(sent.length,1);
+    dom.button('Keep saved key').click();assert.equal(view.status(),'EE kept the saved SSH key and did not connect.');
   });
 }
 
@@ -520,19 +517,19 @@ for(const code of ['local_access_required','switch_playback_reserved']){
     const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
     const view=keyView(dom);fillLogin(view);view.submit();await flush();
     dom.button('Accept new key').click();await flush();
-    assert.equal(view.review.hidden,true);assert.equal(view.status(),hostKeyError({code},hostKeyProblem(changedKey())));
+    assert.equal(view.review.hidden,true);assert.equal(view.status(),hostKeyError({code}));
     assert.deepEqual(sent.map(([path])=>path),['/api/session/login','/api/session/host-key/replace']);
     cleanup.update({logged_in:false,has_saved_login:false,error:changedKey()});
     assert.equal(view.review.hidden,true);
   });
 }
 
-test('an accept answered with host_key_stale closes the review without a retry',async context=>{
+test('a replacement answered with host_key_stale closes the review without a retry',async context=>{
   const dom=connectionDom(context);
-  const {request,sent}=keyRequest(async path=>{throw refused(path==='/api/session/login'?untrustedKey():{code:'host_key_stale'});});
+  const {request,sent}=keyRequest(async path=>{throw refused(path==='/api/session/login'?changedKey():{code:'host_key_stale'});});
   const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
   const view=keyView(dom);fillLogin(view);view.submit();await flush();
-  dom.button('Accept key').click();await flush();
+  dom.button('Accept new key').click();await flush();
   assert.equal(view.review.hidden,true);assert.equal(view.status(),'The switch’s SSH key changed again. Connect again to review the current key.');
   assert.equal(sent.length,2);
 });
@@ -553,11 +550,11 @@ test('a key accepted for the address in the form asks the user to connect',async
   const {request,sent}=keyRequest(async()=>({logged_in:false,error:null}));
   const cleanup=renderSwitchConnection(dom.host,{request,session:{logged_in:false},onConnected:async()=>{}});dom.after(cleanup);
   const view=keyView(dom);view.field('host').value=SWITCH;
-  cleanup.update({logged_in:false,error:untrustedKey()});await flush();
+  cleanup.update({logged_in:false,error:changedKey()});await flush();
   assert.equal(view.review.hidden,false);
-  dom.button('Accept key').click();await flush();
+  dom.button('Accept new key').click();await flush();
   assert.equal(view.status(),'SSH key saved. Connect to the switch to continue.');
-  assert.equal(dom.doc.activeElement,view.field('password'));assert.deepEqual(sent.map(([path])=>path),['/api/session/host-key/accept']);
+  assert.equal(dom.doc.activeElement,view.field('password'));assert.deepEqual(sent.map(([path])=>path),['/api/session/host-key/replace']);
 });
 
 test('a key problem for another address opens no review',async context=>{
@@ -576,7 +573,7 @@ test('a key problem for another address opens no review',async context=>{
 test('editing the address or port closes the review and other edits keep it',async context=>{
   const dom=connectionDom(context);
   const {request}=keyRequest(async()=>completeScene());
-  const session={logged_in:false,has_saved_login:true,remembered:{host:SWITCH,port:22},error:untrustedKey()};
+  const session={logged_in:false,has_saved_login:true,remembered:{host:SWITCH,port:22},error:changedKey()};
   const cleanup=renderSwitchConnection(dom.host,{request,session,restoreSaved:async()=>completeScene(),onConnected:async()=>{}});dom.after(cleanup);
   const view=keyView(dom);await flush();
   cleanup.update({...session,remembered:{host:SWITCH,port:22,username:'local-user'}});assert.equal(view.review.hidden,false);
@@ -589,23 +586,26 @@ test('editing the address or port closes the review and other edits keep it',asy
 test('repeated session updates keep one review, its retry and its status',async context=>{
   const dom=connectionDom(context);let logins=0;
   const {request,sent}=keyRequest(async path=>{
-    if(path==='/api/session/login'&&++logins===1)throw refused(untrustedKey());
+    if(path==='/api/session/login'&&++logins===1)throw refused(changedKey());
     return path==='/api/session/login'?completeScene():{logged_in:false,error:null};
   });
   const cleanup=renderSwitchConnection(dom.host,{request,restoreSaved:async()=>{throw new Error('the login form must be retried');},onConnected:async()=>{}});dom.after(cleanup);
   const view=keyView(dom);fillLogin(view);view.submit();await flush();
-  for(let index=0;index<3;index++)cleanup.update({logged_in:false,has_saved_login:true,remembered:{host:SWITCH,port:22},error:untrustedKey()});
-  assert.equal(dom.byClass(dom.host,'host-key-review').length,1);assert.equal(view.status(),'The switch’s SSH key needs your approval.');
-  dom.button('Accept key').click();await flush();await flush();
-  assert.deepEqual(sent.map(([path])=>path),['/api/session/login','/api/session/host-key/accept','/api/session/login']);
+  for(let index=0;index<3;index++)cleanup.update({logged_in:false,has_saved_login:true,remembered:{host:SWITCH,port:22},error:changedKey()});
+  assert.equal(dom.byClass(dom.host,'host-key-review').length,1);assert.equal(view.status(),'The switch’s SSH key changed. Review it before connecting.');
+  dom.button('Accept new key').click();await flush();await flush();
+  assert.deepEqual(sent.map(([path])=>path),['/api/session/login','/api/session/host-key/replace','/api/session/login']);
 });
 
-test('a key error with an invalid fingerprint shows the connection message only',async context=>{
+test('a key error with an invalid fingerprint, or the removed first-use error, shows the connection message only',async context=>{
   const dom=connectionDom(context);
-  const {request}=keyRequest(async()=>{throw refused(untrustedKey({ssh_host_key:FP_A.slice(0,-1)}));});
-  const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
-  const view=keyView(dom);fillLogin(view);view.submit();await flush();
-  assert.equal(view.review.hidden,true);assert.equal(view.status(),'Check the switch’s SSH key before EE sends your password.');
+  for(const [error,text] of [[changedKey({ssh_host_key:FP_B.slice(0,-1)}),'The switch’s SSH key changed. Review the saved and new keys before connecting.'],
+    [{...changedKey(),code:'host_key_untrusted',saved_ssh_host_key:undefined},'The connection could not be confirmed. Check the details and try again.']]){
+    const {request}=keyRequest(async()=>{throw refused(error);});
+    const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});
+    const view=keyView(dom);fillLogin(view);view.submit();await flush();
+    assert.equal(view.review.hidden,true);assert.equal(view.status(),text);cleanup();
+  }
 });
 
 test('the host key flow opens reviews by their source and remembers a dismissed key',()=>{
@@ -618,7 +618,7 @@ test('the host key flow opens reviews by their source and remembers a dismissed 
   assert.equal(flow.fromSession(saved,form,idle),true);flow.dismiss();
   assert.equal(flow.fromSession(saved,form,idle),false);assert.equal(flow.open,null);
   flow.fromAction(hostKeyProblem(changedKey()),'form');assert.ok(flow.open);flow.close();
-  const unsaved={logged_in:false,error:untrustedKey()};
+  const unsaved={logged_in:false,error:changedKey({ssh_host_key:FP_C})};
   assert.equal(flow.fromSession(unsaved,form,idle),false);
   assert.equal(flow.fromSession(unsaved,{host:'other.example',port:22},idle),false);
   assert.equal(flow.fromSession(unsaved,{host:SWITCH,port:2222},idle),false);

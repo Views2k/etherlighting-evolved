@@ -13,7 +13,6 @@ const messages = {
   missing_host: 'Enter the switch address.',
   missing_username: 'Enter your SSH username.',
   bad_port: 'Enter an SSH port between 1 and 65535.',
-  host_key_untrusted: 'Check the switch’s SSH key before EE sends your password.',
   host_key_changed: 'The switch’s SSH key changed. Review the saved and new keys before connecting.',
   unreachable: 'The switch could not be reached. Check its address and that SSH is enabled.',
   connect_failed: 'The switch could not be reached. Check its address and that SSH is enabled.',
@@ -52,14 +51,13 @@ export function connectionError(error, fallback = 'The connection could not be c
   return message || (error?.name === 'TimeoutError' ? messages.timeout : fallback);
 }
 
-// A device on Tailscale cannot sign in, change the saved login or accept a host key, so these point to the computer
-// running EE.
+// A device on Tailscale cannot sign in, change the saved login or accept a changed host key, so these point to the
+// computer running EE.
 const remoteMessages = {
   no_saved_login: 'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.',
   saved_login_unavailable: 'The saved login could not be opened. Sign in to the switch on the computer running EE.',
   auth_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
   authentication_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
-  host_key_untrusted: 'Accept the switch’s SSH host key on the computer running EE, then connect again.',
   host_key_changed: 'The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.',
 };
 
@@ -75,32 +73,34 @@ export function remoteCanRestore(session) {
 const SSH_FINGERPRINT=/^SHA256:[A-Za-z0-9+/]{43}$/;
 const SSH_KEY_TYPE=/^[A-Za-z0-9@._+-]{1,64}$/;
 
-// A host_key_untrusted or host_key_changed error whose fields can be shown and echoed back, or null. It reads a
-// refused request's details or a session error object.
+const sshKeyType=type=>typeof type==='string'&&SSH_KEY_TYPE.test(type)?type:null;
+const HOST_KEY_ROUTE='/api/session/host-key/replace';
+
+// A host_key_changed error whose fields can be shown and echoed back, or null. It reads a refused request's details
+// or a session error object.
 export function hostKeyProblem(error) {
   const source=error?.details&&typeof error.details==='object'?error.details:error;
   if(!source||typeof source!=='object'||!Object.hasOwn(source,'code'))return null;
-  const {code,host,port,ssh_host_key:fingerprint,saved_ssh_host_key:saved,ssh_host_key_type:type}=source;
-  if(code!=='host_key_untrusted'&&code!=='host_key_changed')return null;
+  const {code,host,port,ssh_host_key:fingerprint,saved_ssh_host_key:savedFingerprint,ssh_host_key_type:type}=source;
+  if(code!=='host_key_changed')return null;
   if(typeof host!=='string'||host.length>253||!host.trim()||/[\u0000-\u001f\u007f]/.test(host))return null;
   if(typeof port!=='number'||!Number.isInteger(port)||port<1||port>65535)return null;
   if(typeof fingerprint!=='string'||!SSH_FINGERPRINT.test(fingerprint))return null;
-  const changed=code==='host_key_changed';
-  if(changed&&(typeof saved!=='string'||!SSH_FINGERPRINT.test(saved)||saved===fingerprint))return null;
-  const savedFingerprint=changed?saved:null,name=host.trim();
-  const body={host,port,ssh_host_key:fingerprint};
-  if(changed)body.saved_ssh_host_key=savedFingerprint;
-  return {code,changed,host,port,fingerprint,savedFingerprint,
-    keyType:typeof type==='string'&&SSH_KEY_TYPE.test(type)?type:null,
-    key:[code,name.toLowerCase(),port,fingerprint,savedFingerprint??''].join('\n'),
+  if(typeof savedFingerprint!=='string'||!SSH_FINGERPRINT.test(savedFingerprint)||savedFingerprint===fingerprint)return null;
+  const name=host.trim();
+  return {host,port,fingerprint,savedFingerprint,keyType:sshKeyType(type),
+    key:[name.toLowerCase(),port,fingerprint,savedFingerprint].join('\n'),
     address:port===22?name:`${name} port ${port}`,
-    route:changed?'/api/session/host-key/replace':'/api/session/host-key/accept',body};
+    body:{host,port,ssh_host_key:fingerprint,saved_ssh_host_key:savedFingerprint}};
 }
 
-function hostKeyRemoteNote(problem) {
-  return problem?.changed===false?'This key can be accepted only in EE on the computer that runs it.'
-    :'A new key can be accepted only in EE on the computer that runs it.';
+// The SSH key of the connected switch from GET /api/session, or null when there is none or it is not valid.
+export function sshHostKey(session) {
+  const fingerprint=session?.ssh_host_key;
+  return typeof fingerprint==='string'&&SSH_FINGERPRINT.test(fingerprint)?{fingerprint,keyType:sshKeyType(session.ssh_host_key_type)}:null;
 }
+
+const HOST_KEY_REMOTE_NOTE='A new key can be accepted only in EE on the computer that runs it.';
 
 const hostKeyMessages = {
   host_key_stale: 'The switch’s SSH key changed again. Connect again to review the current key.',
@@ -110,10 +110,10 @@ const hostKeyMessages = {
   invalid_credentials: 'The SSH key details were not accepted. Connect again to review the key.',
 };
 
-// The message for a refused accept or replace request about `problem`.
-export function hostKeyError(error, problem) {
+// The message for a refused key replacement.
+export function hostKeyError(error) {
   const code=typeof error?.code==='string'?error.code:'';
-  if(code==='local_access_required')return hostKeyRemoteNote(problem);
+  if(code==='local_access_required')return HOST_KEY_REMOTE_NOTE;
   return Object.hasOwn(hostKeyMessages,code)?hostKeyMessages[code]:'The SSH key could not be saved. Connect again to review the key.';
 }
 
@@ -673,13 +673,18 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   if (restoreSaved) actions.append(restore);
   if (!remote) actions.append(forget);
   actions.append(retryHandoff);
-  const review = node('div', 'connection-trust notice host-key-review'); review.hidden = true; review.setAttribute('role', 'group');
-  const reviewHeading = node('h2'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${crypto.randomUUID()}`;
+  const review = node('div', 'connection-trust notice error host-key-review'); review.hidden = true; review.setAttribute('role', 'group');
+  const reviewHeading = node('h2', '', 'The switch’s SSH key changed'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${crypto.randomUUID()}`;
   review.setAttribute('aria-labelledby', reviewHeading.id);
-  const reviewNote = node('p', 'help-text');
-  const acceptKey = button('Accept key', 'primary'), dismissKey = button('Cancel', 'quiet');
+  const reviewAddress = node('p'), newKeyLabel = node('p', 'muted');
+  const savedFingerprint = node('code', 'certificate-fingerprint'), newFingerprint = node('code', 'certificate-fingerprint');
+  const reviewNote = node('p', 'help-text', HOST_KEY_REMOTE_NOTE);
+  const acceptKey = button('Accept new key'), dismissKey = button('Keep saved key', 'quiet');
   const reviewActions = node('div', 'connection-actions'); reviewActions.append(acceptKey, dismissKey);
-  // A remote device cannot accept a key, so it shows the remote message for a key problem instead of the review.
+  review.append(reviewHeading, reviewAddress,
+    node('p', '', 'Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.'),
+    node('p', 'muted', 'Saved key'), savedFingerprint, newKeyLabel, newFingerprint, reviewNote, reviewActions);
+  // A remote device cannot accept a changed key, so it shows the remote message instead of the review.
   if (remote) form.append(actions);
   else form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, review, actions);
   const primary = remote ? restore : submit, failure = remote ? remoteConnectionError : connectionError;
@@ -731,32 +736,15 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     try { await onConnected(resolved); }
     catch { if (active) { completed = false; status('The switch connected, but the workspace could not load. Try opening it again.', true); } }
   };
-  // The panel's content is built once per problem, so the focused heading stays in place when the access check ends.
   const showReview = () => {
     const problem = keys.open;
     keyAccess = null;
-    const paragraph = (text, className = '') => node('p', className, text);
-    const fingerprint = value => node('code', 'certificate-fingerprint', value);
-    const type = problem.keyType ? ` (${problem.keyType})` : '';
-    reviewHeading.textContent = problem.changed ? 'The switch’s SSH key changed' : 'Check the switch’s SSH key';
-    const content = problem.changed ? [
-      paragraph(`The device at ${problem.address} presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.`),
-      paragraph('Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.'),
-      paragraph('Saved key', 'muted'), fingerprint(problem.savedFingerprint),
-      paragraph(`New key${type}`, 'muted'), fingerprint(problem.fingerprint),
-    ] : [
-      paragraph(`EE has no saved SSH key for ${problem.address}. Check that this fingerprint belongs to your switch. EE sends your password only after you accept the key.`),
-      paragraph(`Fingerprint${type}`, 'muted'), fingerprint(problem.fingerprint),
-      paragraph('An SSH client that has connected to this switch shows the same fingerprint for the same key type.', 'help-text'),
-    ];
-    reviewNote.textContent = hostKeyRemoteNote(problem);
-    acceptKey.textContent = problem.changed ? 'Accept new key' : 'Accept key';
-    acceptKey.classList.toggle('primary', !problem.changed);
-    dismissKey.textContent = problem.changed ? 'Keep saved key' : 'Cancel';
-    review.classList.toggle('error', problem.changed);
-    review.replaceChildren(reviewHeading, ...content, reviewNote, reviewActions);
+    reviewAddress.textContent = `The device at ${problem.address} presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.`;
+    savedFingerprint.textContent = problem.savedFingerprint;
+    newKeyLabel.textContent = problem.keyType ? `New key (${problem.keyType})` : 'New key';
+    newFingerprint.textContent = problem.fingerprint;
     showKeyAccess(); review.hidden = false;
-    status(problem.changed ? 'The switch’s SSH key changed. Review it before connecting.' : 'The switch’s SSH key needs your approval.', problem.changed);
+    status('The switch’s SSH key changed. Review it before connecting.', true);
     reviewHeading.focus({preventScroll:true});
     void request('/api/private-access').catch(() => null).then(result => {
       if (!active || keys.open !== problem) return;
@@ -818,13 +806,13 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     let accepted = false;
     pending = (async () => {
       try {
-        const result = await request(problem.route, 'POST', problem.body);
+        const result = await request(HOST_KEY_ROUTE, 'POST', problem.body);
         if (!active) return;
         if (result && typeof result === 'object') saved = result;
         keys.close(); review.hidden = true; accepted = true;
       } catch (error) {
         if (!active) return;
-        keys.dismiss(); review.hidden = true; status(hostKeyError(error, problem), true);
+        keys.dismiss(); review.hidden = true; status(hostKeyError(error), true);
       } finally {
         pending = null; savingKey = false; setBusy();
         if (active) { if (accepted) runRetry(retry); else submit.focus({preventScroll:true}); }
@@ -833,10 +821,9 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     setBusy();
   });
   dismissKey.addEventListener('click', () => {
-    const problem = keys.open;
-    if (!active || pending || !problem) return;
+    if (!active || pending || !keys.open) return;
     keys.dismiss(); review.hidden = true;
-    status(problem.changed ? 'EE kept the saved SSH key and did not connect.' : 'Connection canceled. EE did not send your password.');
+    status('EE kept the saved SSH key and did not connect.');
     submit.focus({preventScroll:true});
   });
   form.addEventListener('input', event => {

@@ -374,14 +374,14 @@ public sealed class ConnectPage : Page
     {
         var problem = hostKeys.Open!;
         review.Show(problem);
-        Status(problem.Changed ? "The switch’s SSH key changed. Review it before connecting." : "The switch’s SSH key needs your approval.", problem.Changed);
+        Status("The switch’s SSH key changed. Review it before connecting.", true);
         _ = CheckKeyAccess(problem);
     }
 
     async Task CheckKeyAccess(HostKeyProblem problem)
     {
         JsonNode? access;
-        // A client that cannot read private access counts as remote: it shows the key but cannot accept it.
+        // A client that cannot read private access counts as remote: it shows the keys but cannot accept the new one.
         try { access = await request("/api/private-access", "GET", null); }
         catch (Exception) { access = null; }
         if (active && ReferenceEquals(hostKeys.Open, problem)) review.SetCanAccept(CanAcceptHostKey(access));
@@ -400,7 +400,7 @@ public sealed class ConnectPage : Page
         {
             try
             {
-                var result = await request(problem.Route, "POST", problem.Body());
+                var result = await request(HostKeyProblem.Route, "POST", problem.Body());
                 if (!active) return;
                 if (result is JsonObject session) saved = session;
                 hostKeys.Close();
@@ -412,7 +412,7 @@ public sealed class ConnectPage : Page
                 if (!active) return;
                 hostKeys.Dismiss();
                 review.Hide();
-                Status(HostKeyError(error, problem), true);
+                Status(HostKeyError(error), true);
             }
             finally
             {
@@ -448,7 +448,7 @@ public sealed class ConnectPage : Page
         if (!active || pending is not null || !ReferenceEquals(hostKeys.Open, problem)) return;
         hostKeys.Dismiss();
         review.Hide();
-        Status(problem.Changed ? "EE kept the saved SSH key and did not connect." : "Connection canceled. EE did not send your password.");
+        Status("EE kept the saved SSH key and did not connect.");
         submit.Focus();
     }
 

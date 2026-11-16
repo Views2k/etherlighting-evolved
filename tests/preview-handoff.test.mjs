@@ -123,6 +123,19 @@ test('local Settings keeps saved-login removal, UniFi Network setup and the plai
   assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),false);
 });
 
+test('Settings shows the connected switch SSH key fingerprint as text that can be selected',async context=>{
+  const fingerprint='SHA256:'+'A'.repeat(43);
+  // The UniFi Network panel has its own, empty certificate fingerprint.
+  const codes=ui=>ui.findAll(ui.host,node=>node.tagName==='code'&&node.textContent).map(node=>[node.className,node.textContent]);
+  const labels=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.textContent?.startsWith('SSH key fingerprint')).map(node=>node.textContent);
+  const ui=await settings(context,{first:{...connected(),ssh_host_key:fingerprint,ssh_host_key_type:'ssh-ed25519'}});
+  assert.deepEqual(codes(ui),[['certificate-fingerprint',fingerprint]]);assert.deepEqual(labels(ui),['SSH key fingerprint (ssh-ed25519)']);
+  for(const first of [connected(),{...connected(),ssh_host_key:'SHA256:short'},{...connected(),simulated:true,ssh_host_key:fingerprint}]){
+    const other=await settings(context,{first});
+    assert.deepEqual(codes(other),[]);assert.deepEqual(labels(other),[]);
+  }
+});
+
 test('canceling a remote scene choice points to the login saved on the host',async context=>{
   for(const [hasSaved,text] of [[false,'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.'],
     [true,'Lighting setup canceled. Choose Connect with saved login to try again.']]){

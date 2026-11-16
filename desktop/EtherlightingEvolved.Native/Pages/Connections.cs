@@ -16,50 +16,47 @@ public sealed record HandoffResult(JsonObject? Session, string? Error);
 public readonly record struct ReconnectControls(bool Supported, bool Checked, bool Changed, bool CanApply);
 
 /// <summary>
-/// A host_key_untrusted or host_key_changed error whose fields can be shown and echoed back (hostKeyProblem).
-/// <see cref="Host"/> is kept exactly as the service sent it, for the request body.
+/// A host_key_changed error whose fields can be shown and echoed back (hostKeyProblem). <see cref="Host"/> is kept
+/// exactly as the service sent it, for the request body.
 /// </summary>
-public sealed record HostKeyProblem(string Code, string Host, int Port, string Fingerprint, string? KeyType, string? SavedFingerprint)
+public sealed record HostKeyProblem(string Host, int Port, string Fingerprint, string? KeyType, string SavedFingerprint)
 {
-    static readonly Regex FingerprintPattern = new(@"^SHA256:[A-Za-z0-9+/]{43}\z");
-    static readonly Regex KeyTypePattern = new(@"^[A-Za-z0-9@._+-]{1,64}\z");
+    internal static readonly Regex FingerprintPattern = new(@"^SHA256:[A-Za-z0-9+/]{43}\z");
+    internal static readonly Regex KeyTypePattern = new(@"^[A-Za-z0-9@._+-]{1,64}\z");
 
-    public bool Changed => Code == "host_key_changed";
+    public const string Route = "/api/session/host-key/replace";
 
     /// <summary>Identifies the problem, so a dismissed one does not open again from the next session update.</summary>
-    public string Key => string.Join('\n', Code, Host.Trim().ToLowerInvariant(), Port.ToString(CultureInfo.InvariantCulture), Fingerprint, SavedFingerprint ?? "");
+    public string Key => string.Join('\n', Host.Trim().ToLowerInvariant(), Port.ToString(CultureInfo.InvariantCulture), Fingerprint, SavedFingerprint);
 
     public string Address => Port == 22 ? Host.Trim() : $"{Host.Trim()} port {Port.ToString(CultureInfo.InvariantCulture)}";
 
-    public string Route => Changed ? "/api/session/host-key/replace" : "/api/session/host-key/accept";
-
-    public JsonObject Body()
-    {
-        var body = new JsonObject { ["host"] = Host, ["port"] = Port, ["ssh_host_key"] = Fingerprint };
-        if (Changed) body["saved_ssh_host_key"] = SavedFingerprint;
-        return body;
-    }
+    public JsonObject Body() => new() { ["host"] = Host, ["port"] = Port, ["ssh_host_key"] = Fingerprint, ["saved_ssh_host_key"] = SavedFingerprint };
 
     /// <summary>The problem in a refused request's details or a session error object, or null when a field is not valid.</summary>
     public static HostKeyProblem? From(JsonNode? node)
     {
         if ((node.At("details") as JsonObject ?? node) is not JsonObject source) return null;
-        var code = source.Str("code");
-        if (code is not ("host_key_untrusted" or "host_key_changed")) return null;
+        if (source.Str("code") != "host_key_changed") return null;
         if (source.Str("host") is not { Length: >= 1 and <= 253 } host || host.Trim().Length == 0 || host.Any(c => c < ' ' || c == '\u007f')) return null;
         if (source["port"] is not JsonValue portValue || portValue.GetValueKind() != JsonValueKind.Number
             || Core.Model.Js.Num(portValue) is not { } port || !Core.Model.Js.IsInteger(port) || port is < 1 or > 65535)
             return null;
         if (source.Str("ssh_host_key") is not { } fingerprint || !FingerprintPattern.IsMatch(fingerprint)) return null;
-        string? saved = null;
-        if (code == "host_key_changed")
-        {
-            saved = source.Str("saved_ssh_host_key");
-            if (saved is null || !FingerprintPattern.IsMatch(saved) || saved == fingerprint) return null;
-        }
+        if (source.Str("saved_ssh_host_key") is not { } saved || !FingerprintPattern.IsMatch(saved) || saved == fingerprint) return null;
         var type = source.Str("ssh_host_key_type") is { } name && KeyTypePattern.IsMatch(name) ? name : null;
-        return new HostKeyProblem(code, host, (int)port, fingerprint, type, saved);
+        return new HostKeyProblem(host, (int)port, fingerprint, type, saved);
     }
+}
+
+/// <summary>The SSH key of the connected switch as GET /api/session reports it (sshHostKey).</summary>
+public sealed record SshHostKey(string Fingerprint, string? KeyType)
+{
+    /// <summary>The key in a session, or null when there is none or its fingerprint is not valid.</summary>
+    public static SshHostKey? From(JsonNode? session) =>
+        session.Str("ssh_host_key") is { } fingerprint && HostKeyProblem.FingerprintPattern.IsMatch(fingerprint)
+            ? new SshHostKey(fingerprint, session.Str("ssh_host_key_type") is { } name && HostKeyProblem.KeyTypePattern.IsMatch(name) ? name : null)
+            : null;
 }
 
 /// <summary>What runs after an SSH key is saved: nothing but a prompt to connect, the login form again, or the saved login.</summary>
@@ -140,7 +137,6 @@ public static class Connections
         ["missing_host"] = "Enter the switch address.",
         ["missing_username"] = "Enter your SSH username.",
         ["bad_port"] = "Enter an SSH port between 1 and 65535.",
-        ["host_key_untrusted"] = "Check the switch’s SSH key before EE sends your password.",
         ["host_key_changed"] = "The switch’s SSH key changed. Review the saved and new keys before connecting.",
         ["unreachable"] = "The switch could not be reached. Check its address and that SSH is enabled.",
         ["connect_failed"] = "The switch could not be reached. Check its address and that SSH is enabled.",
@@ -172,7 +168,7 @@ public static class Connections
 
     /// <summary>
     /// Messages for a window that reaches the workspace through private access (remoteMessages). Such a window cannot
-    /// sign in, change the saved login or accept a host key, so these point to the computer running EE.
+    /// sign in, change the saved login or accept a changed host key, so these point to the computer running EE.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> RemoteMessages = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -180,7 +176,6 @@ public static class Connections
         ["saved_login_unavailable"] = "The saved login could not be opened. Sign in to the switch on the computer running EE.",
         ["auth_failed"] = "The switch rejected the saved login. Sign in to the switch on the computer running EE.",
         ["authentication_failed"] = "The switch rejected the saved login. Sign in to the switch on the computer running EE.",
-        ["host_key_untrusted"] = "Accept the switch’s SSH host key on the computer running EE, then connect again.",
         ["host_key_changed"] = "The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.",
     };
 
@@ -224,16 +219,14 @@ public static class Connections
         ["invalid_credentials"] = "The SSH key details were not accepted. Connect again to review the key.",
     };
 
-    /// <summary>The note shown when this client cannot accept the key, because it is not on the computer running EE.</summary>
-    public static string HostKeyRemoteNote(HostKeyProblem? problem) => problem is { Changed: false }
-        ? "This key can be accepted only in EE on the computer that runs it."
-        : "A new key can be accepted only in EE on the computer that runs it.";
+    /// <summary>The note shown when this client cannot accept the new key, because it is not on the computer running EE.</summary>
+    public const string HostKeyRemoteNote = "A new key can be accepted only in EE on the computer that runs it.";
 
-    /// <summary>The message for a refused accept or replace request about <paramref name="problem"/> (hostKeyError).</summary>
-    public static string HostKeyError(Exception? error, HostKeyProblem? problem)
+    /// <summary>The message for a refused key replacement (hostKeyError).</summary>
+    public static string HostKeyError(Exception? error)
     {
         var code = (error as ApiException)?.Code;
-        if (code == "local_access_required") return HostKeyRemoteNote(problem);
+        if (code == "local_access_required") return HostKeyRemoteNote;
         return code is not null && HostKeyMessages.TryGetValue(code, out var message) ? message : "The SSH key could not be saved. Connect again to review the key.";
     }
 

@@ -29,6 +29,7 @@ static class Registration
 public sealed class SettingsPage : Page
 {
     const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
+    const string SshKeyHelp = "EE saved this key for the switch and sends your password only to a switch that presents it. An SSH client that connects to the switch shows the same fingerprint for the same key type.";
     readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly Core.Model.OperationGate gate;
     readonly Notice notice = new();
@@ -230,6 +231,12 @@ public sealed class SettingsPage : Page
             else
             {
                 if (session.At("offline_lighting_error") is { } offline && offline.Truthy()) content.Children.Add(UiKit.HelpText(offline.Str() ?? offline.ToJsonString()));
+                if (SshHostKey.From(session) is { } key)
+                {
+                    content.Children.Add(SettingsKit.P(key.KeyType is { } type ? $"SSH key fingerprint ({type})" : "SSH key fingerprint", "muted"));
+                    content.Children.Add(Connect.HostKeyReview.Fingerprint(key.Fingerprint));
+                    content.Children.Add(UiKit.HelpText(SshKeyHelp));
+                }
                 Button? handoff = null;
                 handoff = SettingsKit.ActionButton("Handoff to UniFi", () => gate.Run(async () =>
                 {
