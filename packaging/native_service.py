@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -98,6 +99,10 @@ def report_failure(error: BaseException) -> None:
                     "function": frame.name[:80], "line": frame.lineno}
                    for frame in frames],
     }
+    # EE's own errors carry a fixed identifier such as "output_recovery_required".
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+        record["code"] = code
     print(json.dumps(record), file=sys.stderr, flush=True)
 
 
@@ -113,6 +118,10 @@ class DiagnosticLogHandler(logging.Handler):
             "frames": [{"module": Path(record.pathname).name[:80],
                         "function": record.funcName[:80], "line": record.lineno}],
         }
+        # EE logs with %-style templates, so the template without its arguments names no host, switch or user.
+        # Other libraries may pass messages that are already formatted.
+        if logger.startswith("etherlighting_evolved") and isinstance(record.msg, str):
+            diagnostic["template"] = record.msg[:120]
         print(json.dumps(diagnostic), file=sys.stderr, flush=True)
 
 
