@@ -195,7 +195,7 @@ def test_corrupt_history_is_preserved_and_reported_without_rejecting_scene(tmp_p
     assert engine.history_error
     assert json.loads(path.read_text()) == {"invalid": True}
     with pytest.raises(HistoryStoreError):
-        engine._history.list("device")
+        engine.history[0].list("device")
 
 
 def test_history_restoration_uses_scene_guard_and_no_identify_saved(config):

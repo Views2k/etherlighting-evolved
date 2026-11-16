@@ -120,10 +120,10 @@ def attach_routes(api, engine, apply, restore_scene):
         return {"identify": current.identify_state()}
 
     def history_for(current):
-        if current._history is None or current._history_binding is None:
+        if current.history is None:
             raise HTTPException(409, detail={"code": "history_unavailable", "message":
                                             "Lighting history is unavailable for this session."})
-        return current._history, current._history_binding
+        return current.history
 
     @api.get("/history")
     async def history():
