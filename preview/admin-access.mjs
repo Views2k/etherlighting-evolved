@@ -12,7 +12,8 @@ export const ADMIN_MESSAGES=Object.freeze({
   link:'This request needs the administration key of the EE app that started this workspace.',
   closing:'EE is closing. Open EE again to use the browser workspace.',
 });
-// The cookie goes only to the routes that read it, so it stays out of every other request to 127.0.0.1.
+// The cookie is sent only with requests under the two administration paths. Browsers do not separate cookies by
+// port, so another server on 127.0.0.1 still receives it for requests under those paths.
 const COOKIE_PATHS=['/api/private-access','/api/workspace/close'];
 const SECRET=/^[0-9a-f]{64}$/;
 
