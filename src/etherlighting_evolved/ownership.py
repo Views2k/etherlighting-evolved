@@ -8,6 +8,7 @@ import os
 import secrets
 from pathlib import Path
 
+from .storage import atomic_write_json
 from .transport import TransportError
 
 
@@ -66,17 +67,9 @@ class OutputJournal:
         lease = OutputLease(paths, device_identity(fingerprint))
         lease.uncertain = True
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
             for path in paths:
-                temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-                try:
-                    with temporary.open("x", encoding="utf-8") as stream:
-                        json.dump({"version": 1, "owner": lease.owner}, stream)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, path)
-                finally:
-                    temporary.unlink(missing_ok=True)
+                # The same compact record that `claim` and `player_lease` create.
+                atomic_write_json(path, {"version": 1, "owner": lease.owner}, indent=None, sort_keys=False)
         except OSError as exc:
             raise OutputOwnershipError("Could not take over the retained lighting record. Keep EE output stopped "
                                        "and review the ownership records before retrying.") from exc

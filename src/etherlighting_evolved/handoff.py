@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
-import secrets
 from pathlib import Path
+
+from .storage import atomic_write_json
 
 
 class HandoffIntent:
@@ -32,14 +32,5 @@ class HandoffIntent:
     def save(self, state: str) -> None:
         if state not in {"none", "pending", "complete", "unconfirmed"}:
             raise ValueError("invalid connection intent")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f".{self.path.name}.{secrets.token_hex(8)}.tmp")
-        try:
-            with temporary.open("x", encoding="utf-8") as stream:
-                json.dump({"version": 1, "state": state}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(self.path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        atomic_write_json(self.path, {"version": 1, "state": state})
         self.state = state

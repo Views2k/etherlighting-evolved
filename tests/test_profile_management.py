@@ -50,7 +50,7 @@ def test_failed_atomic_replace_preserves_source(tmp_path, monkeypatch):
     def fail_replace(*args):
         raise OSError("Disk unavailable")
 
-    monkeypatch.setattr("etherlighting_evolved.presets.os.replace", fail_replace)
+    monkeypatch.setattr("etherlighting_evolved.storage.os.replace", fail_replace)
     with pytest.raises(OSError):
         store.rename("A", "B")
     assert path.read_bytes() == original

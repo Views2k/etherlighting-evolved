@@ -13,7 +13,7 @@ from threading import RLock
 from fastapi import Body, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .presets import write_json
+from .storage import atomic_write_json as write_json
 
 
 class HistoryStoreError(OSError):

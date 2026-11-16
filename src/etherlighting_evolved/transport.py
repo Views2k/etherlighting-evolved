@@ -16,6 +16,8 @@ import secrets
 import time
 from abc import ABC, abstractmethod
 
+from .storage import atomic_write_json
+
 SSH_CLOSE_TIMEOUT = 3.0
 READ_PORTS = "swctrl port show"
 READ_POE = "swctrl poe show 2>/dev/null"
@@ -73,10 +75,7 @@ class HostKeyStore:
         return data
 
     def _save(self, data: dict[str, str]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
-        temporary.replace(self.path)
+        atomic_write_json(self.path, data)
 
     @staticmethod
     def _key(host: str, port: int) -> str:

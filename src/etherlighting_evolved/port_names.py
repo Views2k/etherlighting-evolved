@@ -12,7 +12,7 @@ from threading import RLock
 
 from fastapi import Body, HTTPException
 
-from .presets import write_json
+from .storage import atomic_write_json as write_json
 
 
 def validate_names(names):

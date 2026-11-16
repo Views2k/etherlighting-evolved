@@ -15,14 +15,13 @@ import contextlib
 import hashlib
 import json
 import math
-import os
-import secrets
 import shlex
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .storage import atomic_write_json
 from .transport import TransportError
 
 MODES = ("switch", "curve", "manual", "target")
@@ -167,16 +166,7 @@ class FanStore:
             return FanSettings()
 
     def save(self, settings: FanSettings) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix("." + secrets.token_hex(8) + ".tmp")
-        try:
-            with temp.open("x", encoding="utf-8") as stream:
-                json.dump(asdict(settings), stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temp.replace(self.path)
-        finally:
-            temp.unlink(missing_ok=True)
+        atomic_write_json(self.path, asdict(settings))
 
 
 def _number(value: str) -> int | None:

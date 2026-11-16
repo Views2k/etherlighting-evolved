@@ -22,8 +22,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .engine import NotFound
-from .presets import PresetStore, ProfileStoreError, write_json
+from .presets import PresetStore, ProfileStoreError
 from .rules import WEEKDAYS, finite_number, parse_clock
+from .storage import atomic_write_json as write_json
 from .transport import TransportError
 
 log = logging.getLogger(__name__)

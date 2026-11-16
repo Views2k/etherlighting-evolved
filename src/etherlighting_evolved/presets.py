@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 import uuid
 from pathlib import Path
 from threading import RLock
+
+from .storage import atomic_write_json as write_json
+from .storage import read_json
 
 _NAME_RE = re.compile(r"^[\w .\-]{1,64}$")
 
@@ -17,22 +19,6 @@ class ProfileStoreError(OSError):
     """Existing profiles could not be read or a change could not be saved."""
 
     code = "profile_storage_unavailable"
-
-
-def write_json(path: Path, data) -> None:
-    """Write through a temporary file so a crash never leaves half a file behind."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
-    os.replace(tmp, path)
-
-
-def read_json(path: Path, default):
-    try:
-        data = json.loads(Path(path).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
-    return data if isinstance(data, type(default)) else default
 
 
 class ProfileConflict(ValueError):
