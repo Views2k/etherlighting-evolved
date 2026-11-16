@@ -176,6 +176,7 @@ internal static class RemoteAccessChecks
                 "remote Settings leaves out Forget saved switch login and UniFi Network setup");
             check(Find(settings, "Handoff to UniFi") is not null && Texts(settings).Contains(Scope),
                 "remote Settings keeps Handoff to UniFi and says what devices on Tailscale can use");
+            check(Find(settings, "Open in browser") is null, "a window connected by address does not offer Open in browser");
         }
         finally { settings.Leave(); }
 

@@ -94,6 +94,8 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
     Workspace? workspace;
     ServiceHost? service;
     TrayIcon? tray;
+    NativeMenu? menu;
+    NativeMenuItem? browserItem;
     bool quitting, forceArmed;
     Task? quitTask;
 
@@ -134,7 +136,11 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         try
         {
             if (options.Url is { } url) address = url;
-            else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host) address = await StartServiceAsync(host);
+            else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host)
+            {
+                address = await StartServiceAsync(host);
+                AddBrowserItem();
+            }
             else address = Locations.SavedWorkspace ?? DefaultAddress;
         }
         catch (Exception)
@@ -184,6 +190,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
             if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is not { } host)
                 throw new InvalidOperationException("The EE service files are missing. Reinstall EE.");
             var address = await StartServiceAsync(host);
+            AddBrowserItem();
             if (quitting) return;
             if (previous is not null)
             {
@@ -204,10 +211,13 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
 
     void Open(Uri address)
     {
-        workspace = new Workspace(address);
+        // The administration key goes only to the gateway this program started, never to an address chosen by hand.
+        var owned = service is { Address: { } started } && started == address;
+        workspace = new Workspace(address, owned ? service!.AdminKey : null);
         window = new ShellWindow(new AppShell(workspace)
         {
             OpenWorkspaceAddress = service is null && options.Shot is null ? ChangeWorkspace : null,
+            OpenInBrowser = owned && OperatingSystem.IsWindows() && options.Shot is null ? OpenInBrowserAsync : null,
         });
         if (options.Shot is not null)
         {
@@ -243,7 +253,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
 
     void CreateTray()
     {
-        var menu = new NativeMenu();
+        menu = new NativeMenu();
         var openItem = new NativeMenuItem("Open Etherlighting Evolved");
         openItem.Click += (_, _) => ShowWindow();
         menu.Add(openItem);
@@ -271,6 +281,41 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         tray = new TrayIcon { Icon = icon, ToolTipText = "Etherlighting Evolved", Menu = menu, IsVisible = true };
         tray.Clicked += (_, _) => ShowWindow();
         TrayIcon.SetIcons(app, [tray]);
+    }
+
+    /// <summary>
+    /// Adds Open in browser below Open Etherlighting Evolved once this program's own service has started. The link
+    /// it opens is put on the browser's command line, which other users can read on macOS and Linux, and their
+    /// gateways only run the demo, so the item is Windows only.
+    /// </summary>
+    void AddBrowserItem()
+    {
+        if (!OperatingSystem.IsWindows() || menu is null || browserItem is not null) return;
+        browserItem = new NativeMenuItem("Open in browser");
+        browserItem.Click += (_, _) => _ = OpenInBrowserAsync();
+        menu.Items.Insert(1, browserItem);
+    }
+
+    /// <summary>Opens the workspace in the default browser with a single-use administration link.</summary>
+    async Task OpenInBrowserAsync()
+    {
+        if (quitting || window is null) return;
+        if (service is not { Running: true } running)
+        {
+            ShowWindow();
+            window.Shell.Notify("The EE service is not running. Quit EE and open it again.", true);
+            return;
+        }
+        bool opened;
+        try { opened = await window.Launcher.LaunchUriAsync(await running.BrowserLinkAsync(CancellationToken.None)); }
+        catch (Exception error)
+        {
+            DesktopLog.Error("open_in_browser_failed", error);
+            opened = false;
+        }
+        if (opened || quitting) return;
+        ShowWindow();
+        window?.Shell.Notify("The browser workspace could not be opened. Try again.", true);
     }
 
     void ShowWindow()

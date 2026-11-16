@@ -31,6 +31,8 @@ if (args.Contains("--service") || args.Contains("--quit-check"))
 }
 
 await WorkspaceTransportChecks.Run(Check);
+AdminAccessChecks.Contracts(Check);
+await AdminAccessChecks.Transport(Check);
 if (args.Contains("--transport-check")) return failures.Count == 0 ? 0 : 1;
 
 ModelChecks.Run(Check);
@@ -42,6 +44,7 @@ AppBuilder.Configure<App>()
 ShellChecks.Contracts(Check);
 ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
+AdminAccessChecks.Panel(Check);
 RemoteAccessChecks.Contracts(Check);
 
 // Palettes read from the browser workspace's themes.css

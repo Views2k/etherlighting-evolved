@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using EtherlightingEvolved.Native.Core;
 
 namespace EtherlightingEvolved.Native;
@@ -26,6 +27,12 @@ public sealed class ServiceHost
     }
 
     public Uri? Address { get; private set; }
+
+    /// <summary>
+    /// The gateway's administration key for this launch, which Tailscale settings, closing the workspace and browser
+    /// links require. Only this program and the gateway it started hold it.
+    /// </summary>
+    internal string? AdminKey { get; private set; }
 
     public bool Running => process is { HasExited: false };
 
@@ -117,6 +124,9 @@ public sealed class ServiceHost
         start.Environment["EE_WORKSPACE_DATA_DIR"] = dataDirectory;
         // The gateway closes the workspace, confirming lighting cleanup, when this program's handle to it closes.
         start.Environment["EE_DESKTOP_HOST"] = "1";
+        // Other Windows users cannot read this process's environment without administrator rights.
+        AdminKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        start.Environment["EE_ADMIN_KEY"] = AdminKey;
         var ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"Browser preview: http://127.0.0.1:{port}";
         var running = new Process { StartInfo = start, EnableRaisingEvents = true };
@@ -190,7 +200,8 @@ public sealed class ServiceHost
             if (Address is { } address)
             {
                 using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
-                using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
+                using var request = AdminRequest(address, "/api/workspace/close");
+                using var response = await http.SendAsync(request, deadline.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode) return false;
                 var body = Json.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
                 if (body.Bool("closed") != true) return false;
@@ -200,6 +211,32 @@ public sealed class ServiceHost
             return running.ExitCode == 0;
         }
         catch (Exception) { return false; }
+    }
+
+    HttpRequestMessage AdminRequest(Uri address, string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, new Uri(address, path));
+        request.Headers.Add("X-EE-Admin-Key", AdminKey);
+        return request;
+    }
+
+    /// <summary>The browser address that redeems an administration code, or null for anything but a code.</summary>
+    internal static Uri? BrowserLink(Uri address, string? code) =>
+        code is { Length: 64 } && code.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f') ? new Uri(address, "/?admin_code=" + code) : null;
+
+    /// <summary>
+    /// A single-use address that opens the workspace in a browser with the same Tailscale and close controls as this
+    /// window. The gateway lets the code expire after two minutes.
+    /// </summary>
+    internal async Task<Uri> BrowserLinkAsync(CancellationToken token)
+    {
+        if (!Running || Address is not { } address || AdminKey is null) throw new InvalidOperationException("The EE service is not running.");
+        using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
+        using var request = AdminRequest(address, "/api/workspace/admin-link");
+        using var response = await http.SendAsync(request, token).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var code = Json.Parse(await response.Content.ReadAsStringAsync(token).ConfigureAwait(false)).Str("code");
+        return BrowserLink(address, code) ?? throw new InvalidOperationException("The EE service returned an invalid browser link.");
     }
 
     async Task<bool> EndAsync()

@@ -80,8 +80,10 @@ internal static class ShellChecks
             try
             {
                 var address = await host.StartAsync(deadline.Token);
-                await using var workspace = new Workspace(address);
-                var shell = new AppShell(workspace);
+                // As AppHost does for the service it started: the window holds the key and offers Open in browser.
+                await using var workspace = new Workspace(address, host.AdminKey);
+                var browserOpens = 0;
+                var shell = new AppShell(workspace) { OpenInBrowser = () => { browserOpens++; return Task.CompletedTask; } };
                 var window = new ShellWindow(shell);
                 try
                 {
@@ -104,7 +106,10 @@ internal static class ShellChecks
                     await shell.MoveHistory(1);
                     check(shell.PageName == "Help", "Forward restores the page");
                     check(!Texts(shell.CurrentPage!).Any(text => text.Contains("Refreshing the page")), "Help does not mention a page refresh");
-                    await SettingsAboutChecks(shell, check);
+                    await SettingsAboutChecks(shell, check, () => browserOpens);
+                    check((await workspace.Request("/api/private-access")).Bool("admin_required") == false, "the window of the service this program started has administration access");
+                    await using (var byAddress = new Workspace(address))
+                        check((await byAddress.Request("/api/private-access")).Bool("admin_required") == true, "a window connected by address has no administration access");
                     await shell.SetHidden(true);
                     await shell.SetHidden(false);
                     var clock = Stopwatch.StartNew();
@@ -136,6 +141,7 @@ internal static class ShellChecks
                     window.AllowClose = true;
                     window.Close();
                 }
+                await AdminAccessChecks.Service(host, address, check);
                 check(await host.StopAsync(), "the desktop test stops its simulator cleanly");
             }
             finally { deadline.Cancel(); }
@@ -145,7 +151,7 @@ internal static class ShellChecks
     static List<string> Texts(Control root) =>
         root.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "").ToList();
 
-    static async Task SettingsAboutChecks(AppShell shell, Action<bool, string> check)
+    static async Task SettingsAboutChecks(AppShell shell, Action<bool, string> check, Func<int> browserOpens)
     {
         var workspace = shell.Workspace;
         await shell.Navigate("Settings");
@@ -155,6 +161,11 @@ internal static class ShellChecks
         var buttons = settings.GetLogicalDescendants().OfType<Button>().Select(button => button.Content as string).ToList();
         check(texts.Contains("Ethernet ports") && !buttons.Contains("Close web session"),
             "Settings returns the switch through Handoff or Quit, without the browser's close button");
+        var openInBrowser = settings.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Content, "Open in browser"));
+        openInBrowser?.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        var waited = Stopwatch.StartNew();
+        while (browserOpens() == 0 && waited.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(25);
+        check(openInBrowser is not null && browserOpens() == 1, "Settings offers Open in browser for the service this program started");
         var service = workspace.About.Str("version");
         check(service is { Length: > 0 } && texts.Contains(service) && texts.Contains(App.Version) && buttons.Contains("Releases"),
             "About shows the app and service versions and a Releases link");

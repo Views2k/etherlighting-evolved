@@ -183,6 +183,10 @@ public sealed class PrivateAccessPanel : UserControl
 
     bool CanConfigure() => current.Bool("can_configure") == true;
 
+    // A local gateway this window did not start, on a live host. The demo gateway reports neither field, so a demo
+    // window keeps the general text.
+    bool Locked() => current.Bool("admin_required") == true && (current.Bool("available") == true || current?["error"] is JsonObject);
+
     bool CanRetry() => current.Bool("enabled") == true && current.Bool("available") == true && current.Bool("ready") != true;
 
     int CurrentPort() => current.Int("https_port") is { } value and >= 1024 and <= 65535 ? value : 8444;
@@ -233,6 +237,7 @@ public sealed class PrivateAccessPanel : UserControl
             apply.Content = pending == "apply" ? "Applying…" : chosen == enabled && CanRetry() ? "Retry private access" : "Apply setting";
             refresh.IsEnabled = !busy;
             readOnly.IsVisible = !(current is null || CanConfigure());
+            readOnly.Text = Locked() ? AdminRequired : "Change this setting in EE on the host computer.";
             var portText = portDraft ?? CurrentPort().ToString(CultureInfo.InvariantCulture);
             if (port.Text != portText) port.Text = portText;
             port.IsEnabled = !(busy || !CanChangePort());
@@ -327,6 +332,16 @@ public sealed class PrivateAccessPanel : UserControl
             if (active)
             {
                 Status(PrivateAccessError(error), true);
+                // The gateway was started by another program, or restarted: show the read-only status.
+                if (error is ApiException { Code: "admin_required" })
+                {
+                    try
+                    {
+                        var latest = await request("/api/private-access", "GET", null);
+                        if (active) Update(latest);
+                    }
+                    catch (Exception) { }
+                }
                 if (current is null) state.Set("Private access unavailable", "is-disconnected");
             }
         }

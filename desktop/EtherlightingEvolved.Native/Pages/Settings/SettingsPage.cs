@@ -283,6 +283,11 @@ public sealed class SettingsPage : Page
                 ("SFP lights", sfp.Count.ToString()),
             ]);
             content.Children.Add(details);
+            if (Shell.OpenInBrowser is { } openInBrowser)
+            {
+                content.Children.Add(UiKit.HelpText("Open this workspace in the default browser on this computer, with the same Mobile & remote access controls."));
+                content.Children.Add(SettingsKit.ActionButton("Open in browser", openInBrowser, "quiet"));
+            }
             Status();
             Dispatcher.UIThread.Post(UpdateSection, DispatcherPriority.Background);
         }

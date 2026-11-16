@@ -350,7 +350,11 @@ public static class Connections
         ["private_access_invalid_configuration"] = "Check the Tailscale configuration on this PC, then refresh status.",
         ["unavailable"] = "Private access could not be checked. Refresh status to try again.",
         ["forbidden"] = "Change this setting in EE on the host computer.",
+        ["admin_required"] = AdminRequired,
     };
+
+    /// <summary>Read-only help in a window connected by address to a local gateway it did not start.</summary>
+    public const string AdminRequired = "Only the EE app that started this workspace, or a browser it opened, can change private access. If EE runs from source, use the administration link it printed when it started.";
 
     public static string PrivateAccessError(string? code) =>
         code is not null && PrivateAccessMessages.TryGetValue(code, out var message) ? message : "Private access could not be confirmed. Refresh status before trying again.";

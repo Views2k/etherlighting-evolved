@@ -20,7 +20,8 @@ public sealed class Workspace : IAsyncDisposable
     long streamRevision, fullStateRevision, nextRefresh, appliedRefresh, bandwidthReceivedAt;
     readonly Dictionary<string, long> frameRevisions = [];
 
-    public Workspace(Uri baseUri) => Api = new EeApi(baseUri);
+    /// <param name="adminKey">The administration key of the gateway this program started, for that address only.</param>
+    public Workspace(Uri baseUri, string? adminKey = null) => Api = new EeApi(baseUri, adminKey);
 
     public EeApi Api { get; }
 
