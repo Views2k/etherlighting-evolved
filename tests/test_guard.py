@@ -74,6 +74,13 @@ def test_api_requests_a_browser_marks_as_cross_site_are_refused(client):
     assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
 
 
+def test_websocket_a_browser_marks_as_cross_site_is_refused(client):
+    headers = {"Host": "127.0.0.1:8787", "Sec-Fetch-Site": "cross-site"}
+    with pytest.raises(WebSocketDisconnect) as closed, client.websocket_connect("/api/ws", headers=headers) as ws:
+        ws.receive_json()
+    assert closed.value.code == 4403
+
+
 def test_cross_site_requests_from_configured_origins_are_allowed(config):
     config.api.cors_origins = ["http://localhost:5173"]
     with TestClient(create_app(config, autoconnect=False), base_url=LOCAL) as c:
