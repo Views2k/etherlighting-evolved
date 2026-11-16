@@ -56,13 +56,28 @@ public sealed class FansPage : Page
     {
         debounce.Tick += (_, _) => { debounce.Stop(); Send(); };
         SizeChanged += (_, e) => { if (e.WidthChanged) Arrange(e.NewSize.Width); };
-        AttachedToVisualTree += (_, _) =>
-        {
-            if (TopLevel.GetTopLevel(this) is { } top) top.PropertyChanged += (_, e) => { if (e.Property == TopLevel.ClientSizeProperty) Fit(); };
-            Fit();
-        };
         Build();
         Update();
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        if (e.Root is TopLevel top) top.PropertyChanged += OnTopLevelChanged;
+        Fit();
+    }
+
+    // The window outlives this page, so its handler is removed when the page leaves. The page no longer reaches the
+    // window through its own tree at this point, only through the event's root.
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        if (e.Root is TopLevel top) top.PropertyChanged -= OnTopLevelChanged;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    void OnTopLevelChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == TopLevel.ClientSizeProperty) Fit();
     }
 
     /// <summary>The page lays itself out: it scrolls in a normal window and fills a rack window without scrolling.</summary>
@@ -358,6 +373,8 @@ public sealed class FansPage : Page
         syncing = true;
         try
         {
+            (manual.Minimum, manual.Maximum) = Limit(fans, "manual_percent", 30, 100);
+            (target.Minimum, target.Maximum) = Limit(fans, "target_celsius", 45, 85);
             // A value being chosen is in chosen, so this never moves a slider out from under a finger or the mouse.
             manual.Value = settings.Int("manual_percent") ?? 60;
             target.Value = settings.Int("target_celsius") ?? 55;
@@ -430,9 +447,13 @@ public sealed class FansPage : Page
 
     static string Title(string? name) => name is { Length: > 0 } ? char.ToUpperInvariant(name[0]) + name[1..] : "";
 
+    /// <summary>The range the service allows for a setting, or this version's range when it sends none.</summary>
+    static (double Min, double Max) Limit(JsonObject fans, string key, double min, double max) =>
+        fans.Arr("limits." + key) is [var low, var high] && low.Num() is { } first && high.Num() is { } last && first < last ? (first, last) : (min, max);
+
     Control CurveLabel(string name, JsonObject? curve)
     {
-        var points = (curve?["points"] as JsonArray)?.Select(p => (T: p?[0]?.GetValue<int>() ?? 0, D: p?[1]?.GetValue<int>() ?? 0)).ToList() ?? [];
+        var points = FanCurveChart.Points(curve);
         var full = points.FirstOrDefault(p => p.D >= 100);
         var text = points.Count < 2 ? "" : $"{points[0].D}% at {points[0].T} °C, 100% at {full.T} °C";
         var body = new StackPanel { Spacing = rack ? 3 : 1, VerticalAlignment = VerticalAlignment.Center };
@@ -452,7 +473,7 @@ public sealed class FansPage : Page
         var change = new JsonObject { ["mode"] = mode };
         if (mode == "manual" && Settings.Str("mode") != "manual"
             && (Fans?["reading"]?["fans"] as JsonArray) is { Count: > 0 } fans && fans[0].Int("percent") is { } percent)
-            change["manual_percent"] = Math.Clamp(percent, 30, 100);
+            change["manual_percent"] = Math.Clamp(percent, (int)manual.Minimum, (int)manual.Maximum);
         return change;
     }
 
@@ -562,6 +583,11 @@ internal sealed class FanCurveChart : Control
     public string? Selected { set { if (selected != value) { selected = value; InvalidateVisual(); } } }
     public Point? Marker { set { if (marker != value) { marker = value; InvalidateVisual(); } } }
 
+    /// <summary>A curve's (temperature, fan speed) points; a point that is not two numbers is skipped.</summary>
+    internal static List<(double T, double D)> Points(JsonNode? curve) =>
+        curve.Arr("points").Where(point => point.Num("0") is not null && point.Num("1") is not null)
+            .Select(point => (point.Num("0")!.Value, point.Num("1")!.Value)).ToList();
+
     public override void Render(DrawingContext context)
     {
         var bounds = new Rect(Bounds.Size).Deflate(new Thickness(34, 8, 8, 20));
@@ -579,13 +605,12 @@ internal sealed class FanCurveChart : Control
         if (curves is not null)
             foreach (var (name, curve) in curves)
             {
-                if ((curve?["points"] as JsonArray) is not { Count: >= 2 } points) continue;
+                if (Points(curve) is not { Count: >= 2 } points) continue;
                 var geometry = new StreamGeometry();
                 using (var g = geometry.Open())
                 {
-                    var first = points[0]!;
-                    g.BeginFigure(Map(MinT, first[1]!.GetValue<int>()), false);
-                    foreach (var point in points) g.LineTo(Map(point![0]!.GetValue<int>(), point[1]!.GetValue<int>()));
+                    g.BeginFigure(Map(MinT, points[0].D), false);
+                    foreach (var (t, d) in points) g.LineTo(Map(t, d));
                     g.LineTo(Map(MaxT, 100));
                     g.EndFigure(false);
                 }

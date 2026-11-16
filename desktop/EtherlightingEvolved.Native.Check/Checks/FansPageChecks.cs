@@ -74,10 +74,26 @@ public static class FansPageChecks
             "moving the speed slider sets both fans");
         check(await Until(() => Task.FromResult(Shows("82%"))), "the fan reading follows the new speed");
 
+        // A later service may send other limits; the sliders follow them.
+        var state = (JsonObject)shell.Workspace.State["fans"]!;
+        var limits = state["limits"]?.DeepClone();
+        state["limits"] = JsonNode.Parse("""{"manual_percent":[40,90],"target_celsius":[50,80]}""");
+        shell.CurrentPage!.Update();
+        check(Visible(40) is { Maximum: 90 }, "the speed slider uses the limits the service reports");
+        state["limits"] = limits;
+        shell.CurrentPage.Update();
+
         check(await Click("Curve") && await Click("High") && await Until(async () => (await Fans()) is { } fans
                                                                     && fans.Str("settings.mode") == "curve" && fans.Str("settings.curve") == "high"),
             "a fan curve is chosen from the four curves");
         check(await Until(() => Task.FromResult(Shows("Following the High curve"))), "the page names the curve the fans follow");
+        var fanState = (JsonObject)shell.Workspace.State["fans"]!;
+        var curves = fanState["curves"]?.DeepClone();
+        fanState["curves"] = JsonNode.Parse("""{"low":{"name":"Low","points":[[35.5,30],"invalid",[70,100]]}}""");
+        shell.CurrentPage!.Update();
+        check(Shows("30% at 35.5 °C, 100% at 70 °C"), "a curve with fractional points is shown and a malformed point is skipped");
+        fanState["curves"] = curves;
+        shell.CurrentPage.Update();
 
         var refused = await shell.Workspace.Api.RequestAsync("/api/fans", "PUT", new JsonObject { ["mode"] = "manual", ["manual_percent"] = 12 }, shell.Workspace.WorkspaceId)
             .ContinueWith(task => task.Exception?.InnerException as ApiException);
@@ -124,6 +140,16 @@ public static class FansPageChecks
                 // tooltips: the tooltip service is off for the window and every control in it.
                 check(!ToolTip.GetServiceEnabled(window) && !ToolTip.GetServiceEnabled(plus),
                     $"a rack-sized window shows no tooltips (window {ToolTip.GetServiceEnabled(window)}, control {ToolTip.GetServiceEnabled(plus)}, client {window.ClientSize})");
+
+                // A page that was left must stop following the window, or every visit stays referenced by it.
+                var left = shell.CurrentPage!;
+                var rackLayout = left.Content;
+                await shell.Navigate("Help");
+                window.Height = height;
+                await Until(() => Task.FromResult(window.ClientSize.Height >= 520));
+                check(window.ClientSize.Height >= 520 && ReferenceEquals(left.Content, rackLayout), "a Fans page that was left no longer follows the window size");
+                window.Height = 400;
+                await shell.Navigate("Fans");
             }
             finally
             {

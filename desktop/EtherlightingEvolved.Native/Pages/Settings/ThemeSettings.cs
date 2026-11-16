@@ -63,16 +63,17 @@ public sealed class ThemeSettings : StackPanel
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        if (TopLevel.GetTopLevel(this) is { } top)
+        if (e.Root is TopLevel top)
         {
             top.PropertyChanged += OnTopLevelChanged;
             Layout(top.ClientSize.Width <= 1000 ? 2 : 3);
         }
     }
 
+    // Detached, the section no longer reaches the window through its own tree, only through the event's root.
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        if (TopLevel.GetTopLevel(this) is { } top) top.PropertyChanged -= OnTopLevelChanged;
+        if (e.Root is TopLevel top) top.PropertyChanged -= OnTopLevelChanged;
         base.OnDetachedFromVisualTree(e);
     }
 
