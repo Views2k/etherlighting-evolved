@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from . import DISCLAIMER, PROJECT_NAME, SHORT_NAME, TAGLINE, __version__
 from .color import NAMED_COLORS, Color
 from .config import Config
+from .controller import ControllerError
 from .controller_api import ControllerIntegration
 from .effects import list_effects
 from .engine import Engine, NotFound
@@ -250,6 +251,14 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
     @app.exception_handler(ScheduleStoreError)
     async def saved_data_storage_error(request, exc):
         return JSONResponse(status_code=409, content={"detail": {"code": exc.code, "message": str(exc)}})
+
+    @app.exception_handler(LoginError)
+    async def login_error(request, exc):
+        return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @app.exception_handler(ControllerError)
+    async def controller_error(request, exc):
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
     app.state.sessions = sessions
     app.state.controller = controller
     app.state.presets = presets
@@ -350,48 +359,30 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.post("/session/login")
     async def login(body: LoginRequest):
-        try:
-            return await sessions.connect(body.host, body.username, body.password, port=body.port,
-                                          remember=body.remember)
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.connect(body.host, body.username, body.password, port=body.port,
+                                      remember=body.remember)
 
     @api.post("/session/scene-choice")
     async def scene_choice(body: SceneChoiceRequest):
-        try:
-            return await sessions.choose_scene(body.connection_id, body.choice, body.legacy_revision)
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.choose_scene(body.connection_id, body.choice, body.legacy_revision)
 
     @api.post("/session/logout")
     async def logout(forget: bool = False):
         require_workspace()
-        try:
-            return await sessions.disconnect(forget=forget)
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.disconnect(forget=forget)
 
     @api.post("/session/restore")
     async def restore_saved_login(resume: bool = False):
-        try:
-            return await sessions.restore_saved(resume=resume)
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.restore_saved(resume=resume)
 
     @api.post("/session/handoff")
     async def handoff_to_unifi():
         require_workspace()
-        try:
-            return await sessions.handoff()
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.handoff()
 
     @api.post("/session/forget")
     async def forget_saved_login():
-        try:
-            return await sessions.forget_saved_login()
-        except LoginError as exc:
-            return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": exc.message}})
+        return await sessions.forget_saved_login()
 
     @api.post("/session/forget-host-key")
     async def forget_host_key(body: HostKeyForget):
