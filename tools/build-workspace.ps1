@@ -60,9 +60,10 @@ if ($LASTEXITCODE) { throw 'Desktop build failed. See desktop-build.log.' }
 if ($LASTEXITCODE) { throw 'Engine packaging failed. See engine-build.log.' }
 New-Item -ItemType Directory -Path (Join-Path $app 'engine') -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $OutputRoot 'engine-dist\EEEngine') | Copy-Item -Destination (Join-Path $app 'engine') -Recurse -Force
+# assets/logo.png is the full-size image that packaging/make_icons.py reads. The app uses the sizes made from it.
 foreach ($folder in @('preview','src','assets')) {
     New-Item -ItemType Directory -Path (Join-Path $app $folder) -Force | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $workspace $folder) -File | Where-Object { $_.Extension -in @('.mjs','.css','.html','.png','.svg','.ico','.webmanifest') -and $_.Name -notlike '*.test.mjs' } | ForEach-Object {
+    Get-ChildItem -LiteralPath (Join-Path $workspace $folder) -File | Where-Object { $_.Extension -in @('.mjs','.css','.html','.png','.svg','.ico','.webmanifest') -and $_.Name -notlike '*.test.mjs' -and "$folder/$($_.Name)" -ne 'assets/logo.png' } | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $app $folder)
     }
 }

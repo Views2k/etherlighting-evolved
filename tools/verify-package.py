@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = runpy.run_path(str(ROOT / 'tools' / 'check-repository.py'))
 # The programs EE installs on the switch, as PyInstaller places the engine's data files.
 RESIDENT = 'engine/_internal/etherlighting_evolved/resident'
+# The full-size image that packaging/make_icons.py reads. The app uses the sizes made from it.
+SOURCE_ONLY = {'assets/logo.png'}
 
 
 def digest(path):
@@ -83,9 +85,10 @@ def verify(root, app, node, installer=None):
     for folder in ['preview', 'src', 'assets']:
         for source in (root / folder).iterdir():
             extensions = {'.mjs', '.css', '.html', '.png', '.svg', '.ico', '.webmanifest'}
-            if not source.is_file() or source.suffix not in extensions or source.name.endswith('.test.mjs'):
-                continue
             relative = source.relative_to(root)
+            if (not source.is_file() or source.suffix not in extensions or source.name.endswith('.test.mjs')
+                    or relative.as_posix() in SOURCE_ONLY):
+                continue
             packaged = app / relative
             if digest(source) != digest(packaged):
                 raise ValueError(f'Packaged asset differs: {relative.as_posix()}')
