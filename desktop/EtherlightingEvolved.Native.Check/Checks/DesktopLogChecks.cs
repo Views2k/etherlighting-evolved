@@ -10,11 +10,11 @@ internal static class DesktopLogChecks
         Directory.CreateDirectory(Locations.AppData);
         File.Delete(DesktopLog.File);
         File.Delete(DesktopLog.File + ".1");
-        try { throw new InvalidOperationException("Could not reach 10.0.0.2 as admin."); }
+        try { throw new InvalidOperationException("Could not reach 192.168.1.2 as admin."); }
         catch (InvalidOperationException error) { DesktopLog.Error("check_error", error); }
         var entry = JsonNode.Parse(File.ReadLines(DesktopLog.File).Last());
         check(entry.Str("event") == "check_error" && entry.Str("build") == App.Version && entry.Str("errors.0.type") == "System.InvalidOperationException"
-              && entry.Arr("errors.0.frames").Count > 0 && !File.ReadAllText(DesktopLog.File).Contains("10.0.0.2"),
+              && entry.Arr("errors.0.frames").Count > 0 && !File.ReadAllText(DesktopLog.File).Contains("192.168.1.2"),
             "desktop.log records an error's type and code locations without its message");
         check(DesktopLog.Clean("GET https://name:secret@host.example.test/api failed") == "GET https://host.example.test/api failed"
               && DesktopLog.Clean(new string('x', 900)).Length == 500,

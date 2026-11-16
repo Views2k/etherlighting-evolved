@@ -29,9 +29,9 @@ internal static class ConnectionsChecks
             "controller errors name the failed step and its upstream status");
 
         check(Connections.PrivateAccessError(JsonValue.Create("forbidden")) == "Change this setting in EE on the host computer."
-              && Connections.PrivateAccessUrl("https://host.tail1.ts.net:8444/") == "https://host.tail1.ts.net:8444"
-              && Connections.PrivateAccessUrl("https://name@host.tail1.ts.net:8444/") is null
-              && Connections.PrivateAccessUrl("https://host.tail1.ts.net/") is null,
+              && Connections.PrivateAccessUrl("https://host.example.ts.net:8444/") == "https://host.example.ts.net:8444"
+              && Connections.PrivateAccessUrl("https://name@host.example.ts.net:8444/") is null
+              && Connections.PrivateAccessUrl("https://host.example.ts.net/") is null,
             "private access reads an error code or object and accepts only a ts.net address with its own port");
 
         var target = new Connections.Target("https://console.example.test", "unifi_os", "api_key", null);
