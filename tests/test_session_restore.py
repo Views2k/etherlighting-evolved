@@ -6,7 +6,7 @@ import pytest
 
 from etherlighting_evolved.credentials import CredentialStoreError
 from etherlighting_evolved.session import LoginError, SessionManager
-from etherlighting_evolved.transport import SimulatedTransport
+from etherlighting_evolved.transport import AuthenticationError, SimulatedTransport, TransportError
 
 FIXTURE = {"host": "switch.invalid", "port": 22, "username": "fixture", "password": "fixture-only"}
 
@@ -93,6 +93,22 @@ async def test_session_info_reports_the_saved_login_without_reading_it_again(con
         assert FIXTURE["password"] not in json.dumps(info)
     finally:
         await sessions.close()
+
+
+@pytest.mark.anyio
+async def test_a_failed_close_after_a_refused_login_keeps_the_login_error(config):
+    class Refused(LocalTransport):
+        async def connect(self):
+            raise AuthenticationError("fixture authentication rejection")
+
+        async def close(self):
+            raise TransportError("fixture close failure")
+
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: Refused())
+    with pytest.raises(LoginError) as error:
+        await sessions.connect(FIXTURE["host"], FIXTURE["username"], FIXTURE["password"])
+    assert error.value.code == "auth_failed" and error.value.status == 401
+    assert sessions.info()["error"]["code"] == "auth_failed"
 
 
 @pytest.mark.anyio
