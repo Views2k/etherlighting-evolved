@@ -100,6 +100,11 @@ internal static class ShellChecks
                     using var image = window.CaptureRenderedFrame();
                     check(image is not null, "the normal workspace renders after the editing workflows");
                     image?.Save(Path.Combine(output, "native-workspace.png"));
+                    shell.ShowServiceStopped("The EE service stopped.", () => Task.CompletedTask);
+                    await Task.Delay(1800);
+                    check(!workspace.Ready && !workspace.StreamOpen && shell.CurrentPage is null
+                          && window.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Try again")),
+                        "a stopped service ends reconnecting and offers to start it again");
                 }
                 finally
                 {

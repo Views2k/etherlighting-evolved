@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -14,6 +15,8 @@ public sealed class ServiceHost
     readonly string node, script, root, dataDirectory;
     readonly bool packaged, demo;
     readonly object stopLock = new();
+    // The service's last output lines, kept for desktop.log when it fails to start or stops on its own.
+    readonly ConcurrentQueue<string> output = new();
     Task<bool>? stopping, forcing;
     Process? process;
     TaskCompletionSource<Uri>? ready;
@@ -26,6 +29,9 @@ public sealed class ServiceHost
     public Uri? Address { get; private set; }
 
     public bool Running => process is { HasExited: false };
+
+    /// <summary>The started service exited without being asked to; the argument is its exit code. Raised on a worker thread.</summary>
+    public event Action<int>? Stopped;
 
     /// <summary>The bundled service next to the application, or the source checkout it was built from.</summary>
     public static ServiceHost? Locate(string appDirectory, bool demo, string dataDirectory)
@@ -67,37 +73,70 @@ public sealed class ServiceHost
         start.Environment["EE_DESKTOP_HOST"] = "1";
         ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"Browser preview: http://127.0.0.1:{port}";
-        process = new Process { StartInfo = start, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, line) =>
+        var running = process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        running.OutputDataReceived += (_, line) =>
         {
             if (line.Data?.Trim() == expected) ready.TrySetResult(new Uri($"http://127.0.0.1:{port}/"));
         };
-        process.ErrorDataReceived += (_, _) => { };
-        process.Exited += (_, _) => ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
-        if (!process.Start()) throw new InvalidOperationException("The EE service could not start.");
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        running.ErrorDataReceived += (_, line) =>
+        {
+            if (line.Data is not { } text) return;
+            output.Enqueue(DesktopLog.Clean(text));
+            while (output.Count > 64) output.TryDequeue(out var _);
+        };
+        running.Exited += async (_, _) =>
+        {
+            ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
+            // Until Address is set StartAsync reports the failure, and a requested stop is expected.
+            lock (stopLock)
+                if (Address is null || stopping is not null || forcing is not null) return;
+            await Drain(running).ConfigureAwait(false);
+            DesktopLog.Service("service_stopped", running.ExitCode, output);
+            Stopped?.Invoke(running.ExitCode);
+        };
+        try { running.Start(); }
+        catch (Exception error)
+        {
+            DesktopLog.Error("service_start_failed", error);
+            throw;
+        }
+        running.BeginOutputReadLine();
+        running.BeginErrorReadLine();
         try
         {
             var address = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
             using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
             var workspace = Json.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
             if (workspace.Bool("live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
-            Address = address;
+            lock (stopLock)
+            {
+                if (running.HasExited) throw new InvalidOperationException("The EE service stopped while starting.");
+                Address = address;
+            }
             return address;
         }
         catch
         {
             // Give the gateway its own cleanup first, in case its engine already connected to the switch.
             try { EndUnstartedService(); } catch (Exception) { }
+            if (running.HasExited) await Drain(running).ConfigureAwait(false);
+            DesktopLog.Service("service_start_failed", running.HasExited ? running.ExitCode : null, output);
             throw;
         }
 
         void EndUnstartedService()
         {
-            try { process?.StandardInput.Close(); } catch (Exception) { }
-            if (process is { } started && !started.WaitForExit(25000)) Kill();
+            try { running.StandardInput.Close(); } catch (Exception) { }
+            if (!running.WaitForExit(25000)) Kill();
         }
+    }
+
+    /// <summary>Waits briefly for the last output lines of a service that has exited.</summary>
+    static async Task Drain(Process ended)
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try { await ended.WaitForExitAsync(limit.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
     }
 
     /// <summary>

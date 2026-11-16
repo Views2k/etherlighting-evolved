@@ -108,11 +108,15 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         Dispatcher.UIThread.UnhandledException += (_, e) =>
         {
             e.Handled = true;
-            Trace.TraceError(e.Exception.ToString());
+            DesktopLog.Error("unhandled_error", e.Exception);
             try { window?.Shell.Notify(e.Exception.Message is { Length: > 0 } message ? message : "Could not confirm the change. Try again.", true); }
             catch (Exception) { }
         };
-        TaskScheduler.UnobservedTaskException += (_, e) => e.SetObserved();
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            DesktopLog.Error("unobserved_task_error", e.Exception);
+            e.SetObserved();
+        };
         desktop.ShutdownRequested += OnShutdownRequested;
         instance.Listen(command => Dispatcher.UIThread.InvokeAsync(() => HandleAsync(command)));
         if (options.Shot is null) CreateTray();
@@ -125,11 +129,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         try
         {
             if (options.Url is { } url) address = url;
-            else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host)
-            {
-                service = host;
-                address = await host.StartAsync(CancellationToken.None);
-            }
+            else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host) address = await StartServiceAsync(host);
             else address = Locations.SavedWorkspace ?? new Uri("http://127.0.0.1:4180/");
         }
         catch (Exception)
@@ -137,7 +137,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
             if (quitting) return;
             if (options.Shot is not null) { desktop.Shutdown(1); return; }
             if (window is null) Open(new Uri("http://127.0.0.1:9/"));
-            window!.Shell.ShowServiceFailure("The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
+            window!.Shell.ShowServiceFailure(StartFailure, RetryServiceAsync);
             return;
         }
         if (quitting) return;
@@ -146,7 +146,27 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         if (options.Shot is { } shot) _ = ShotAsync(shot);
     }
 
-    /// <summary>Starts the bundled service again after a failed start and opens the workspace in a new window.</summary>
+    static string StartFailure => $"The EE service did not start. Close any other EE window, then try again. The cause is recorded in {DesktopLog.File}.";
+
+    Task<Uri> StartServiceAsync(ServiceHost host)
+    {
+        service = host;
+        host.Stopped += _ => Dispatcher.UIThread.Post(() => ServiceStopped(host));
+        return host.StartAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The bundled service ended on its own after it started. Reconnecting cannot succeed, so the window stops
+    /// trying and offers to start the service again. A service replaced by a retry or ended by Quit is ignored.
+    /// </summary>
+    void ServiceStopped(ServiceHost host)
+    {
+        if (quitting || host != service || window is null) return;
+        window.Shell.ShowServiceStopped($"The EE service stopped. Start it again to reconnect to the switch. The cause is recorded in {DesktopLog.File}.",
+            RetryServiceAsync);
+    }
+
+    /// <summary>Starts the bundled service again after it failed or stopped, and opens the workspace in a new window.</summary>
     async Task RetryServiceAsync()
     {
         if (quitting) return;
@@ -156,11 +176,11 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         {
             if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is not { } host)
                 throw new InvalidOperationException("The EE service files are missing. Reinstall EE.");
-            service = host;
-            var address = await host.StartAsync(CancellationToken.None);
+            var address = await StartServiceAsync(host);
             if (quitting) return;
             if (previous is not null)
             {
+                await previous.Shell.Workspace.DisposeAsync();
                 previous.AllowClose = true;
                 previous.Close();
             }
@@ -171,7 +191,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         catch (Exception exception) when (!quitting)
         {
             window?.Shell.ShowServiceFailure(exception is InvalidOperationException { Message: { Length: > 0 } message } && message.Contains("Reinstall")
-                ? message : "The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
+                ? message : StartFailure, RetryServiceAsync);
         }
     }
 

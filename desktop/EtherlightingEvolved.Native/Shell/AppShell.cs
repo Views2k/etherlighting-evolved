@@ -420,6 +420,20 @@ public sealed class AppShell : UserControl
         Status("The EE service is not running", true);
     }
 
+    /// <summary>
+    /// The bundled service stopped after it started: stop reconnecting, keep an unapplied preview for the next start,
+    /// and offer to start the service again.
+    /// </summary>
+    public void ShowServiceStopped(string message, Func<Task> retry)
+    {
+        Workspace.Closing = true;
+        Workspace.StopFrames();
+        Studio.SaveUiState(PageName);
+        ResetWorkspace();
+        UpdateConnection();
+        ShowServiceFailure(message, retry);
+    }
+
     /// <summary>Opens a page (port of navigate). keepDraft skips the unapplied-preview question.</summary>
     public Task Navigate(string target, bool keepDraft = false) => NavigateCore(target, keepDraft, null);
 

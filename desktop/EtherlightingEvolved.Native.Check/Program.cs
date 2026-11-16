@@ -22,6 +22,7 @@ void Check(bool ok, string name)
     if (!ok) failures.Add(name);
 }
 
+DesktopLogChecks.Run(Check);
 if (args.Contains("--service") || args.Contains("--quit-check"))
 {
     ShutdownChecks.Run(output, Check).GetAwaiter().GetResult();

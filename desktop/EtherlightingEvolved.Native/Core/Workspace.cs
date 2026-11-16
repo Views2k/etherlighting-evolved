@@ -365,7 +365,9 @@ public sealed class Workspace : IAsyncDisposable
                 FansChanged?.Invoke();
                 break;
             case "session":
-                if (message["session"] is JsonObject session && SessionMessage is { } handler) _ = handler((JsonObject)session.DeepClone());
+                if (message["session"] is JsonObject session && SessionMessage is { } handler)
+                    _ = handler((JsonObject)session.DeepClone()).ContinueWith(task => DesktopLog.Error("session_error", task.Exception!),
+                        CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
                 break;
         }
     }
