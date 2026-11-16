@@ -102,12 +102,14 @@ Errors include a code for the UI to check and a message that can be shown to the
 | 409 | `host_key_in_use` | EE still has an open switch connection, so a changed SSH key cannot be accepted yet |
 | 409 | `switch_playback_reserved` | Switch playback is saved for a switch; also returned by `POST /api/session/host-key/replace` |
 | 409 | `not_simulated` | Simulator controls require a demo login |
+| 409 | `fans_unconfirmed` | The switch did not confirm a fan change; the previous fan settings are kept |
 | 413 | `too_large` | The request body is larger than 1 MiB |
 | 422 | `invalid_credentials` | The fields of a connection or SSH host-key request were not accepted |
 | 422 | `no_etherlighting` | Logged in, but the device has no Etherlighting |
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
 | 500 | `host_key_save_failed` | The saved SSH keys could not be read or updated |
+| 500 | `fan_settings_save_failed` | The switch runs the new fan setting, but EE could not save it on this PC |
 | 502 | `unreachable`, `ssh_error` | The switch couldn't be reached, or SSH failed |
 
 ### SSH host keys
@@ -177,12 +179,27 @@ with more than 256 rules. In `POST /api/session/login`, a
   "error": null,
   "remembered": { "host": "192.168.1.2", "port": 22, "username": "admin" },
   "has_saved_login": true,
-  "saved_login_error": null
+  "saved_login_error": null,
+  "handoff_state": "none",
+  "handed_off": false,
+  "fan_handoff": null
 }
 ```
 
 `connected` can become false while logged in, for example when the switch reboots. EE reconnects automatically,
 and `error` holds the last connection error until it does.
+
+`fan_handoff` reports what [Handoff to UniFi](#post-apisessionhandoff) did with the fans:
+
+| Value | Meaning |
+|---|---|
+| `"returned"` | During the last handoff EE stopped its fan control on the switch, and the switch confirmed that its own fan controller runs and is not paused. |
+| `"unconfirmed"` | EE could not confirm that the fans are back on the switch's own controller: the switch was not connected or could not be read and EE could not rule out its own fan control, a fan command failed, or the 15-second limit ran out. |
+| `null` | No EE fan control was found, the switch has no fan control, no handoff ran since the last connection, or no switch was connected. |
+
+The value is kept in memory only. A successful connection resets it to `null`. A handoff that retries an
+unconfirmed one after its switch connection was closed keeps the previous value; any other handoff sets it to its
+own result, or to `null` when no switch was connected.
 
 `error` is the engine's message while a switch is logged in and its engine has one; otherwise it is the error
 object of the last failed attempt. That object can be an [SSH host key](#ssh-host-keys) error with its fingerprints,
@@ -293,6 +310,15 @@ request as remote.
 
 Stops EE from controlling the LEDs. The switch's own colors return within about two seconds. `?forget=true` also
 deletes the remembered login.
+
+### `POST /api/session/handoff`
+
+Takes no request body. Stops EE lighting and its switch helpers, returns the fans of a USW-Pro-XG-8-PoE to the
+switch's own controller, closes the SSH connection, and pauses automatic connection until you connect again. Saved
+logins, profiles, the lighting setup and the fan mode saved for each switch are kept. Returns the session. Errors:
+409 `handoff_unconfirmed`, `handoff_save_failed` or `handoff_recovery_required`. The fan step takes at most 15
+seconds; `fan_handoff` reports its result and never changes `handoff_state`. The next connection to the switch
+restores its saved fan mode.
 
 ### `GET /api/about`
 
@@ -966,10 +992,15 @@ available to API clients and applies immediately.
 
 ## Fans
 
-Fan control is available on the USW-Pro-XG-8-PoE. The chosen mode runs on the switch from RAM
-(`/tmp/ee-fan-control-v1`), so it continues while EE is closed. The engine checks it every 5 seconds and starts it
-again after a switch restart. The default mode, `switch`, leaves the fans to the switch's own controller and writes
-nothing to the switch.
+Fan control is available on the USW-Pro-XG-8-PoE. EE saves the fan mode for each switch, keyed by the same switch
+identity as the switch's saved lighting. A switch EE has not controlled before starts in `switch`. The chosen mode
+runs on the switch from RAM (`/tmp/ee-fan-control-v1`), so it continues while EE is closed, after logout and after
+Quit. The engine checks it every 5 seconds and starts it again after a switch restart, and at the next connection
+after a handoff. In `switch` mode
+the check stops EE fan control that has no owner line (started by releases up to 0.5.1) or that was started from
+this PC's saved settings, and returns the fans to the switch's own controller. It leaves other fan control alone;
+see `hold`. EE writes an owner line with each setting it sends (the second line of the controller's `config` file);
+the value is saved with the switch's fan file on this PC and never appears in an API response.
 
 ### `GET /api/fans`
 
@@ -985,26 +1016,46 @@ nothing to the switch.
     "reason": "curve", "config": "curve 45 30 60 50 70 75 80 100", "duty": 55
   },
   "error": null,
+  "settings_error": null,
+  "hold": null,
   "curves": {"low": {"name": "Low", "points": [[55, 30], [70, 40], [80, 60], [90, 100]]}, "...": {}},
   "limits": {"manual_percent": [30, 100], "target_celsius": [45, 85]}
 }
 ```
 
+- `settings` is the mode saved for the connected switch. With `hold` `settings_unreadable` it is `switch`, which is
+  not enforced.
 - `reading` is `null` until the first sample. `port_celsius` is the hottest port chip. `daemon` is the switch's own
-  fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`.
+  fan controller: `running`, `paused` or `absent`. `controller` is EE's: `running`, `stopped` or `absent`. `config`
+  is the setting line of EE's controller, without the owner line.
 - `reason` names what set the speed in the last step: the mode, `guard` when a sensor near the switch's limit raised
   the speed (CPU 85-95 °C, SFP 65-75 °C, port chips 100-110 °C), or `fault` when a sensor could not be read and
   the fans ran at 100%. After six failed reads EE's control stops and the switch's controller resumes.
+- `error` is the last fan command error, or else the message of a setting the switch runs but EE could not save
+  (`fan_settings_save_failed`), or else `null`.
+- `settings_error` says why the saved fan mode is not in use, for example because the fan file for this switch could
+  not be read or was saved by a newer version of EE. It stays until a change is saved.
+- `hold` is `null` when the check follows `settings`. `other_installation`: EE fan control from other settings, for
+  example EE on another PC, is running; EE reads it and leaves it running. `settings_unreadable`: the fan file for
+  this switch could not be read or created; EE does not change running fan control and only cleans up a stopped EE
+  controller. A successful `PUT /api/fans` clears either hold. `hold` is `null` when fan control is not supported.
 
 ### `PUT /api/fans`
 
 Any of `{"mode": "switch" | "curve" | "manual" | "target", "curve": "low" | "medium" | "high" | "max",
 "manual_percent": 30-100, "target_celsius": 45-85}`. Missing fields keep their saved values. The response is the
-`GET /api/fans` object after the switch confirms the change. An invalid value returns `400 invalid`; a change the
-switch does not confirm returns `409 fans_unconfirmed` and keeps the previous settings. A model without fan control
-returns `400 invalid` with the reason. When the switch runs the new setting but EE cannot write it to its data folder,
-the response is `503 fans_not_saved`: the setting stays active until EE restarts, which then uses the previously
-saved setting.
+`GET /api/fans` object after the switch confirms the change. The change is saved for the connected switch only. It
+replaces EE fan control started from other settings, and `switch` stops any EE fan control.
+
+An invalid value returns `400 invalid`; a change the switch does not confirm returns `409 fans_unconfirmed` and
+keeps the previous settings, including an unreadable fan file and its `hold`. A model without fan control returns
+`400 invalid` with the reason. So does a change while the fan file for this switch was saved by a newer version of
+EE; nothing is sent to the switch and the file is not overwritten. A change that arrives while Handoff to UniFi stops
+fan control returns `409 fans_unconfirmed` with the message "Fan control is stopping for Handoff to UniFi.". When
+the switch runs the new setting but EE cannot write the fan file, the response is `500 fan_settings_save_failed` with
+the message "The switch runs the new fan setting, but EE could not save it on this PC. Check the data folder and
+choose the setting again." The new setting stays in effect for the session, and the same message stays in `error`
+until a later save succeeds.
 
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
@@ -1017,6 +1068,21 @@ saved setting.
 
 The same object is `fans` in `GET /api/state` and WebSocket state messages, and arrives every 5 seconds as a
 `fans` WebSocket message.
+
+### Saved fan settings
+
+Each switch's fan mode is saved in `device-fans/<identity>.json` in the data directory as
+`{"version": 1, "identity": "<64 hex>", "owner": "<48 hex>", "settings": {...}}`. A file that holds no JSON object
+is moved aside as `<identity>.json.corrupt-<UTC time>`. A file that cannot be read, or that has another format
+version, another identity, an invalid owner or invalid settings, stays where it is until the next successful
+`PUT /api/fans` replaces it; a file saved by a newer version of EE is never replaced. Each of these sets `hold` to
+`settings_unreadable`. The demo keeps `fans-demo.json`.
+
+Releases up to 0.5.1 saved one fan mode for every switch in `fans.json`. When no switch has a fan file yet, the first
+USW-Pro-XG-8-PoE that EE connects to receives that mode, with no change on the switch. `fans.json` stays in place and
+is no longer read, so release 0.5.1 still finds its own setting after a downgrade; it ignores `device-fans/`. When
+`fans.json` or `device-fans/` cannot be read, or the new file cannot be written, the switch gets `hold`
+`settings_unreadable` and the next connection tries again.
 
 ## Presets
 
