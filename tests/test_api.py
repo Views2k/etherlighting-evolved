@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from etherlighting_evolved.api import create_app
+from etherlighting_evolved.fans import FanControl, FanStore, SimulatedFans
 
 LOCAL = "http://127.0.0.1:8787"
 
@@ -28,6 +29,21 @@ def eventually(fn, timeout=2.0):
             return True
         time.sleep(0.05)
     return fn()
+
+
+def test_a_fan_setting_that_cannot_be_saved_reports_fans_not_saved(demo, config, monkeypatch):
+    engine = demo.app.state.sessions.engine
+    store = FanStore(config.data_dir / "fans-fixture.json")
+
+    def cannot_write(settings):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(store, "save", cannot_write)
+    engine.attach_fans(FanControl(SimulatedFans(), store, supported=True))
+    response = demo.put("/api/fans", json={"mode": "manual", "manual_percent": 60})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "fans_not_saved"
+    assert engine.fans.settings.mode == "manual"
 
 
 def test_about_says_unofficial(client):

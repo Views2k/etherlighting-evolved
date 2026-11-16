@@ -891,7 +891,9 @@ Any of `{"mode": "switch" | "curve" | "manual" | "target", "curve": "low" | "med
 "manual_percent": 30-100, "target_celsius": 45-85}`. Missing fields keep their saved values. The response is the
 `GET /api/fans` object after the switch confirms the change. An invalid value returns `400 invalid`; a change the
 switch does not confirm returns `409 fans_unconfirmed` and keeps the previous settings. A model without fan control
-returns `400 invalid` with the reason.
+returns `400 invalid` with the reason. When the switch runs the new setting but EE cannot write it to its data folder,
+the response is `503 fans_not_saved`: the setting stays active until EE restarts, which then uses the previously
+saved setting.
 
 - `curve` sets the fan speed from the CPU temperature along the curve's points, interpolated, and slows down by at
   most 2% per 5-second step.
