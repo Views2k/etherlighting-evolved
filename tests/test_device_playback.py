@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -271,6 +272,46 @@ async def test_normal_editor_reopens_and_commits_to_existing_switch_scene(config
     assert manager._playback.data["applied_edit"] == remote.return_value
     switch.output_lease.finish()
     assert all(path.is_file() for path in switch.output_lease.paths)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reported", ["to", "from", "other"])
+async def test_reopening_settles_an_edit_recorded_by_an_earlier_version(config, monkeypatch, reported):
+    # Earlier versions saved pending_edit before editing the switch scene, so a lost reply left it in the record.
+    manager = SessionManager(config)
+    transport = SimpleNamespace(host="switch.invalid", port=22, host_key_fingerprint=KEY, direct_rgb=True,
+                                lighting_generation=object())
+    switch = EtherlightSwitch(transport, num_ports=8)
+    switch.hardware_profile = PRO_XG8
+    monkeypatch.setattr(type(switch), "native_breathing", property(lambda self: True))
+    monkeypatch.setattr(type(switch), "sfp_precise", property(lambda self: True))
+    engine = Engine(switch, rules=[])
+    store = manager._device_store(switch)
+    store.save(engine.snapshot())
+    original = store.load()
+    edited = Engine(switch, rules=[])
+    edited.set_effect("rainbow", {}, clear_overrides=False)
+    pending = {"from": "original", "to": "c" * 64, "scene": json.loads(json.dumps(edited.snapshot()))}
+    record = {"state": "last_playing", "device": IDENTITY, "owner": "b" * 48, "pending_edit": pending}
+    manager._playback.save(record)
+    current = {"to": pending["to"], "from": pending["from"], "other": "d" * 64}[reported]
+    monkeypatch.setattr(player, "available", AsyncMock(return_value=False))
+    monkeypatch.setattr(player, "upgrade_player", AsyncMock())
+    monkeypatch.setattr(player, "edit_revision", AsyncMock(return_value=current))
+    monkeypatch.setattr(player, "_run", AsyncMock(return_value="granted"))
+    candidate = SimpleNamespace(engine=engine, fingerprint=KEY, store=store)
+    if reported == "other":
+        with pytest.raises(ValueError, match="unknown scene revision"):
+            await manager._prepare_offline_lighting(candidate)
+        assert store.load() == original
+        assert manager._playback.data == record
+        return
+    await manager._prepare_offline_lighting(candidate)
+    expected = pending["scene"] if reported == "to" else original
+    assert store.load() == expected
+    assert engine.snapshot()["zones"][0]["effect"]["id"] == ("rainbow" if reported == "to" else "static")
+    assert manager._playback.data == {"state": "last_playing", "device": IDENTITY, "owner": "b" * 48,
+                                      "scene_hash": None, "applied_edit": current}
 
 
 @pytest.mark.anyio

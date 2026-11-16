@@ -161,7 +161,7 @@ def test_profile_routes_organize_store_without_switch_session(config):
 
 
 @pytest.mark.parametrize("name", [".", ".."])
-def test_reserved_profile_names_cannot_be_created_and_legacy_records_are_kept(config, name):
+def test_reserved_profile_names_cannot_be_created_and_legacy_records_can_be_renamed_or_deleted(config, name):
     app = create_app(config, autoconnect=False)
     with TestClient(app, base_url="http://localhost") as client:
         client.post("/api/session/login", json={"host": "demo"})
@@ -172,3 +172,20 @@ def test_reserved_profile_names_cannot_be_created_and_legacy_records_are_kept(co
         assert client.post("/api/presets/Copy/rename", json={"name": name}).status_code == 400
         assert client.post("/api/presets/Copy/duplicate", json={"name": name}).status_code == 400
         assert app.state.presets.list() == {name: snapshot, "Copy": snapshot}
+
+        def legacy_record():
+            return next(row for row in client.get("/api/profiles").json()["profiles"] if row["name"] == name)
+
+        row = legacy_record()
+        renamed = client.patch(f"/api/profiles/{row['id']}", json={
+            "action": "rename", "name": "Recovered", "expected_revision": row["revision"]})
+        assert renamed.status_code == 200
+        assert sorted(item["name"] for item in renamed.json()["profiles"]) == ["Copy", "Recovered"]
+        assert app.state.presets.list() == {"Recovered": snapshot, "Copy": snapshot}
+
+        write_json(app.state.presets.path, {name: snapshot, "Copy": snapshot})
+        row = legacy_record()
+        deleted = client.patch(f"/api/profiles/{row['id']}", json={
+            "action": "delete", "expected_revision": row["revision"]})
+        assert deleted.status_code == 200
+        assert app.state.presets.list() == {"Copy": snapshot}
