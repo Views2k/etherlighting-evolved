@@ -1,6 +1,9 @@
 import http from 'node:http';
+import {ROUTE_ACCESS} from './remote-routes.mjs';
 
-const LOCAL_ONLY=new Set(['/api/private-access','/api/private-access/refresh','/api/private-access/login','/api/workspace/close']);
+const LOCAL_ACCESS={detail:{code:'local_access_required',message:'This action is available only on the computer running EE.'}};
+// Private access runs only in live mode: server.mjs starts it only when live is true.
+const REMOTE_WORKSPACE={live:true,remote:true};
 const FORWARD_HEADERS=new Set(['accept','accept-language','content-type','content-length','x-ee-workspace','if-none-match','if-modified-since','range','sec-websocket-key','sec-websocket-version','sec-websocket-protocol','sec-websocket-extensions']);
 
 function requestPath(value) {
@@ -15,6 +18,27 @@ function requestPath(value) {
       ||decoded.split('/').some(part=>part==='.'||part==='..'))return null;
   return decoded.length>1&&decoded.endsWith('/')?decoded.slice(0,-1):decoded;
 }
+
+const segment=part=>/^\{[a-z_]+\}$/.test(part)?'[^/]+':part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+
+export function createRouteMatcher(access){
+  const routes=access.routes.filter(route=>route.method!=='WS').map(route=>({method:route.method,remote:route.remote===true,
+    pattern:new RegExp(`^${route.path.split('/').map(segment).join('/')}$`)}));
+  const sockets=new Set(access.routes.filter(route=>route.method==='WS'&&route.remote===true).map(route=>route.path));
+  const staticMethods=new Set(access.static.methods);
+  return {
+    // pathname comes from requestPath(): decoded, without query or trailing slash. A request is remote only when at
+    // least one entry matches and every matching entry is remote, so a placeholder never hides a local entry.
+    allowed(method,pathname){
+      if(pathname!=='/api'&&!pathname.startsWith('/api/'))return staticMethods.has(method);
+      const hits=routes.filter(route=>route.method===method&&route.pattern.test(pathname));
+      return hits.length>0&&hits.every(route=>route.remote);
+    },
+    // The raw request URL must equal a remote WS path, so a query, trailing slash or encoding is refused.
+    socket(url){return sockets.has(url);},
+  };
+}
+export const remoteRoutes=createRouteMatcher(ROUTE_ACCESS);
 
 export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({}),deviceRecheckMs=15000}) {
   let server=null,closing=null;
@@ -61,7 +85,8 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
       const pathname=requestPath(request.url);
       if(pathname===null){json(response,403,{detail:{code:'private_access_denied',message:'This request cannot be opened through private access.'}});return;}
       if(pathname==='/api/private-access'&&request.method==='GET'){json(response,200,{...status(),can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null});return;}
-      if(LOCAL_ONLY.has(pathname)){json(response,403,{detail:{code:'local_access_required',message:'Manage this setting on the computer running EE.'}});return;}
+      if(pathname==='/api/workspace'&&request.method==='GET'){json(response,200,REMOTE_WORKSPACE);return;}
+      if(!remoteRoutes.allowed(request.method,pathname)){json(response,403,LOCAL_ACCESS);return;}
       const upstream=http.request({host:'127.0.0.1',port:targetPort,path:request.url,method:request.method,headers:headers(request)},remote=>{
         response.writeHead(remote.statusCode,remote.headers);remote.pipe(response);
       });
@@ -75,10 +100,10 @@ export function createPrivateGateway({targetPort,listenPort=4184,status=()=>({})
     next.on('upgrade',async(request,socket,head)=>{
       socket.on('error',()=>socket.destroy());
       socket.once('end',()=>socket.destroy());
-      const result=request.url==='/api/ws'&&await authorize(request,true);
+      const result=remoteRoutes.socket(request.url)&&await authorize(request,true);
       if(server!==next||socket.destroyed)return;
       if(result?.ok!==true){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
-      const upstream=http.request({host:'127.0.0.1',port:targetPort,path:'/api/ws',headers:headers(request,true)});
+      const upstream=http.request({host:'127.0.0.1',port:targetPort,path:request.url,headers:headers(request,true)});
       upstream.setTimeout(10000,()=>upstream.destroy());
       upstream.on('upgrade',(response,remote,remoteHead)=>{
         if(server!==next||socket.destroyed){remote.destroy();return;}

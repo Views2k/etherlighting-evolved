@@ -92,7 +92,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     if (req.url === '/api/workspace') {
       if(req.method !== 'GET'){res.writeHead(405);res.end();return;}
       res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
-      res.end(JSON.stringify({live}));return;
+      res.end(JSON.stringify({live,remote:false}));return;
     }
     if (req.url.startsWith('/api/')) {
       // The answer does not ask to close the connection, so on a kept-alive connection Node reads and discards the rest

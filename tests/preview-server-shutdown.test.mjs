@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createWorkspaceServer} from '../preview/server.mjs';
+import {ROUTE_ACCESS} from '../preview/remote-routes.mjs';
 
 function fixture(){
   let finishClose,failClose,active;
   const calls=[],retries=[],configured=[],exits=[];
   const child={exitCode:null,stdin:{writableEnded:false,end:line=>calls.push(`engine ${line.trim()}`)}};
-  const workspace=createWorkspaceServer({root:'.',port:4180,live:true,backendPort:1,token:'fixture',child,diagnostics:{record(){}},
-    privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),close:async()=>calls.push('private closed'),
+  const workspace=createWorkspaceServer({root:'.',port:4180,live:true,backendPort:1,token:'fixture',child,diagnostics:{record(){},summary:()=>({})},
+    privateAccess:{status:()=>({ready:true}),initialize:async()=>calls.push('refresh'),login:async()=>calls.push('login'),close:async()=>calls.push('private closed'),
       configure:async(...args)=>{configured.push(JSON.stringify(args));calls.push('configure');}},
     closeWorkspace:()=>new Promise((resolve,reject)=>{finishClose=resolve;failClose=reject;}),
     keepAvailable:options=>{active=options.active;return {observe:()=>retries.push('observe'),stop:()=>retries.push('stop')};},
@@ -105,6 +106,24 @@ test('a signal stops the retry watcher, private access and the engine and refuse
   assert.equal((await f.request('/api/private-access','PUT','{"enabled":true}')).status,503);
   assert.equal(f.active(),false);assert.deepEqual(f.retries,['stop']);
   assert.deepEqual(f.calls,['private closed','close','engine quit']);
+});
+
+test('the local workspace reports that it is not reached through private access',async()=>{
+  assert.equal((await fixture().request('/api/workspace','GET')).body,'{"live":true,"remote":false}');
+});
+
+// The private gateway refuses every route without a remote entry, so a stale gateway row would hide a route that
+// server.mjs no longer answers.
+test('every gateway row is answered by server.mjs',async()=>{
+  for(const {method,path} of ROUTE_ACCESS.routes.filter(route=>route.source==='gateway')){
+    const f=fixture();
+    let response;
+    if(path==='/api/workspace/close'){const closing=f.request(path,method);f.finish();response=await closing;}
+    else response=await f.request(path,method,method==='PUT'?'{"enabled":true}':undefined);
+    assert.equal(typeof response.status,'number',`${method} ${path}`);assert.notEqual(response.status,405,`${method} ${path}`);
+  }
+  // Requests that server.mjs forwards to the engine fail in this fixture, which has no engine.
+  await assert.rejects(fixture().request('/api/state','GET'));
 });
 
 test('private access accepts only known audiences and passes the choice to the manager',async()=>{
