@@ -469,26 +469,4 @@ public static class LightingState
         }
         return scene;
     }
-
-    /// <summary>
-    /// applyLightingPlan(pending, send, confirmed): sends each request in order, removing it from the plan once sent so a
-    /// retry resumes at the request that failed.
-    /// </summary>
-    public static async Task ApplyLightingPlan(JsonArray pending, Func<string, string, JsonNode?, Task> send, Func<JsonObject, Task>? confirmed = null)
-    {
-        while (pending.Count > 0)
-        {
-            var item = (JsonObject)pending[0]!;
-            await send(Js.ToStr(item["path"]), Js.ToStr(item["method"]), item["body"]);
-            pending.RemoveAt(0);
-            if (confirmed is not null) await confirmed(item);
-        }
-    }
-
-    public static Task ApplyLightingPlan(JsonArray pending, Func<string, string, JsonNode?, Task> send, Action<JsonObject> confirmed) =>
-        ApplyLightingPlan(pending, send, item =>
-        {
-            confirmed(item);
-            return Task.CompletedTask;
-        });
 }
