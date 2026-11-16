@@ -45,9 +45,13 @@ GUARDS = {"cpu": (85, 95), "sfp": (65, 75), "port": (100, 110)}
 LOCATION = "/tmp/ee-fan-control-v1"
 SCRIPT = Path(__file__).with_name("resident") / "fans.sh"
 POLL_INTERVAL = 5.0
+# Readings refresh this often for a while after a change, so the fan speed can be seen following it.
+FAST_POLL_INTERVAL = 1.5
+FAST_POLL_SECONDS = 30.0
 RETRY_INTERVAL = 60.0
 _CHANNEL = "ee-fans"
 _CHECK_DIRECTORY = '[ ! -L "$d" ] && [ -d "$d" ] && [ "$(stat -c %u:%a "$d")" = "$(id -u):700" ]'
+_TMP_CHECK = 'cd /tmp && [ "$(pwd -P)" = /tmp ] || exit 1'
 _HW = "/sys/class/hwmon/hwmon0/device"
 
 
@@ -235,7 +239,7 @@ class SwitchFans:
         return f'{self.paths}; {_CHECK_DIRECTORY} && cd "$d" || exit 1\n{command}'
 
     async def _install(self) -> None:
-        reserve = (f'umask 077; {self.paths}; cd /tmp && [ "$(pwd -P)" = /tmp ] || exit 1\n'
+        reserve = (f'umask 077; {self.paths}; {_TMP_CHECK}\n'
                    f'if [ ! -e "$d" ] && [ ! -L "$d" ]; then mkdir -m 700 "$d" || exit 1; fi\n'
                    f'{_CHECK_DIRECTORY} && echo ready')
         if await self._run(reserve) != "ready":
@@ -268,7 +272,9 @@ class SwitchFans:
             if await self._run(self._inside(start)) != "started":
                 raise TransportError("The switch did not start fan control.")
         confirm = 'printf "%s|%s\\n" "$(cat active 2>/dev/null)" "$(cat status 2>/dev/null)"'
-        for _ in range(16):
+        # The controller takes a new setting within a second; check often so the change shows quickly.
+        deadline = time.monotonic() + 16
+        while time.monotonic() < deadline:
             active, _, status = (await self._run(self._inside(confirm))).partition("|")
             if active == line:
                 reading = await self.read()
@@ -276,7 +282,7 @@ class SwitchFans:
                     return reading
             if status.split()[:1] in (["unsupported"], ["released"]):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25)
         with contextlib.suppress(TransportError, ValueError):
             await self.stop()
         raise TransportError("The switch did not confirm the fan setting. The fans are back on switch control.")
@@ -389,6 +395,11 @@ class FanControl:
         self.unsupported: str | None = None if supported else "Fan control needs a USW-Pro-XG-8-PoE."
         self.lock = asyncio.Lock()
         self._retry_at = 0.0
+        self._fast_until = 0.0
+
+    def interval(self) -> float:
+        """Seconds until the next reading: shorter for a while after a change."""
+        return FAST_POLL_INTERVAL if time.monotonic() < self._fast_until else POLL_INTERVAL
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -406,6 +417,7 @@ class FanControl:
         if not self.supported or self.unsupported:
             raise ValueError(self.unsupported or "Fan control is not available on this switch.")
         settings = FanSettings.from_dict(change, self.settings)
+        self._fast_until = time.monotonic() + FAST_POLL_SECONDS
         async with self.lock:
             try:
                 await self._enforce(settings)

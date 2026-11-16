@@ -198,6 +198,7 @@ class Engine:
         self.cpu_load: float | None = None
         self._switch_health: dict | None = None
         self.fans = None
+        self._fans_wake: asyncio.Event | None = None
         self._health_updated_at: float | None = None
         self._health_error: str | None = None
 
@@ -1898,6 +1899,9 @@ class Engine:
             await self.fans.update(change)
         finally:
             self._publish_fans()
+            # Start the faster readings now rather than after the current wait.
+            if self._fans_wake is not None:
+                self._fans_wake.set()
 
     def _publish_fans(self) -> None:
         if self.fans is not None and self._subscribers:
@@ -1905,12 +1909,16 @@ class Engine:
 
     async def _fan_loop(self) -> None:
         from .fans import POLL_INTERVAL
+        self._fans_wake = asyncio.Event()
         while True:
             if self.connected and self.fans is not None:
                 with contextlib.suppress(TransportError):
                     await self.fans.poll()
                 self._publish_fans()
-            await asyncio.sleep(POLL_INTERVAL)
+            interval = self.fans.interval() if self.fans is not None else POLL_INTERVAL
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._fans_wake.wait(), interval)
+            self._fans_wake.clear()
 
     async def _status_loop(self) -> None:
         while True:

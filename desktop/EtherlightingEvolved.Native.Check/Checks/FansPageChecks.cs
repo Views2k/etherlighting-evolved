@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
@@ -55,7 +56,11 @@ public static class FansPageChecks
         target.Value = 61;
         check(await Until(async () => (await Fans()).Int("settings.target_celsius") == 61), "moving the target slider sets the target temperature");
 
-        check(await Click("Manual") && await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "Manual holds a fixed fan speed");
+        // A choice shows at once; the switch confirms it in the background.
+        Find(Page(), "Manual")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        check(Find(Page(), "Manual")!.Classes.Contains("selected") && Shows("Sending the new setting"),
+            "a chosen mode shows as selected before the switch answers");
+        check(await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "Manual holds a fixed fan speed");
         check(await Until(() => Task.FromResult(Visible(30) is not null)), "Manual shows the speed slider");
         var speed = Visible(30)!;
         speed.Value = 82;
@@ -72,6 +77,37 @@ public static class FansPageChecks
         var refused = await shell.Workspace.Api.RequestAsync("/api/fans", "PUT", new JsonObject { ["mode"] = "manual", ["manual_percent"] = 12 }, shell.Workspace.WorkspaceId)
             .ContinueWith(task => task.Exception?.InnerException as ApiException);
         check(refused is { Status: 400 } && (await Fans()).Str("settings.curve") == "high", "a speed below 30% is refused and the curve stays");
+
+        // A 1280 × 400 rack window: everything fits without scrolling, with large controls that work.
+        if (TopLevel.GetTopLevel(shell) is Window window)
+        {
+            var (width, height) = (window.Width, window.Height);
+            try
+            {
+                // Curve mode shows 4 mode and 4 curve buttons; Manual shows the 4 mode buttons with − and +.
+                window.Width = 1280; window.Height = 400;
+                bool Fits(int buttonsShown)
+                {
+                    var root = Page();
+                    var scrolling = All<ScrollViewer>(root).Any(s => s.IsEffectivelyVisible && s.Extent.Height > s.Viewport.Height + 0.5);
+                    var buttons = All<Button>(root).Where(b => b.IsEffectivelyVisible).ToList();
+                    var inside = buttons.All(b => b.TranslatePoint(new Point(0, b.Bounds.Height), root) is { } bottom && bottom.Y <= root.Bounds.Height + 0.5);
+                    return !scrolling && buttons.Count >= buttonsShown && inside && Find(root, "Manual")?.Bounds.Height >= 44;
+                }
+                check(await Until(() => Task.FromResult(Fits(8))), "in a 1280 × 400 rack window Fans fills the space with large controls and does not scroll");
+                check(await Click("Manual") && await Until(() => Task.FromResult(Visible(30) is not null && Find(Page(), "+") is not null)),
+                    "the rack layout shows the speed slider with − and + buttons");
+                var before = (await Fans()).Int("settings.manual_percent") ?? 0;
+                check(await Click("+") && await Until(async () => (await Fans()).Int("settings.manual_percent") == Math.Min(100, before + 5)),
+                    "+ raises the fan speed by 5%");
+                check(await Until(() => Task.FromResult(Fits(6))), "the rack layout still fits with the slider shown");
+            }
+            finally
+            {
+                window.Width = width; window.Height = height;
+            }
+        }
+        else check(false, "the Fans checks find their window");
 
         check(await Click("Switch control") && await Until(async () => (await Fans()) is { } fans
                                                                        && fans.Str("settings.mode") == "switch" && fans.Str("reading.controller") == "absent"),

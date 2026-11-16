@@ -271,6 +271,15 @@ def _wait(predicate, seconds=15):
     return False
 
 
+def local_command(command):
+    """Adapt two switch checks that Windows shells cannot satisfy; lighting uses the same checks on the switch.
+
+    Windows shells do not report folder permissions reliably, and /tmp can resolve to another real path.
+    """
+    return (command.replace(fans._CHECK_DIRECTORY, '[ ! -L "$d" ] && [ -d "$d" ]')
+            .replace(fans._TMP_CHECK, "cd /tmp || exit 1"))
+
+
 class LocalTransport:
     """Runs SwitchFans commands with a local shell against the mock switch."""
 
@@ -278,8 +287,7 @@ class LocalTransport:
         self.switch = switch
 
     async def run(self, command, *, channel="main", timeout=10.0):
-        # Windows shells do not report folder permissions reliably; the switch check is shared with lighting.
-        command = command.replace(fans._CHECK_DIRECTORY, '[ ! -L "$d" ] && [ -d "$d" ]')
+        command = local_command(command)
         # Commands go through standard input, like the SSH channel, which avoids Windows argument quoting.
         command = f'PATH="$EE_TEST_BIN:$PATH"\n{command}\n'
         # Bytes keep line endings as sent; text mode on Windows would add carriage returns.
@@ -317,7 +325,7 @@ class ChannelTransport:
 
     def _send(self, command, timeout):
         import queue
-        command = command.replace(fans._CHECK_DIRECTORY, '[ ! -L "$d" ] && [ -d "$d" ]')
+        command = local_command(command)
         self.sequence += 1
         marker = f"__EE_DONE_{self.sequence}__"
         end = f"printf '\\n%s\\n' {marker}" if self.isolated else f"echo {marker}"
@@ -493,3 +501,37 @@ async def test_isolated_command_returns_output_without_a_trailing_newline():
         connection.process.replies.put_nowait(line)
     assert await pending == "done"
     assert not connection.closed and not connection.process.closed
+
+
+@needs_shell
+async def test_running_controller_takes_a_new_setting_within_seconds(mock_switch):
+    """With the normal 5-second step, a change still reaches the fans in about a second."""
+    path = _shell_named("dash") or SHELL
+    switch = {**mock_switch, "env": {**mock_switch["env"], "EE_FAN_TICK": "5"}}
+    location = f"/tmp/ee-fan-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    channel = ChannelTransport(switch, path, True)
+    backend = SwitchFans(channel, location=location, hw=switch["hw"].as_posix(), phy=switch["phy"].as_posix())
+    try:
+        await backend.apply("manual 70")
+        await asyncio.sleep(0.5)
+        started = time.monotonic()
+        reading = await backend.apply("manual 40")
+        elapsed = time.monotonic() - started
+        assert reading["config"] == "manual 40"
+        assert (switch["hw"] / "pwm1").read_text().strip() == "102"
+        assert elapsed < 3, f"the change took {elapsed:.1f} s"
+        # Stopping is as quick: the controller notices the request within a second.
+        started = time.monotonic()
+        await backend.stop()
+        assert time.monotonic() - started < 6
+    finally:
+        with contextlib.suppress(Exception):
+            await backend.stop()
+        channel.close()
+
+
+async def test_readings_refresh_faster_after_a_change(tmp_path):
+    control = FanControl(SimulatedFans(), FanStore(tmp_path / "fans.json"), supported=True)
+    assert control.interval() == fans.POLL_INTERVAL
+    await control.update({"mode": "manual", "manual_percent": 50})
+    assert control.interval() == fans.FAST_POLL_INTERVAL

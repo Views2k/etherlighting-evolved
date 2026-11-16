@@ -194,7 +194,14 @@ run() {
             printf '%s\n' "$line" > active.new && mv -f active.new active || exit 1
             active=$line
         fi
-        sleep "$TICK"
+        # Wait for the next step, but take a new setting or a stop request within a second.
+        waited=0
+        while [ "$waited" -lt "$TICK" ] && [ ! -e stop ]; do
+            sleep 1
+            waited=$((waited + 1))
+            next=; read -r next 2>/dev/null < config
+            [ "$next" = "$line" ] || break
+        done
     done
     exit 0
 }
