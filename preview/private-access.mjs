@@ -112,6 +112,10 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     throw new Error('Private access requires local configuration and listener callbacks.');
   const deviceConfigPath=path.join(path.dirname(configPath),'approved-device.json');
   let saved=null,loaded=false,operation=Promise.resolve(),httpsPort=PRIVATE_HTTPS_PORT,listenerPort=PRIVATE_LISTENER_PORT,audience='owner';
+  // Tailscale is optional. While private access is off, a status check reads this computer's Tailscale identity only
+  // after someone tries to turn private access on or starts the Tailscale sign-in in this run, so a computer without
+  // Tailscale shows the off state and no setup step. Turning private access off ends that setup.
+  let setupRequested=false;
   // shutdown() aborts this signal, which ends the CLI call of an operation already running.
   let cli=new AbortController(),stopped=false;
   const run=args=>runTailscale(args,{signal:cli.signal});
@@ -204,16 +208,26 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       fail('private_access_cleanup_unconfirmed');
     return 'removed';
   }
+  // A saved setting that is off still names the route EE added last, which must be gone. A Serve status that the CLI
+  // cannot give is not reported while private access is off; enable() and a port change read it again before they
+  // change anything.
+  async function routeLeft(){
+    let text;
+    try{text=await run(['serve','status','--json']);}catch{return false;}
+    return routeState(parseJSON(text),saved.origin,saved.listenerPort)!=='absent';
+  }
   async function initialize(){
     if(stopped)return status();
     reset();
     try{
-      await load();const current=await identity();
+      await load();
       if(!saved?.enabled){
         await close();
-        if(saved&&routeState(await serve(),saved.origin,saved.listenerPort)!=='absent')fail('private_access_cleanup_unconfirmed');
+        if(setupRequested)await identity();
+        if(saved&&await routeLeft())fail('private_access_cleanup_unconfirmed');
         return status();
       }
+      const current=await identity();
       if(!matches(current))fail('private_access_identity_changed');
       const before=await serve(),route=routeState(before,saved.origin,saved.listenerPort);
       if(route==='public')fail('private_access_funnel_enabled');
@@ -235,7 +249,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     return status();
   }
   async function enable(){
-    reset();
+    reset();setupRequested=true;
     try{
       await load();const current=await identity();
       if(saved?.enabled&&!matches(current))fail('private_access_identity_changed');
@@ -250,7 +264,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     return status();
   }
   async function disable(){
-    state.error=null;state.setup_action=null;state.action_url=null;
+    state.error=null;state.setup_action=null;state.action_url=null;setupRequested=false;
     try{
       await close();await load();
       if(!saved){state.enabled=false;return status();}
@@ -261,6 +275,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
   }
   async function login(){
     if(stopped)return status();
+    setupRequested=true;
     await initialize();
     if(state.error?.code!=='tailscale_signin_required')return status();
     const info=await identityStatus();

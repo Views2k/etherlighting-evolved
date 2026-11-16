@@ -94,7 +94,7 @@ internal static class AdminAccessChecks
     /// <summary>The Mobile and remote access panel in a window connected to a local gateway it did not start.</summary>
     public static void Panel(Action<bool, string> check)
     {
-        var locked = new JsonObject { ["available"] = true, ["enabled"] = true, ["ready"] = true, ["can_configure"] = false, ["admin_required"] = true };
+        var locked = new JsonObject { ["available"] = true, ["enabled"] = true, ["ready"] = true, ["https_port"] = 8444, ["can_configure"] = false, ["admin_required"] = true };
         var requests = new List<string>();
         var (panel, window) = Show((path, method) => { requests.Add($"{method} {path}"); return locked.DeepClone(); });
         try
@@ -111,9 +111,19 @@ internal static class AdminAccessChecks
         try { check(ReadOnly(panel) == HostOnly, "the demo gateway keeps the general read-only help"); }
         finally { Close(panel, window); }
 
+        // A live host without Tailscale where private access is off: nothing was checked, so nothing is available.
+        var noTailscale = new JsonObject
+        {
+            ["available"] = false, ["enabled"] = false, ["ready"] = false, ["error"] = null, ["https_port"] = 8444, ["can_configure"] = false,
+            ["can_close_workspace"] = false, ["admin_required"] = true,
+        };
+        (panel, window) = Show((_, _) => noTailscale.DeepClone());
+        try { check(ReadOnly(panel) == Connections.AdminRequired, "a local window without the key on a host without Tailscale shows the administration help"); }
+        finally { Close(panel, window); }
+
         requests.Clear();
-        var configurable = new JsonObject { ["available"] = true, ["enabled"] = false, ["ready"] = false, ["can_configure"] = true };
-        var lockedOff = new JsonObject { ["available"] = true, ["enabled"] = false, ["ready"] = false, ["can_configure"] = false, ["admin_required"] = true };
+        var configurable = new JsonObject { ["available"] = true, ["enabled"] = false, ["ready"] = false, ["https_port"] = 8444, ["can_configure"] = true };
+        var lockedOff = new JsonObject { ["available"] = true, ["enabled"] = false, ["ready"] = false, ["https_port"] = 8444, ["can_configure"] = false, ["admin_required"] = true };
         (panel, window) = Show((path, method) =>
         {
             requests.Add($"{method} {path}");

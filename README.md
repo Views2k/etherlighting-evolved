@@ -23,7 +23,7 @@ If your computer uses a Tailscale device tag, the workspace owner can approve th
 - Test rules against a port and time before applying them. Set weekly schedules to choose a profile, adjust brightness, or hand lighting control to UniFi.
 - Rename ports in Port details or use their names from UniFi Network.
 - See uplink download and upload speeds and their recent peaks.
-- Use Settings to connect UniFi Network, configure private access through Tailscale, or hand lighting control back to UniFi.
+- Use Settings to connect UniFi Network, turn on optional private access through Tailscale, or hand lighting control back to UniFi. EE works without Tailscale.
 
 Review the [hardware qualification table](docs/HARDWARE.md) for the model and firmware you plan to use. EE checks device identity, firmware, and lighting capabilities before permitting output.
 

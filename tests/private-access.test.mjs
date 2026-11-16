@@ -49,13 +49,46 @@ async function fixture(t){
 }
 const writes=f=>f.calls.filter(args=>args[0]==='serve'&&args[1]!=='status');
 
-test('initial status is read-only, cached, and contains no account details',async t=>{
+test('a Tailscale check is read-only, cached, and contains no account details',async t=>{
   const f=await fixture(t);
-  assert.deepEqual(await f.manager.initialize(),{...fields,available:true,enabled:false,ready:false,url:null,error:null});
+  assert.deepEqual(await f.manager.login(),{...fields,available:true,enabled:false,ready:false,url:null,error:null});
   const calls=f.calls.length;
   for(let i=0;i<4;i++)f.manager.status();
   assert.equal(f.calls.length,calls);assert.deepEqual(writes(f),[]);
   assert.equal(JSON.stringify(f.manager.status()).includes('owner@example.invalid'),false);
+});
+
+const missingTailscale=()=>{throw Object.assign(new Error('private CLI output'),{code:'tailscale_not_installed'});};
+const off={...fields,available:false,enabled:false,ready:false,url:null,error:null};
+
+test('with private access never turned on, startup and refresh run no Tailscale command',async t=>{
+  const f=await fixture(t),calls=[];
+  const manager=createPrivateAccessManager({...f.options,runTailscale:async args=>{calls.push(args);missingTailscale();}});
+  assert.deepEqual(await manager.initialize(),off);assert.deepEqual(await manager.initialize(),off);
+  assert.deepEqual(calls,[]);assert.equal(f.started,0);
+});
+
+test('turning private access on shows the Tailscale setup step until it is turned off again',async t=>{
+  const f=await fixture(t),calls=[];
+  const manager=createPrivateAccessManager({...f.options,runTailscale:async args=>{calls.push(args);missingTailscale();}});
+  const install={...off,setup_action:'install',action_url:'https://tailscale.com/download',
+    error:{code:'tailscale_not_installed',message:'Install Tailscale on this computer, sign in, then refresh status.'}};
+  assert.deepEqual(await manager.configure(true),install);
+  // A refresh after installing checks Tailscale again.
+  assert.deepEqual(await manager.initialize(),install);assert.equal(calls.length,2);
+  assert.deepEqual(await manager.configure(false),off);
+  assert.deepEqual(await manager.initialize(),off);assert.equal(calls.length,2);
+  assert.equal(f.started,0);await assert.rejects(readFile(f.configPath),{code:'ENOENT'});
+});
+
+test('a saved setting that is off reads only Serve status and reports no missing Tailscale',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.configure(false);
+  f.calls=[];
+  const next=createPrivateAccessManager(f.options);
+  assert.equal((await next.initialize()).error,null);assert.deepEqual(f.calls,[['serve','status','--json']]);
+  const missing=createPrivateAccessManager({...f.options,runTailscale:async()=>missingTailscale()});
+  const status=await missing.initialize();
+  assert.equal(status.enabled,false);assert.equal(status.error,null);assert.equal(status.setup_action,null);
 });
 
 test('explicit enable and disable preserve the existing service and persist no login or node ID',async t=>{
@@ -278,7 +311,7 @@ test('stopped or expired clients ask for local recovery without a nonfunctional 
 test('missing installation and machine approval have actionable states without mutations',async t=>{
   const f=await fixture(t);
   const missing=createPrivateAccessManager({...f.options,runTailscale:async()=>{throw Object.assign(new Error(),{code:'tailscale_not_installed'});}});
-  assert.equal((await missing.initialize()).setup_action,'install');
+  assert.equal((await missing.configure(true)).setup_action,'install');
   assert.equal(missing.status().action_url,'https://tailscale.com/download');
   f.identity.BackendState='NeedsMachineAuth';
   const result=await f.manager.login();assert.equal(result.setup_action,'approve');

@@ -183,11 +183,18 @@ public sealed class PrivateAccessPanel : UserControl
 
     bool CanConfigure() => current.Bool("can_configure") == true;
 
-    // A local gateway this window did not start, on a live host. The demo gateway reports neither field, so a demo
-    // window keeps the general text.
-    bool Locked() => current.Bool("admin_required") == true && (current.Bool("available") == true || current?["error"] is JsonObject);
+    // A local gateway this window did not start, on a live host. Only a live host reports its private HTTPS port; the
+    // demo gateway has none, so a demo window keeps the general text.
+    bool Locked() => current.Bool("admin_required") == true && current?["https_port"]?.GetValueKind() == System.Text.Json.JsonValueKind.Number &&
+                     current.Int("https_port") is not null;
 
     bool CanRetry() => current.Bool("enabled") == true && current.Bool("available") == true && current.Bool("ready") != true;
+
+    // An attempt to turn private access on stopped at a Tailscale setup step. Apply with Use Tailscale cleared ends it.
+    bool SetupPending() => current.Bool("enabled") != true && current.Str("setup_action") is "install" or "signin" or "approve";
+
+    bool Unchanged(bool chosen, bool portChange, bool audienceChange) =>
+        chosen == (current.Bool("enabled") == true) && !portChange && !audienceChange && !(chosen && CanRetry()) && !(!chosen && SetupPending());
 
     int CurrentPort() => current.Int("https_port") is { } value and >= 1024 and <= 65535 ? value : 8444;
 
@@ -225,15 +232,14 @@ public sealed class PrivateAccessPanel : UserControl
             var chosen = draft ?? enabled;
             var busy = pending is not null;
             toggle.IsChecked = chosen;
-            toggle.IsEnabled = !(busy || !CanConfigure() || (current.Bool("available") != true && !enabled));
+            toggle.IsEnabled = !(busy || !CanConfigure());
             var portChange = HasPortChange();
             var portAllowed = !portChange || CanChangePort();
             var audienceChange = HasAudienceChange();
             audience.Value = audienceDraft ?? CurrentAudience();
             audience.IsEnabled = !(busy || !CanConfigure());
             var audienceHidden = current is null || !CanConfigure();
-            apply.IsEnabled = !(busy || !CanConfigure() || !ValidPort() || !portAllowed ||
-                                (chosen == enabled && !portChange && !audienceChange && !(chosen && CanRetry())) || chosen && current.Bool("available") != true);
+            apply.IsEnabled = !(busy || !CanConfigure() || !ValidPort() || !portAllowed || Unchanged(chosen, portChange, audienceChange));
             apply.Content = pending == "apply" ? "Applying…" : chosen == enabled && CanRetry() ? "Retry private access" : "Apply setting";
             refresh.IsEnabled = !busy;
             readOnly.IsVisible = !(current is null || CanConfigure());
@@ -256,9 +262,8 @@ public sealed class PrivateAccessPanel : UserControl
             setupHelp.Text = setupAction == "approve" ? "Complete the Tailscale approval in your browser, then refresh status here."
                 : setupAction == "signin" ? "Sign in with the same Tailscale account you use on your phone or other device."
                 : "Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.";
+            // Use Tailscale and Apply stay during setup, to try again or to end it; the other options wait until it is done.
             var firstSetup = setup.IsVisible && current.Bool("available") != true && !enabled;
-            label.IsVisible = !firstSetup;
-            actions.IsVisible = !firstSetup;
             advanced.IsVisible = !(advancedHidden || firstSetup);
             audienceField.IsVisible = !(audienceHidden || firstSetup);
             address.IsVisible = ready;
@@ -272,7 +277,6 @@ public sealed class PrivateAccessPanel : UserControl
             else if (setupAction == "install" && setupUrl is not null) state.Set("Set up Tailscale", "is-disconnected");
             else if (setupAction == "signin") state.Set("Sign in to enable private access", "is-disconnected");
             else if (current.Truthy("error")) state.Set(PrivateAccessError(current["error"]), "is-disconnected");
-            else if (current.Bool("available") != true) state.Set("Tailscale is unavailable on this PC.", "is-disconnected");
             else state.Set(enabled ? "Private access is not ready. Refresh status to check it." : "Private access is off", enabled ? "waiting" : "is-disconnected");
         }
         finally { updating = false; }
@@ -296,9 +300,7 @@ public sealed class PrivateAccessPanel : UserControl
         var audienceChange = HasAudienceChange();
         var wantedAudience = audienceDraft ?? CurrentAudience();
         var wasEnabled = current.Bool("enabled");
-        if (saving && (!CanConfigure() || !ValidPort() || portChange && !CanChangePort() || wanted is null ||
-                       (wanted == current.Bool("enabled") && !portChange && !audienceChange && !(wanted == true && CanRetry())) ||
-                       wanted == true && current.Bool("available") != true))
+        if (saving && (!CanConfigure() || !ValidPort() || portChange && !CanChangePort() || wanted is not { } chosen || Unchanged(chosen, portChange, audienceChange)))
             return;
         if (login && (!CanConfigure() || current.Str("setup_action") != "signin")) return;
         pending = operation;

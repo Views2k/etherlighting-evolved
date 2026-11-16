@@ -4,7 +4,11 @@ import {renderPrivateAccess,renderSwitchConnection,privateAccessUrl,privateAcces
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-const disabled={available:true,enabled:false,ready:false,url:null,error:null,can_configure:true};
+const disabled={available:true,enabled:false,ready:false,url:null,error:null,https_port:8444,can_configure:true};
+// The live gateway's answer on a computer without Tailscale where private access was never turned on: EE has not run
+// Tailscale, so nothing is available and nothing failed.
+const NO_TAILSCALE={...disabled,available:false,setup_action:null,action_url:null,audience:'owner',can_change_port:true,can_close_workspace:true,admin_required:false,local:true};
+const INSTALL={...NO_TAILSCALE,setup_action:'install',action_url:'https://tailscale.com/download',error:{code:'tailscale_not_installed'}};
 const connected={...disabled,enabled:true,ready:true,url:'https://fixture.example.ts.net:8444'};
 function controls(dom){return {toggle:dom.findAll(dom.host,item=>item.name==='private_access')[0],
   button:label=>dom.findAll(dom.host,item=>item.tagName==='button'&&item.textContent===label)[0],
@@ -54,9 +58,9 @@ test('a local tab without administration access explains where to change private
   assert.equal(ui.status.textContent,'Private access connected');
 });
 
-test('the administration text also covers a host where Tailscale is missing, and not the demo or a remote device',async context=>{
+test('the administration text also covers a host without Tailscale, and not the demo or a remote device',async context=>{
   for(const [status,text] of [
-    [{available:false,enabled:false,ready:false,can_configure:false,admin_required:true,error:{code:'tailscale_not_installed'}},LOCKED],
+    [{...NO_TAILSCALE,can_change_port:false,can_configure:false,can_close_workspace:false,admin_required:true},LOCKED],
     [{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:false,admin_required:true},HOST_ONLY],
     [{...connected,can_configure:false},HOST_ONLY]]){
     const dom=rendererDom(context),cleanup=renderPrivateAccess(dom.host,async()=>status);dom.after(cleanup);
@@ -159,12 +163,36 @@ test('setup links accept only the approved Tailscale destinations',()=>{
   assert.equal(privateAccessSetupUrl('https://tailscale.com/download','approve'),null);
 });
 
-test('fresh setup presents an official install link without starting or downloading anything',async context=>{
+const setupSection=dom=>dom.byClass(dom.host,'connection-setup')[0];
+
+test('without Tailscale, private access shows as off with Use Tailscale and no setup step',async context=>{
   const dom=rendererDom(context),sent=[];
-  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return {...disabled,available:false,setup_action:'install',action_url:'https://tailscale.com/download',error:{code:'tailscale_not_installed'}};});dom.after(cleanup);
-  await flush();const ui=controls(dom),install=dom.findAll(dom.host,item=>item.tagName==='a'&&item.textContent==='Install Tailscale')[0];
-  assert.equal(install.hidden,false);assert.equal(install.href,'https://tailscale.com/download');assert.equal(install.rel,'noopener noreferrer');
-  assert.equal(ui.toggle.disabled,true);assert.deepEqual(sent,[['/api/private-access']]);assert.equal(cleanup.hasChanges(),false);
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return NO_TAILSCALE;});dom.after(cleanup);
+  await flush();const ui=controls(dom);
+  assert.equal(ui.status.textContent,'Private access is off');assert.equal(ui.notice.textContent,'');
+  assert.equal(setupSection(dom).hidden,true);
+  assert.equal(ui.toggle.parentNode.hidden,false);assert.equal(ui.toggle.disabled,false);assert.equal(ui.toggle.checked,false);
+  assert.equal(ui.button('Apply setting').parentNode.hidden,false);assert.equal(ui.button('Apply setting').disabled,true);
+  assert.deepEqual(sent,[['/api/private-access']]);
+});
+
+test('turning private access on without Tailscale shows the install link, and clearing Use Tailscale ends the setup',async context=>{
+  const dom=rendererDom(context),sent=[];
+  const cleanup=renderPrivateAccess(dom.host,async(...args)=>{sent.push(args);return args[1]==='PUT'&&args[2].enabled?INSTALL:NO_TAILSCALE;});dom.after(cleanup);
+  await flush();const ui=controls(dom);change(ui.toggle,true);ui.button('Apply setting').click();await flush();
+  assert.deepEqual(sent,[['/api/private-access'],['/api/private-access','PUT',{enabled:true}]]);
+  const install=dom.findAll(dom.host,item=>item.tagName==='a'&&item.textContent==='Install Tailscale')[0];
+  assert.equal(setupSection(dom).hidden,false);assert.equal(install.hidden,false);
+  assert.equal(install.href,'https://tailscale.com/download');assert.equal(install.rel,'noopener noreferrer');
+  assert.equal(ui.status.textContent,'Set up Tailscale');
+  // Use Tailscale and Apply stay, so the user can try again after installing or end the setup.
+  assert.equal(ui.toggle.parentNode.hidden,false);assert.equal(ui.toggle.checked,true);assert.equal(ui.toggle.disabled,false);
+  assert.equal(ui.button('Apply setting').parentNode.hidden,false);assert.equal(ui.button('Apply setting').disabled,false);
+  change(ui.toggle,false);assert.equal(cleanup.hasChanges(),false);assert.equal(ui.button('Apply setting').disabled,false);
+  ui.button('Apply setting').click();await flush();
+  assert.deepEqual(sent.at(-1),['/api/private-access','PUT',{enabled:false}]);assert.equal(sent.length,3);
+  assert.equal(ui.status.textContent,'Private access is off');assert.equal(setupSection(dom).hidden,true);
+  assert.equal(ui.button('Apply setting').disabled,true);
 });
 
 test('sign-in requires one local explicit action and approval stays a user-opened link',async context=>{

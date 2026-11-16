@@ -437,10 +437,14 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const [message,status]=notice();
   section.append(header,help,scope,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
   const canConfigure=()=>current?.can_configure===true;
-  // A local tab without administration access on a live host. The demo gateway reports neither field, so a demo tab
-  // keeps the general text.
-  const locked=()=>current?.admin_required===true&&(current.available===true||typeof current.error==='object'&&current.error!==null);
+  // A local tab without administration access on a live host. Only a live host reports its private HTTPS port; the
+  // demo gateway has none, so a demo tab keeps the general text.
+  const locked=()=>current?.admin_required===true&&Number.isInteger(current.https_port);
   const canRetry=()=>current?.enabled===true&&current?.available===true&&current?.ready!==true;
+  // An attempt to turn private access on stopped at a Tailscale setup step. Apply with Use Tailscale cleared ends it.
+  const setupPending=()=>current?.enabled!==true&&['install','signin','approve'].includes(current?.setup_action);
+  const unchanged=(chosen,portChange,audienceChange)=>chosen===(current?.enabled===true)&&!portChange&&!audienceChange
+    &&!(chosen&&canRetry())&&!(!chosen&&setupPending());
   const currentPort=()=>Number.isInteger(current?.https_port)&&current.https_port>=1024&&current.https_port<=65535?current.https_port:8444;
   const readyUrl=()=>{const url=privateAccessUrl(current?.url);return current?.available===true&&current.enabled===true&&current.ready===true&&url&&Number(new URL(url).port)===currentPort()?url:null;};
   const canChangePort=()=>canConfigure()&&current?.can_change_port===true&&current?.enabled!==true&&current?.ready!==true;
@@ -451,10 +455,10 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const render=()=>{
     if(!active)return;
     const enabled=current?.enabled===true,url=readyUrl(),ready=Boolean(url),chosen=draft??enabled;
-    toggle.checked=chosen;toggle.disabled=Boolean(pending)||!canConfigure()||(!current?.available&&!enabled);
+    toggle.checked=chosen;toggle.disabled=Boolean(pending)||!canConfigure();
     const portChange=hasPortChange(),portAllowed=!portChange||canChangePort(),audienceChange=hasAudienceChange();
     audience.value=audienceDraft??currentAudience();audience.disabled=Boolean(pending)||!canConfigure();audienceField.hidden=!current||!canConfigure();
-    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!audienceChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
+    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||unchanged(chosen,portChange,audienceChange);
     apply.textContent=pending==='apply'?'Applying…':chosen===enabled&&canRetry()?'Retry private access':'Apply setting';refresh.disabled=Boolean(pending);
     section.setAttribute('aria-busy',String(Boolean(pending)));readOnly.hidden=!current||canConfigure();
     readOnly.textContent=locked()?privateAccessMessages.admin_required:privateAccessMessages.forbidden;
@@ -465,8 +469,9 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     setupLink.hidden=!setupUrl;setupLink.href=setupUrl||'';setupLink.textContent=setupAction==='install'?'Install Tailscale':'Continue in Tailscale';
     signIn.hidden=setupAction!=='signin';signIn.disabled=Boolean(pending)||!canConfigure()||setupAction!=='signin';signIn.textContent=pending==='login'?'Starting sign-in…':'Sign in to Tailscale';
     setupHelp.textContent=setupAction==='approve'?'Complete the Tailscale approval in your browser, then refresh status here.':setupAction==='signin'?'Sign in with the same Tailscale account you use on your phone or other device.':'Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.';
+    // Use Tailscale and Apply stay during setup, to try again or to end it; the other options wait until it is done.
     const firstSetup=!setup.hidden&&!current.available&&!enabled;
-    label.hidden=firstSetup;actions.hidden=firstSetup;advanced.hidden ||= firstSetup;audienceField.hidden ||= firstSetup;
+    advanced.hidden ||= firstSetup;audienceField.hidden ||= firstSetup;
     address.hidden=!ready;install.hidden=!ready;open.href=ready?url:'';copy.disabled=!ready||Boolean(pending);
     if(!current)showConnectionStatus(state,{label:pending?'Checking private access…':'Private access unavailable',tone:pending?'waiting':'is-disconnected'});
     else if(ready)showConnectionStatus(state,{label:'Private access connected',tone:'online'});
@@ -474,7 +479,6 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     else if(setupAction==='install'&&setupUrl)showConnectionStatus(state,{label:'Set up Tailscale',tone:'is-disconnected'});
     else if(setupAction==='signin')showConnectionStatus(state,{label:'Sign in to enable private access',tone:'is-disconnected'});
     else if(current.error)showConnectionStatus(state,{label:privateAccessError(current.error),tone:'is-disconnected'});
-    else if(!current.available)showConnectionStatus(state,{label:'Tailscale is unavailable on this PC.',tone:'is-disconnected'});
     else showConnectionStatus(state,{label:enabled?'Private access is not ready. Refresh status to check it.':'Private access is off',tone:enabled?'waiting':'is-disconnected'});
   };
   const update=value=>{
@@ -489,7 +493,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     const wanted=draft??current?.enabled;
     const portChange=hasPortChange(),wantedPort=Number(portDraft??currentPort());
     const audienceChange=hasAudienceChange(),wantedAudience=audienceDraft??currentAudience(),wasEnabled=current?.enabled;
-    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||(wanted===current?.enabled&&!portChange&&!audienceChange&&!(wanted&&canRetry()))||wanted&&!current.available))return;
+    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||unchanged(wanted,portChange,audienceChange)))return;
     if(login&&(!canConfigure()||current?.setup_action!=='signin'))return;
     pending=operation;render();status();
     try{

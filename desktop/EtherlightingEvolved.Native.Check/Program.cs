@@ -46,6 +46,7 @@ ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
 HostKeyReviewChecks.Run(Check);
 AdminAccessChecks.Panel(Check);
+PrivateAccessPanelChecks.Run(Check);
 RemoteAccessChecks.Contracts(Check);
 
 // Palettes read from the browser workspace's themes.css

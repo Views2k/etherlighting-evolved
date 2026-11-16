@@ -294,13 +294,19 @@ Always answers 200:
 gateway gives: `setup_action` and `action_url` are null, `can_change_port`, `can_configure` and `can_close_workspace`
 are false, and `admin_required` is true. A pending Tailscale sign-in link therefore never reaches another local user.
 
+Tailscale is optional. `available` is true once EE has read this computer's Tailscale identity. While private access
+is off, EE reads it only after a `PUT` that turns private access on or a sign-in request since EE started, and a
+`PUT` that turns it off ends that setup. On a computer without Tailscale where private access was never turned on,
+the answer is therefore `available: false`, `enabled: false`, `error: null` and `setup_action: null`, and EE runs no
+Tailscale command.
+
 The demo gateway answers `{"available": false, "enabled": false, "ready": false, "can_configure": false,
 "can_close_workspace": <access and not closing>, "admin_required": <no access>}`. The private gateway's answer has no
 `admin_required` field; clients treat a missing field as false.
 
 Clients show their read-only help for a local tab without administration access when `admin_required` is true and
-either `available` is true or `error` is an object. They show the close help in place of Close web session when
-`can_close_workspace` is not true and `admin_required` is true.
+`https_port` is an integer, which only the live gateway reports. They show the close help in place of Close web
+session when `can_close_workspace` is not true and `admin_required` is true.
 
 ### `PUT /api/private-access`, `POST /api/private-access/refresh`, `POST /api/private-access/login`
 
@@ -318,7 +324,9 @@ returns 503, and a failed change returns 409 `private_access_failed`.
 
 Refresh and sign-in repeat the startup check. When private access is on and its HTTPS port has no Tailscale Serve
 configuration, that check adds EE's route again, so a refresh after the Tailscale HTTPS approval completes a saved
-setup.
+setup. When a saved setting is off, the check reads the Tailscale Serve status to confirm that EE's route is gone and
+reports `private_access_cleanup_unconfirmed` if it is still there; a Serve status that Tailscale cannot give is not
+reported.
 
 ### `POST /api/workspace/close`
 
