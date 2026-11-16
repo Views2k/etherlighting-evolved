@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol
 from . import timing
 from .color import BLACK, Color
 from .command_budget import CommandBudget
+from .identify import Identification
 from .links import PortLink
 from .port_output import display_rgb, to_output
 from .rules import PortFacts, Rule, first_match
@@ -35,12 +36,11 @@ class SfpEngine(Protocol):
     num_ports: int
     links: dict[int, PortLink]
     budget: CommandBudget
+    identification: Identification
 
     def facts(self, port: int, now: datetime | None = None) -> PortFacts: ...
 
     def identifying(self, port: int) -> bool: ...
-
-    def identify_color(self) -> Color: ...
 
     def port_color(self, port: int) -> tuple[Color, float]: ...
 
@@ -267,7 +267,7 @@ class SfpIndicators:
     def color(self, port: int, elapsed: float) -> tuple[Color, float]:
         engine = self._engine
         if engine.identifying(port):
-            return engine.identify_color(), 100.0
+            return engine.identification.color(), 100.0
         light = self.light(port)
         follows_ethernet = self.sync.mode == "ethernet"
         grouped = port in self.zones

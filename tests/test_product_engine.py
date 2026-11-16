@@ -56,7 +56,7 @@ async def test_identify_timer_is_host_owned_and_new_request_is_protected():
     engine = await identified_engine()
     first = engine.start_identify(1)
     try:
-        timer = engine._identify_timer
+        timer = engine.identification.timer
         assert 9 < timer.when() - asyncio.get_running_loop().time() <= 10
         with pytest.raises(ValueError, match="Another port"):
             engine.start_identify(2)
@@ -68,7 +68,7 @@ async def test_identify_timer_is_host_owned_and_new_request_is_protected():
         assert engine.identify_state()["id"] == second["id"]
         engine.release()
         assert engine.identify_state() is None
-        assert engine._identify_timer is None
+        assert engine.identification.timer is None
         with pytest.raises(ValueError, match="Resume"):
             engine.start_identify(3)
     finally:
@@ -82,7 +82,7 @@ async def test_identify_disconnect_drops_temporary_intent():
     engine.start_identify(1)
     engine._lost(TransportError("test disconnect"))
     assert engine.identify_state() is None
-    assert engine._identify_timer is None
+    assert engine.identification.timer is None
     assert engine.telemetry_state()["generation"] is None
     assert engine.telemetry_state()["stale"]
     await engine.switch.close()
@@ -255,6 +255,6 @@ async def test_identify_rejects_output_qualification_and_uncertain_state(monkeyp
         with pytest.raises(ValueError, match="qualification"):
             engine.start_identify(1)
         assert engine.identify_state() is None
-        assert engine._identify_timer is None
+        assert engine.identification.timer is None
     finally:
         await engine.switch.close()

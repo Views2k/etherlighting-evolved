@@ -37,6 +37,7 @@ from .effects import create_effect
 from .effects.base import Effect, RenderContext
 from .fans import POLL_INTERVAL
 from .health import HEALTH_INTERVAL, HealthParseError
+from .identify import Identification
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
 from .poe import PoePort, summarize_poe
@@ -192,9 +193,7 @@ class Engine:
         self._telemetry_updated_at: float | None = None
         self._telemetry_sampled_at: str | None = None
         self._poe_updated_at: float | None = None
-        self._identify: dict | None = None
-        self._identify_base: tuple[Color, float] | None = None
-        self._identify_timer: asyncio.TimerHandle | None = None
+        self.identification = Identification()
         self._history = None
         self._history_binding: str | None = None
         self.history_error: str | None = None
@@ -348,28 +347,14 @@ class Engine:
             lease.before_write(self.switch.transport.host_key_fingerprint)
         if port > self.num_ports and not self.switch.scoped_sfp:
             raise ValueError("This SFP port does not have qualified lighting output.")
-        if self._identify is not None:
-            raise ValueError("Another port is being identified. Stop it before starting another.")
-        loop = asyncio.get_running_loop()
-        token = secrets.token_hex(16)
-        self._identify = {"id": token, "port": port, "started": timing.monotonic(),
-                          "expires": timing.monotonic() + 10.0}
-        self._identify_timer = loop.call_later(10.0, self.stop_identify, token)
+        self.identification.start(port, self.stop_identify)
         self._identify_changed(port)
         return self.identify_state()
 
     def stop_identify(self, token: str | None = None) -> None:
-        current = self._identify
-        if current is None:
-            return
-        if token is not None and token != current["id"]:
-            raise ValueError("The identification changed. Refresh before stopping it.")
-        self._identify = None
-        self._identify_base = None
-        if self._identify_timer is not None:
-            self._identify_timer.cancel()
-            self._identify_timer = None
-        self._identify_changed(current["port"])
+        port = self.identification.stop(token)
+        if port is not None:
+            self._identify_changed(port)
 
     def _identify_changed(self, port: int) -> None:
         if port in self.sfp:
@@ -386,26 +371,15 @@ class Engine:
             self._publish(self.state_message())
 
     def identify_state(self) -> dict | None:
-        current = self._identify
-        if current is None:
-            return None
-        return {"id": current["id"], "port": current["port"],
-                "seconds_remaining": max(0, round(current["expires"] - timing.monotonic(), 1))}
+        return self.identification.state()
 
     def identifying(self, port: int) -> bool:
-        current = self._identify
-        return bool(current is not None and current["port"] == port
-                    and self.connected and self.mode == "running"
-                    and timing.monotonic() < current["expires"])
-
-    def identify_color(self) -> Color:
-        phase = (timing.monotonic() - self._identify["started"]) % 1.0
-        return Color(255, 255, 255) if phase < 0.5 else Color(0, 128, 255)
+        return self.identification.flashing(port, self.connected and self.mode == "running")
 
     def port_color(self, port: int) -> tuple[Color, float]:
         """The color and brightness an Ethernet port shows, without an identification flash."""
-        if self.identifying(port) and self._identify_base is not None:
-            return self._identify_base
+        if self.identifying(port) and self.identification.base is not None:
+            return self.identification.base
         return self._shown[port - 1]
 
     def attach_history(self, history, binding: str | None) -> None:
@@ -1317,8 +1291,8 @@ class Engine:
                 sources[i] = {"kind": "override"}
                 key = ("override",)
             if self.identifying(port):
-                self._identify_base = (colors[i], brightness)
-                colors[i], brightness = self.identify_color(), 100.0
+                self.identification.base = (colors[i], brightness)
+                colors[i], brightness = self.identification.color(), 100.0
                 sources[i] = {"kind": "identify"}
                 self._keys[i] = ("identify",)
                 self._fades.pop(i, None)
