@@ -9,7 +9,7 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using static EtherlightingEvolved.Native.Pages.Connections;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
@@ -322,7 +322,7 @@ public sealed class ConnectPage : Page
             (username, string.IsNullOrWhiteSpace(username.Text), "Enter the SSH username."),
             (password, string.IsNullOrEmpty(password.Text),
                 restoreSaved is not null && saved.Truthy("has_saved_login") ? "Enter the SSH password, or choose Connect with saved login." : "Enter the SSH password."),
-            (port, !IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
+            (port, !Core.Model.Js.IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
         }.FirstOrDefault(entry => entry.Failed);
         if (invalid.Control is not null)
         {

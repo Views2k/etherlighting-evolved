@@ -454,10 +454,10 @@ public sealed class ControllerConnection : Border
         SyncTarget();
         ShowSites();
         if (!dirty) cleanForm = FormValues();
-        if (current.Truthy("error")) Status(Connections.ControllerError(Problem.From(current["error"]), "Controller data is unavailable. Check the connection and try again."), true);
+        if (current.Truthy("error")) Status(Connections.ControllerError(current["error"], "Controller data is unavailable. Check the connection and try again."), true);
         else if (current.Truthy("pending_site_choice")) PendingSiteMessage();
         if (current.Truthy("saved_login_error"))
-            preferenceNotice.Set(Connections.ControllerError(Problem.From(current["saved_login_error"]), "The saved controller login needs attention. Connect your controller again."), true);
+            preferenceNotice.Set(Connections.ControllerError(current["saved_login_error"], "The saved controller login needs attention. Connect your controller again."), true);
         else preferenceNotice.Set();
         if (SupportsVerification() && current.Str("error.code") is "two_factor_required" or "verification_failed")
         {
@@ -553,9 +553,9 @@ public sealed class ControllerConnection : Border
             catch (Exception exception)
             {
                 if (!active) return;
-                var error = Problem.From(exception);
-                var value = error.Details.Str("certificate_sha256");
-                if (error.Code is "two_factor_required" or "verification_failed")
+                var code = (exception as ApiException)?.Code;
+                var value = (exception as ApiException)?.Details.Str("certificate_sha256");
+                if (code is "two_factor_required" or "verification_failed")
                 {
                     if (SupportsVerification())
                     {
@@ -563,18 +563,18 @@ public sealed class ControllerConnection : Border
                         twoFactor.Open = true;
                         verificationRequired = true;
                         focusVerification = true;
-                        Status(Connections.ControllerError(error), true);
+                        Status(Connections.ControllerError(exception), true);
                     }
-                    else Status(Connections.ControllerError(new Problem("controller_local_account_required", [])), true);
+                    else Status(Connections.ControllerMessages["controller_local_account_required"], true);
                 }
-                else if (error.Code is "certificate_untrusted" or "certificate_changed" && kind.Value == "cloud_connector")
+                else if (code is "certificate_untrusted" or "certificate_changed" && kind.Value == "cloud_connector")
                 {
                     challenge = null;
                     certificate = null;
                     trustPanel.IsVisible = false;
                     Status("The UniFi cloud certificate could not be verified. Check this computer’s date and trusted certificates, then try again.", true);
                 }
-                else if (error.Code is "certificate_untrusted" or "certificate_changed" && Regex.IsMatch(value ?? "", "^[a-fA-F0-9]{64}$"))
+                else if (code is "certificate_untrusted" or "certificate_changed" && Regex.IsMatch(value ?? "", "^[a-fA-F0-9]{64}$"))
                 {
                     var target = FormTarget();
                     challenge = new JsonObject
@@ -583,10 +583,10 @@ public sealed class ControllerConnection : Border
                     };
                     fingerprint.Text = string.Join(" ", value!.ToUpperInvariant().Chunk(4).Select(part => new string(part)));
                     trustPanel.IsVisible = true;
-                    Status(error.Code == "certificate_changed" ? "The controller certificate changed. Verify the new fingerprint before connecting."
+                    Status(code == "certificate_changed" ? "The controller certificate changed. Verify the new fingerprint before connecting."
                         : "The controller uses a certificate that needs your approval.", true);
                 }
-                else Status(Connections.ControllerError(error), true);
+                else Status(Connections.ControllerError(exception), true);
             }
             finally
             {
@@ -623,7 +623,7 @@ public sealed class ControllerConnection : Border
         }
         if (siteRequired && site.Value.Length == 0)
         {
-            Status(Connections.ControllerError(new Problem("site_required", [])), true);
+            Status(Connections.ControllerMessages["site_required"], true);
             site.Focus();
             return;
         }
@@ -686,7 +686,7 @@ public sealed class ControllerConnection : Border
             }
             catch (Exception exception)
             {
-                if (active) Status(Connections.ControllerError(Problem.From(exception)), true);
+                if (active) Status(Connections.ControllerError(exception), true);
             }
             finally
             {
@@ -718,7 +718,7 @@ public sealed class ControllerConnection : Border
                 Show(result);
                 if (!Connections.ControllerReconnectConfirmed(result, enabled))
                 {
-                    preferenceNotice.Set(Connections.ControllerError(Problem.From(result["saved_login_error"]),
+                    preferenceNotice.Set(Connections.ControllerError(result["saved_login_error"],
                         "The setting could not be confirmed. Select Refresh controller before trying again."), true);
                     return;
                 }
@@ -732,7 +732,7 @@ public sealed class ControllerConnection : Border
             }
             catch (Exception exception)
             {
-                if (active) preferenceNotice.Set(Connections.ControllerError(Problem.From(exception), "The controller setting could not be saved. Try Save reconnect preference again."), true);
+                if (active) preferenceNotice.Set(Connections.ControllerError(exception, "The controller setting could not be saved. Try Save reconnect preference again."), true);
             }
             finally
             {
@@ -784,7 +784,7 @@ public sealed class ControllerConnection : Border
         SyncTarget();
         ShowSites();
         if (!dirty) cleanForm = FormValues();
-        if (current.Truthy("error")) Status(Connections.ControllerError(Problem.From(current["error"])), true);
+        if (current.Truthy("error")) Status(Connections.ControllerError(current["error"]), true);
         else if (current.Truthy("pending_site_choice")) PendingSiteMessage();
         else if (!current.Truthy("connected") || current.Truthy("stale") || message.IsError) Status();
         SetBusy();

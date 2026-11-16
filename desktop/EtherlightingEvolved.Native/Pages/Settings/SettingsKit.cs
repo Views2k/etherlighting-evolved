@@ -166,13 +166,6 @@ public static class SettingsKit
         return row;
     }
 
-    /// <summary>Opens an https address in the default browser (an anchor with target _blank).</summary>
-    public static void OpenExternal(string url)
-    {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
-        catch (Exception) { }
-    }
-
     /// <summary>Styles for these pages that Look.cs does not cover.</summary>
     public static Styles PageStyles()
     {
@@ -516,48 +509,6 @@ public sealed class SecretField : StackPanel
     }
 
     public TextBox Input { get; }
-}
-
-/// <summary>
-/// Port of createOperationGate (secondary-model.mjs): one change at a time. While it runs the page ignores input
-/// and shows the saving line under its header; a failure is reported through onError.
-/// </summary>
-public sealed class OperationGate(Action<bool> onBusy, Action<Exception> onError)
-{
-    Task? pending;
-
-    public bool Active { get; private set; } = true;
-
-    public Task? Pending => pending;
-
-    public Task Run(Func<Task> action)
-    {
-        if (!Active) return Task.CompletedTask;
-        if (pending is not null) return pending;
-        onBusy(true);
-        pending = Wrap(action);
-        return pending;
-    }
-
-    async Task Wrap(Func<Task> action)
-    {
-        await Task.Yield();
-        try { await action(); }
-        catch (Exception exception) { if (Active) onError(exception); }
-        finally
-        {
-            pending = null;
-            if (Active) onBusy(false);
-        }
-    }
-
-    public async Task<bool> Settle()
-    {
-        if (pending is { } task) await task;
-        return Active;
-    }
-
-    public void Close() => Active = false;
 }
 
 /// <summary>

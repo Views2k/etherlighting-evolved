@@ -40,6 +40,7 @@ AppBuilder.Configure<App>()
     .SetupWithoutStarting();
 
 ShellChecks.Contracts(Check);
+ConnectionsChecks.Run(Check);
 ControllerConnectionChecks.Run(Check);
 
 // Palettes read from the browser workspace's themes.css

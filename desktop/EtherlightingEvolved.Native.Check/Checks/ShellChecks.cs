@@ -153,6 +153,10 @@ internal static class ShellChecks
         check(service is { Length: > 0 } && texts.Contains(service) && texts.Contains(App.Version) && buttons.Contains("Releases"),
             "About shows the app and service versions and a Releases link");
         check(workspace.Disclaimer.Contains("use at your own risk") && texts.Contains(workspace.Disclaimer), "About shows the service's full disclaimer");
+        var clock = Stopwatch.StartNew();
+        bool SessionShown() => Texts(settings).Any(text => text is "No earlier session has been recorded." or "Stage");
+        while (!SessionShown() && clock.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(25);
+        check(SessionShown(), "Last session shows the shared session summary");
         var connect = PageRegistry.Create("Connect", shell)!;
         try { check(Texts(connect).Contains(workspace.Disclaimer), "the connection view shows the service's full disclaimer"); }
         finally { connect.Leave(); }

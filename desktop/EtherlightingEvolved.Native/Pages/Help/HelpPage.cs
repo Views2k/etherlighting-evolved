@@ -25,7 +25,7 @@ public sealed class HelpPage : Page
 {
     public HelpPage(AppShell shell) : base(shell)
     {
-        var (copper, sfp) = PortTopology.LightingPorts(Workspace.State);
+        var (copper, sfp) = Core.Model.PortTopology.LightingPorts(Workspace.State);
         var sfpScope = sfp.Count > 0 ? $"SFP {string.Join(", ", sfp)}" : "the SFP indicators";
         var chapters = new List<(string Title, string[] Paragraphs)>
         {

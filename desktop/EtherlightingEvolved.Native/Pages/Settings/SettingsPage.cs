@@ -28,7 +28,7 @@ public sealed class SettingsPage : Page
 {
     const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
     readonly Send request;
-    readonly OperationGate gate;
+    readonly Core.Model.OperationGate gate;
     readonly NoticeBox notice = new();
     readonly Border savingLine = new() { Height = 2, VerticalAlignment = VerticalAlignment.Bottom, IsVisible = false, IsHitTestVisible = false };
     readonly StackPanel content = new() { Spacing = 18 };
@@ -59,7 +59,7 @@ public sealed class SettingsPage : Page
         var send = Workspace.WorkspaceRequest();
         request = (path, method, body) => send(path, method, body);
         Styles.Add(SettingsKit.PageStyles());
-        gate = new OperationGate(SetBusy, error => Status(error.Message is { Length: > 0 } text ? text : "The change could not be completed. Try again.", true));
+        gate = Core.Model.SecondaryModel.CreateOperationGate(SetBusy, error => Status(error.Message is { Length: > 0 } text ? text : "The change could not be completed. Try again.", true));
 
         // Header (frame): title, description and Refresh connection, with the saving line along its bottom edge.
         var refresh = SettingsKit.ActionButton("Refresh connection", Reload);
@@ -237,7 +237,7 @@ public sealed class SettingsPage : Page
                     Status("Handing lighting back to UniFi…");
                     try
                     {
-                        if (await Connections.RequestHandoff(request, () => gate.Active) is not { } result) return;
+                        if (await Connections.RequestHandoff((path, method, body) => request(path, method, body), () => gate.Active) is not { } result) return;
                         Status(result.Error ?? "Lighting returned to UniFi.", result.Error is not null);
                         if (result.Session?.Bool("logged_in") == false)
                         {
@@ -270,7 +270,7 @@ public sealed class SettingsPage : Page
                     controllerHost.Children.Add(SettingsKit.LeftMax(controller, 720));
                 }
             }
-            var (copper, sfp) = PortTopology.LightingPorts(state);
+            var (copper, sfp) = Core.Model.PortTopology.LightingPorts(state);
             var details = new DetailsList();
             details.Set([
                 ("Lighting", state.Str("mode") == "released" ? "Controlled by UniFi" : "Controlled by EE"),

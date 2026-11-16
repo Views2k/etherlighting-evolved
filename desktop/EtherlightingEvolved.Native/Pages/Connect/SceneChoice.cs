@@ -7,7 +7,7 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Ui;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using static EtherlightingEvolved.Native.Pages.Connections;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
@@ -181,7 +181,7 @@ public static class SceneChoice
                     ["invalid_saved_scene"] = "Saved lighting could not be used. Start a new setup or cancel.",
                     ["output_recovery_required"] = Messages["output_recovery_required"],
                 };
-                var code = (error as ApiException)?.Code ?? (error as CodedException)?.Code ?? "";
+                var code = (error as ApiException)?.Code ?? "";
                 if (code == "invalid_saved_scene") invalidSaved = true;
                 if (code == "output_recovery_required") recoveryRequired = true;
                 try

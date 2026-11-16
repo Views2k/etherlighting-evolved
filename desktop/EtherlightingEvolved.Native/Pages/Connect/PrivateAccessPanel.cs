@@ -5,7 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using EtherlightingEvolved.Native.Core;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using static EtherlightingEvolved.Native.Pages.Connections;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
