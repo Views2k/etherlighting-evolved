@@ -1,10 +1,13 @@
 using System.Text.Json.Nodes;
+using Avalonia.Controls;
+using Avalonia.Input;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Pages;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
-/// <summary>The connection messages and checks that the connection view and Settings share.</summary>
+/// <summary>The connection messages, checks and controls that the connection view and Settings share.</summary>
 internal static class ConnectionsChecks
 {
     public static void Run(Action<bool, string> check)
@@ -46,5 +49,13 @@ internal static class ConnectionsChecks
         check(Connections.HandoffComplete(handedOff) && Connections.HandoffStatus(handedOff)?.Tone == "online"
               && Connections.HandoffBlocked(JsonNode.Parse("""{"handoff_state":"unconfirmed"}""")),
             "handoff status distinguishes a completed handoff from one that blocks reconnecting");
+
+        // Help cards and the controller's setup help use the same disclosure as the connection options.
+        var details = new Disclosure("Where do I find these details?", new TextBlock { Text = "Details" });
+        void Press(Key key) => details.Summary.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = key });
+        Press(Key.Enter);
+        var opened = details.Open && details.Body.IsVisible;
+        Press(Key.Space);
+        check(details.Summary.Focusable && opened && !details.Open && !details.Body.IsVisible, "a disclosure opens and closes from the keyboard");
     }
 }

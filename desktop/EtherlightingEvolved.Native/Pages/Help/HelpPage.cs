@@ -7,6 +7,7 @@ using Avalonia.Media;
 using EtherlightingEvolved.Native.Pages.Settings;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Help;
 

@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -29,7 +30,7 @@ public sealed class SettingsPage : Page
     const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
     readonly Send request;
     readonly Core.Model.OperationGate gate;
-    readonly NoticeBox notice = new();
+    readonly Notice notice = new();
     readonly Border savingLine = new() { Height = 2, VerticalAlignment = VerticalAlignment.Bottom, IsVisible = false, IsHitTestVisible = false };
     readonly StackPanel content = new() { Spacing = 18 };
     readonly Control contentPanel;

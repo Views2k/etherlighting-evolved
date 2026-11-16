@@ -7,6 +7,7 @@ using Avalonia.Media;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -24,14 +25,14 @@ public sealed class ControllerConnection : Border
     readonly StateLine state = new("Checking controller connection…", "is-disconnected");
     readonly DetailsList details = new();
     readonly TextBlock capabilityHint = SettingsKit.HelpText();
-    readonly NoticeBox message = new(connection: true, ownMargin: false);
+    readonly Notice message = new(connection: true, ownMargin: false);
     readonly Border reconnectSection;
-    readonly CheckRow reconnectRow = SettingsKit.CheckRow("Reconnect controller automatically");
+    readonly CheckRow reconnectRow = new("Reconnect controller automatically");
     readonly CheckBox reconnect;
     readonly TextBlock reconnectHelp = SettingsKit.HelpText("Save this controller login securely on this PC.");
     readonly TextBlock reconnectHint = SettingsKit.HelpText();
     readonly Button applyPreference = SettingsKit.Button("Save reconnect preference", "primary");
-    readonly NoticeBox preferenceNotice = new(connection: true);
+    readonly Notice preferenceNotice = new(connection: true);
     readonly StackPanel form = new() { Spacing = 18, MaxWidth = 480 };
     readonly Button editConnection = SettingsKit.Button("Edit connection");
     readonly TextBlock editorHint = SettingsKit.HelpText("Connection edits are not applied.");

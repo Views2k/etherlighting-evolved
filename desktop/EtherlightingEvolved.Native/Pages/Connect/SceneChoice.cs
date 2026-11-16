@@ -57,7 +57,7 @@ public static class SceneChoice
         var savedSection = new StackPanel { Spacing = 7, Children = { useSaved, ConnectionUi.Small("Start with the saved colors, effects, and automations.") } };
         var newSection = new StackPanel { Spacing = 7, Children = { startNew, ConnectionUi.Small("Start with the default lighting for this switch.") } };
         var choices = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Children = { savedSection, newSection } };
-        var message = new Notice();
+        var message = new Notice(connection: true);
         var cancel = ConnectionUi.Button("Cancel", "quiet");
         var footer = new Border
         {

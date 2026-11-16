@@ -9,6 +9,7 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
+using EtherlightingEvolved.Native.Ui;
 using static EtherlightingEvolved.Native.Pages.Connections;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
@@ -32,7 +33,7 @@ public sealed class ConnectPage : Page
     readonly Func<Task<JsonNode?>>? restoreSaved;
     readonly Func<Task>? onDemo;
     readonly CancellationTokenSource lifecycle = new();
-    readonly Notice message = new();
+    readonly Notice message = new(connection: true);
     readonly TextBox address = ConnectionUi.Input(253);
     readonly TextBox username = ConnectionUi.Input(128);
     readonly TextBox password = ConnectionUi.Input(password: true);
@@ -74,7 +75,8 @@ public sealed class ConnectPage : Page
         panel.Children.Add(intro);
 
         port.Text = "22";
-        (var rememberLabel, remember) = ConnectionUi.CheckRow("Save login on this PC", "text", 32);
+        var rememberLabel = new CheckRow("Save login on this PC", "text", 32);
+        remember = rememberLabel.Box;
         var options = new Disclosure("Connection options");
         var portField = ConnectionUi.Field("SSH port", port);
         portField.Margin = new Thickness(0, 14, 0, 0);
@@ -86,8 +88,8 @@ public sealed class ConnectPage : Page
         actions.Children.Add(forget);
         actions.Children.Add(retryHandoff);
         retryHandoff.IsVisible = false;
-        var (passwordField, revealButton) = ConnectionUi.PasswordField("SSH password", password);
-        reveal = revealButton;
+        var passwordField = new SecretField("SSH password", password);
+        reveal = passwordField.Reveal;
         var form = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Classes = { "connection-form" } };
         form.Children.Add(ConnectionUi.Field("Switch address", address));
         form.Children.Add(ConnectionUi.Field("SSH username", username));

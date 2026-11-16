@@ -29,8 +29,8 @@ public sealed class AppShell : UserControl
     readonly Border view = new() { ClipToBounds = true };
     readonly Panel canvas = new();
     readonly TextBlock status = new() { Text = "Opening workspace", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-    readonly ConnectionState connection = new() { Text = "Connecting…" };
-    readonly ConnectionState controller = new() { Text = "Controller not connected", IsVisible = false };
+    readonly StateLine connection = StatusLine("Connecting…");
+    readonly StateLine controller = StatusLine("Controller not connected");
     readonly Border recovery = new() { IsVisible = false, Padding = new Thickness(20, 12) };
     readonly Border pending = new() { IsVisible = false, Padding = new Thickness(18, 6), BorderThickness = new Thickness(0, 0, 0, 1) };
     readonly TextBlock pendingText = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, FontSize = 13 };
@@ -215,6 +215,7 @@ public sealed class AppShell : UserControl
         // Status bar
         var statusbar = new Border { MinHeight = 29, Padding = new Thickness(18, 4), BorderThickness = new Thickness(0, 1, 0, 0) };
         statusbar.Bind(Border.BackgroundProperty, "chrome").Bind(Border.BorderBrushProperty, "line");
+        controller.IsVisible = false;
         var connections = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 18, VerticalAlignment = VerticalAlignment.Center, Children = { connection, controller } };
         var statusRow = new DockPanel();
         DockPanel.SetDock(connections, Dock.Right);
@@ -256,6 +257,10 @@ public sealed class AppShell : UserControl
         button.Click += async (_, _) => await Run(() => Navigate(name));
         return button;
     }
+
+    /// <summary>A status-bar connection label: the state line on one 12px line.</summary>
+    static StateLine StatusLine(string text) =>
+        new(text, "is-disconnected") { FontSize = 12, LineHeight = double.NaN, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center };
 
     static Control Loading(string text)
     {
@@ -638,36 +643,6 @@ public sealed class AppShell : UserControl
         content.Children.Add(help);
         var dialog = Overlay.Show(content, width: 760);
         content.Children.Add(UiKit.Button("Back to connection", null, () => dialog.Close()));
-    }
-}
-
-/// <summary>A status-bar connection label with the 5px tone dot (online, waiting, error, is-disconnected).</summary>
-public sealed class ConnectionState : StackPanel
-{
-    readonly Avalonia.Controls.Shapes.Ellipse dot = new() { Width = 5, Height = 5, VerticalAlignment = VerticalAlignment.Center };
-    readonly TextBlock label = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
-
-    public ConnectionState()
-    {
-        Orientation = Orientation.Horizontal;
-        Spacing = 7;
-        Children.Add(dot);
-        Children.Add(label);
-        Set("", "is-disconnected");
-    }
-
-    public string Text { get => label.Text ?? ""; set => label.Text = value; }
-
-    public string Tone { get; private set; } = "is-disconnected";
-
-    public void Set(string text, string tone)
-    {
-        if (label.Text != text) label.Text = text;
-        if (Tone == tone && label.IsSet(TextBlock.ForegroundProperty)) return;
-        Tone = tone;
-        var token = tone switch { "online" => "green", "waiting" => "amber", "error" => "danger", _ => "muted" };
-        label.Bind(TextBlock.ForegroundProperty, token);
-        dot.Bind(Avalonia.Controls.Shapes.Shape.FillProperty, token);
     }
 }
 
