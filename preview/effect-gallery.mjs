@@ -7,13 +7,8 @@ import {hostScheduleDate,receiveScheduleClock} from './schedule-clock.mjs';
 import {portDisplayRgb} from './port-display.mjs';
 import {lightingPorts, previewGrid, portRanges} from './port-topology.mjs';
 import {effectDrafts as pendingEffects, effectDraftForPort, portEffect} from './effect-draft.mjs';
+import {node} from './dom.mjs';
 
-const node = (tag, className = '', text) => {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-};
 const copy = value => structuredClone(value);
 const percent = value => Math.max(0, Math.min(100, Number.isFinite(Number(value)) ? Number(value) : 100)) / 100;
 const signature = config => JSON.stringify([config?.id, Object.entries(config?.params || {}).sort(([a], [b]) => a.localeCompare(b))]);
