@@ -28,32 +28,30 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, bool Quit)
 
     public PixelSize ShotSize { get; init; } = new(1440, 900);
 
-    public static Options? Parse(string[] args)
+    /// <summary>A --url value the address dialog would refuse. The window then says so instead of opening a workspace.</summary>
+    public string? RejectedUrl { get; init; }
+
+    /// <summary>
+    /// Reads the command line. --url takes precedence over EE_WORKSPACE_URL; an environment value that is not a
+    /// workspace address is ignored, since it may be left over from another setup.
+    /// </summary>
+    public static Options Parse(string[] args)
     {
-        Uri? url = null;
-        var address = Environment.GetEnvironmentVariable("EE_WORKSPACE_URL");
-        for (var i = 0; i < args.Length; i++)
-        {
-            if (args[i] == "--url" && i + 1 < args.Length) address = args[++i];
-        }
-        if (!string.IsNullOrWhiteSpace(address))
-        {
-            if (!Uri.TryCreate(address, UriKind.Absolute, out url) || url.Scheme is not ("http" or "https")) return null;
-        }
         string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        var requested = Arg("--url");
+        var url = requested is not null ? WorkspaceAddress.Parse(requested) : WorkspaceAddress.Parse(Environment.GetEnvironmentVariable("EE_WORKSPACE_URL"));
+        var rejected = requested is not null && url is null ? requested : null;
         var shot = Arg("--shot") is { } folder ? Path.GetFullPath(folder) : null;
         var size = Arg("--size")?.Split('x') is [var w, var h] && int.TryParse(w, out var width) && int.TryParse(h, out var height) ? new PixelSize(width, height) : new PixelSize(1440, 900);
-        return new Options(args.Contains("--background"), args.Contains("--demo") || (shot is not null && url is null), url, args.Contains("--quit"))
+        return new Options(args.Contains("--background"), args.Contains("--demo") || (shot is not null && requested is null && url is null), url, args.Contains("--quit"))
         {
-            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size,
+            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size, RejectedUrl = rejected,
         };
     }
 }
 
 public sealed class App : Application
 {
-    public const string ThemeKey = "ee.theme.v1";
-
     /// <summary>The program version (major.minor.patch).</summary>
     public static string Version { get; } = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
 
@@ -71,9 +69,7 @@ public sealed class App : Application
             Source = new Uri("avares://Avalonia.Controls.ColorPicker/Themes/Fluent/Fluent.xaml"),
         });
         Styles.Add(Look.Styles());
-        string? theme = null;
-        try { theme = Preferences.GetItem(ThemeKey); } catch (Exception) { }
-        Look.Apply(this, theme ?? ThemeTokens.DefaultTheme);
+        Look.Apply(this, Preferences.GetItem(Pages.Settings.ThemeSettings.StorageKey) ?? ThemeTokens.DefaultTheme);
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -125,12 +121,21 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
 
     async Task ConnectAsync()
     {
+        if (options.RejectedUrl is { } rejected)
+        {
+            if (options.Shot is not null) { desktop.Shutdown(1); return; }
+            // The bundled service is not started in its place: the window says what was refused and lets the user
+            // choose another address.
+            Open(Locations.SavedWorkspace ?? DefaultAddress);
+            window!.Shell.ShowConnectionProblem($"EE cannot open {rejected}. {AppShell.AddressHelp}");
+            return;
+        }
         Uri address;
         try
         {
             if (options.Url is { } url) address = url;
             else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host) address = await StartServiceAsync(host);
-            else address = Locations.SavedWorkspace ?? new Uri("http://127.0.0.1:4180/");
+            else address = Locations.SavedWorkspace ?? DefaultAddress;
         }
         catch (Exception)
         {
@@ -145,6 +150,8 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         await window!.Shell.Start();
         if (options.Shot is { } shot) _ = ShotAsync(shot);
     }
+
+    static readonly Uri DefaultAddress = new("http://127.0.0.1:4180/");
 
     static string StartFailure => $"The EE service did not start. Close any other EE window, then try again. The cause is recorded in {DesktopLog.File}.";
 
@@ -400,7 +407,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (Options.Parse(args) is not { } options) return 2;
+        var options = Options.Parse(args);
         if (options.Quit) return SingleInstance.QuitRunningCopy();
         if (options.Shot is { } output) Locations.TestDataDirectory = Path.Combine(output, "client");
         var data = options.Shot is { } isolated ? Path.Combine(isolated, "data") : Locations.Workspace(options.Demo);

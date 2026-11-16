@@ -33,10 +33,28 @@ internal static class ShellChecks
         Workspace.MergeFrame(earlier, new JsonObject { ["connected"] = false, ["uplink_bandwidth"] = null });
         check(earlier.Bool("connected") == false && earlier["uplink_bandwidth"] is null, "an explicit disconnect clears bandwidth");
         UplinkBandwidthChecks.Run(check);
-        check(AppShell.TryWorkspaceAddress("https://example.test:8443", out _) &&
-              AppShell.TryWorkspaceAddress("http://127.0.0.1:4180", out _) &&
-              !AppShell.TryWorkspaceAddress("https://example.test/?token=example", out _) &&
-              !AppShell.TryWorkspaceAddress("http://example.test", out _), "the workspace picker accepts private HTTPS and local HTTP origins");
+        check(WorkspaceAddress.Parse("https://example.test:8443") is not null &&
+              WorkspaceAddress.Parse("http://127.0.0.1:4180") is not null &&
+              WorkspaceAddress.Parse("https://example.test/?token=example") is null &&
+              WorkspaceAddress.Parse("https://name:secret@example.test/") is null &&
+              WorkspaceAddress.Parse("http://example.test") is null, "the workspace picker accepts private HTTPS and local HTTP origins");
+        var environment = Environment.GetEnvironmentVariable("EE_WORKSPACE_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("EE_WORKSPACE_URL", "http://example.test/");
+            var ignored = Options.Parse([]);
+            var chosen = Options.Parse(["--url", "http://127.0.0.1:4196"]);
+            var refused = Options.Parse(["--url", "https://name:secret@example.test/"]);
+            check(ignored.Url is null && ignored.RejectedUrl is null && chosen.Url?.Port == 4196 && chosen.RejectedUrl is null
+                  && refused.Url is null && refused.RejectedUrl == "https://name:secret@example.test/" && !refused.Demo,
+                "--url and EE_WORKSPACE_URL accept only the addresses the dialog accepts, and a refused --url is reported");
+        }
+        finally { Environment.SetEnvironmentVariable("EE_WORKSPACE_URL", environment); }
+        var shell = new AppShell(new Workspace(new Uri("http://127.0.0.1:4180/"))) { OpenWorkspaceAddress = _ => Task.CompletedTask };
+        shell.ShowConnectionProblem("EE cannot open https://example.test/path.");
+        check(Texts(shell).Contains("EE cannot open https://example.test/path.")
+              && shell.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Content, "Change workspace address")),
+            "a refused --url shows the reason and Change workspace address instead of starting the service");
     }
 
     public static void ExerciseDesktop(string output, Action<bool, string> check, string? page = null)

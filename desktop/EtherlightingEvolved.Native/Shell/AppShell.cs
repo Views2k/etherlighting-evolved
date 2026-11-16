@@ -108,18 +108,15 @@ public sealed class AppShell : UserControl
         actions.Children.Add(connect);
         connect.Click += (_, _) =>
         {
-            if (TryWorkspaceAddress(input.Text, out _)) dialog.Close("connect");
-            else error.Text = "Enter the private HTTPS workspace address or a local address.";
+            if (WorkspaceAddress.Parse(input.Text) is not null) dialog.Close("connect");
+            else error.Text = AddressHelp;
         };
         input.Focus();
-        if (await dialog.Result == "connect" && TryWorkspaceAddress(input.Text, out var address))
-            await Run(() => OpenWorkspaceAddress(address!));
+        if (await dialog.Result == "connect" && WorkspaceAddress.Parse(input.Text) is { } address)
+            await Run(() => OpenWorkspaceAddress(address));
     }
 
-    internal static bool TryWorkspaceAddress(string? text, out Uri? address) =>
-        Uri.TryCreate(text?.Trim(), UriKind.Absolute, out address) &&
-        (address.Scheme == "https" || address.Scheme == "http" && address.IsLoopback) &&
-        address.UserInfo.Length == 0 && address.AbsolutePath == "/" && address.Query.Length == 0 && address.Fragment.Length == 0;
+    public const string AddressHelp = "Enter the private HTTPS workspace address or a local address.";
 
     /// <summary>The window asks to hide to the notification area (traffic-light close and minimize).</summary>
     public event Action? HideRequested;
@@ -508,10 +505,7 @@ public sealed class AppShell : UserControl
         {
             var retry = UiKit.Button("Try again", "primary");
             retry.Click += async (_, _) => await Start();
-            Control actions = OpenWorkspaceAddress is null ? retry
-                : UiKit.Row(8, retry, UiKit.Button("Change workspace address", null, ChooseWorkspaceAddress));
-            ShowView(UiKit.EmptyState("Couldn’t open the workspace", "Check the workspace connection and try again.", actions));
-            Status("Connection unavailable", true);
+            ShowConnectionProblem("Check the workspace connection and try again.", retry);
         }
 
         // A host that predates /api/about still opens; About then shows no service version.
@@ -520,6 +514,22 @@ public sealed class AppShell : UserControl
             try { return await Workspace.Request("/api/about") as JsonObject ?? []; }
             catch (ApiException) { return []; }
         }
+    }
+
+    /// <summary>
+    /// The workspace could not be opened: the reason, the retry if there is one, and Change workspace address for a
+    /// window that chooses its host.
+    /// </summary>
+    public void ShowConnectionProblem(string message, Button? retry = null)
+    {
+        Control? actions = retry;
+        if (OpenWorkspaceAddress is not null)
+        {
+            var change = UiKit.Button("Change workspace address", retry is null ? "primary" : null, ChooseWorkspaceAddress);
+            actions = retry is null ? change : UiKit.Row(8, retry, change);
+        }
+        ShowView(UiKit.EmptyState("Couldn’t open the workspace", message, actions));
+        Status("Connection unavailable", true);
     }
 
     /// <summary>The effect catalog was read (setEffectCatalog).</summary>
