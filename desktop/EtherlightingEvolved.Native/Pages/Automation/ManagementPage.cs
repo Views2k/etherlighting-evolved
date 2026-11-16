@@ -337,7 +337,7 @@ internal abstract class ManagementPage : Page
     public override Task<bool> CanLeave() => Task.FromResult(!Busy);
     public override void Leave() => Active = false;
 
-    /// <summary>Styles for the list items and tabs these pages draw (style.css:353-356, automation.css:1-2).</summary>
+    /// <summary>Styles for the list items and tabs these pages draw (style.css:341-344, automation.css:1-2).</summary>
     static Styles PageStyles()
     {
         var styles = new Styles();
@@ -361,7 +361,7 @@ internal abstract class ManagementPage : Page
         foreach (var state in new[] { ":pointerover", ":pressed" })
             Add(s => Presenter(s.OfType<Button>().Class("list-item").Class("current").Class(state)), (ContentPresenter.BackgroundProperty, Look.Res("selection-hover")),
                 (ContentPresenter.ForegroundProperty, Look.Res("pink")));
-        // .automation-tabs .selected (automation.css:2) is imported before .button.quiet (style.css:98) and has the same
+        // .automation-tabs .selected (automation.css:2) is imported before .button.quiet (style.css:86) and has the same
         // specificity, so the browser draws the selected tab like the other one. The tabs stay plain quiet buttons here.
         // .scope-toolbar .button: 30px chips
         Add(s => s.OfType<Button>().Class("chip"), (Layoutable.MinHeightProperty, 30.0), (TemplatedControl.PaddingProperty, new Thickness(10, 5)));
