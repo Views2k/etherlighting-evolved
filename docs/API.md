@@ -284,6 +284,11 @@ Both routes refuse a caller whose address is not a loopback address before they 
 private gateway refuses them, so SSH keys are accepted only on the computer running EE. The desktop app, the
 browser workspace and the gateway reach the service from 127.0.0.1.
 
+A client offers to accept a key only when the workspace gateway's `GET /api/private-access` returns `local: true`.
+The gateway on the computer running EE includes that field in its answer, with or without permission to change
+private access. The private gateway answers the request itself without the field, and clients treat a failed
+request as remote.
+
 ### `POST /api/session/logout`
 
 Stops EE from controlling the LEDs. The switch's own colors return within about two seconds. `?forget=true` also

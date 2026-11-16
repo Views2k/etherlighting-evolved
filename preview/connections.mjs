@@ -96,8 +96,9 @@ export function hostKeyError(error, problem) {
   return Object.hasOwn(hostKeyMessages,code)?hostKeyMessages[code]:'The SSH key could not be saved. Connect again to review the key.';
 }
 
-// Keys are accepted only on the computer running EE. A failed private access request counts as remote.
-export function canAcceptHostKey(privateAccess) {return privateAccess?.can_close_workspace===true;}
+// Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
+// request counts as remote.
+export function canAcceptHostKey(privateAccess) {return privateAccess?.local===true;}
 
 // Which key problem the Connect page reviews, and what runs after the key is saved: 'form' submits the login form
 // again, 'saved' restores the saved login, 'none' only asks the user to connect.

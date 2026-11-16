@@ -340,7 +340,11 @@ const untrustedKey=(changes={})=>({code:'host_key_untrusted',message:'Check this
   host:SWITCH,port:22,ssh_host_key:FP_A,ssh_host_key_type:'ssh-ed25519',...changes});
 const changedKey=(changes={})=>({...untrustedKey(),code:'host_key_changed',ssh_host_key:FP_B,ssh_host_key_type:'ssh-rsa',saved_ssh_host_key:FP_A,...changes});
 const refused=detail=>Object.assign(new Error(detail.message||'refused'),{code:detail.code,details:detail});
-const LOCAL_ACCESS={available:false,enabled:false,ready:false,can_configure:true,url:null,can_close_workspace:true};
+const LOCAL_ACCESS={available:false,enabled:false,ready:false,can_configure:true,url:null,can_close_workspace:true,local:true};
+// The private gateway's own answer (preview/private-gateway.mjs), and a read-only answer from the local gateway to a
+// tab that may not change private access or close the workspace.
+const GATEWAY_ACCESS={available:true,enabled:true,ready:true,url:null,can_configure:false,can_close_workspace:false,can_change_port:false,setup_action:null,action_url:null};
+const READ_ONLY_LOCAL_ACCESS={...GATEWAY_ACCESS,admin_required:true,local:true};
 const UNTRUSTED_BODY='EE has no saved SSH key for 192.168.1.2. Check that this fingerprint belongs to your switch. EE sends your password only after you accept the key.';
 const CHANGED_BODY='The device at 192.168.1.2 presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.';
 const KEPT_DATA='Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.';
@@ -403,8 +407,8 @@ test('host key errors and route failures have their own messages',()=>{
   assert.equal(hostKeyError({code:'local_access_required'},untrusted),'This key can be accepted only in EE on the computer that runs it.');
   for(const error of [{code:'toString'},new Error('timeout'),undefined])
     assert.equal(hostKeyError(error,changed),'The SSH key could not be saved. Connect again to review the key.');
-  assert.equal(canAcceptHostKey({can_close_workspace:true}),true);
-  for(const value of [{can_close_workspace:false},{},null])assert.equal(canAcceptHostKey(value),false);
+  for(const value of [LOCAL_ACCESS,READ_ONLY_LOCAL_ACCESS])assert.equal(canAcceptHostKey(value),true);
+  for(const value of [GATEWAY_ACCESS,{can_close_workspace:true},{local:false},{local:'true'},{},null])assert.equal(canAcceptHostKey(value),false);
 });
 
 test('a login refused for an unknown SSH key sends the password only after Accept key',async context=>{
@@ -459,7 +463,20 @@ test('a changed key is replaced on this computer with both fingerprints echoed b
     ['/api/session/login','fixture-password']]);
 });
 
-for(const [name,access] of [['false',{...LOCAL_ACCESS,can_close_workspace:false}],['missing',{...LOCAL_ACCESS,can_close_workspace:undefined}],
+test('a local tab without administration access can still accept a key',async context=>{
+  const dom=connectionDom(context);let logins=0;
+  const {request,sent}=keyRequest(async path=>{
+    if(path==='/api/session/login'&&++logins===1)throw refused(changedKey());
+    return path==='/api/session/login'?completeScene():{logged_in:false,error:null};
+  },READ_ONLY_LOCAL_ACCESS);
+  const cleanup=renderSwitchConnection(dom.host,{request,onConnected:async()=>{}});dom.after(cleanup);
+  const view=keyView(dom);fillLogin(view);view.submit();await flush();
+  assert.ok(view.shown('Accept new key'));assert.ok(!view.texts().includes('A new key can be accepted only in EE on the computer that runs it.'));
+  dom.button('Accept new key').click();await flush();await flush();
+  assert.deepEqual(sent.slice(1).map(([path])=>path),['/api/session/host-key/replace','/api/session/login']);
+});
+
+for(const [name,access] of [['from the private gateway',GATEWAY_ACCESS],['local false',{...LOCAL_ACCESS,local:false}],
   ['refused',()=>{throw refused({code:'local_access_required'});}]]){
   test(`a remote client reviews a key but cannot accept it (private access ${name})`,async context=>{
     const dom=connectionDom(context);

@@ -94,6 +94,8 @@ internal static class ShellChecks
                     var served = (await workspace.Request("/api/effects")).Arr().Select(effect => effect.Str("id"));
                     check(EffectRenderer.EffectList.Select(effect => effect.Str("id")).SequenceEqual(served),
                         "the service's effect catalog is installed before any page opens");
+                    check(Connections.CanAcceptHostKey(await workspace.Request("/api/private-access")),
+                        "the gateway started by the desktop app reports this computer, so the Connect page can accept an SSH key");
                     foreach (var name in AppShell.PageNames)
                     {
                         await shell.Navigate(name);

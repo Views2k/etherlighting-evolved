@@ -210,8 +210,11 @@ public static class Connections
         return code is not null && HostKeyMessages.TryGetValue(code, out var message) ? message : "The SSH key could not be saved. Connect again to review the key.";
     }
 
-    /// <summary>Keys are accepted only on the computer running EE. A failed private access request (null) counts as remote.</summary>
-    public static bool CanAcceptHostKey(JsonNode? privateAccess) => privateAccess.Bool("can_close_workspace") == true;
+    /// <summary>
+    /// Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
+    /// request (null) counts as remote.
+    /// </summary>
+    public static bool CanAcceptHostKey(JsonNode? privateAccess) => privateAccess.Bool("local") == true;
 
     // ---- Handoff to UniFi
 

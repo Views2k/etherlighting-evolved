@@ -48,6 +48,7 @@ test('private gateway strips identity headers and keeps host-management actions 
     assert.equal(received.host,`127.0.0.1:${targetPort}`);assert.equal(received['x-ee-workspace'],'current');
     const state=JSON.parse((await get(port,'/api/private-access')).text);assert.equal(state.can_configure,false);assert.equal(state.can_close_workspace,false);
     assert.equal(state.action_url,null);assert.equal(state.setup_action,null);assert.equal(state.can_change_port,false);
+    assert.equal(state.local,undefined);
     assert.equal((await get(port,'/api/private-access',{method:'PUT',body:'{}'})).status,403);
     assert.equal((await get(port,'/api/private-access/login',{method:'POST'})).status,403);
     assert.equal((await get(port,'/api/workspace/close',{method:'POST'})).status,403);

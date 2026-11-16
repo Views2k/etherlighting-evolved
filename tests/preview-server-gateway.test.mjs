@@ -115,6 +115,12 @@ test('request bodies over 1 MiB stop at the gateway',async t=>{
   assert.equal((await request(f.port,'/api/workspace')).status,200);
 });
 
+test('the demo gateway answers private access status itself and says it is on this computer',async t=>{
+  const f=await gateway(t);
+  assert.equal(JSON.parse((await request(f.port,'/api/private-access')).text).local,true);
+  assert.equal(f.received.length,0);
+});
+
 test('static files are served only from the published folders',async t=>{
   const f=await gateway(t);
   for(const path of ['/','/preview/app.mjs','/src/color.mjs','/assets/favicon.png'])assert.equal((await request(f.port,path)).status,200,path);

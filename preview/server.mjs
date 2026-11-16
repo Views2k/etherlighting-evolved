@@ -58,12 +58,15 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     if (!permitted(req,req.url.startsWith('/api/'))) {refuse(res,403,'forbidden','Requests from other websites are not allowed.');return;}
     if(['/api/private-access','/api/private-access/refresh','/api/private-access/login'].includes(req.url)){
       const respond=(status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
-      if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing});return;}
+      // `local` tells clients that this gateway, on the computer running EE, answered. The private gateway answers GET
+      // itself without it, so a page on a remote device does not offer actions that work only here, such as accepting
+      // an SSH key.
+      if(!live){respond(200,{available:false,enabled:false,ready:false,can_configure:false,can_close_workspace:!workspaceClosing,local:true});return;}
       try{
         if(workspaceClosing&&req.method!=='GET'){respond(503,{detail:'EE is closing. Reopen EE to change private access.'});return;}
         if(req.url.endsWith('/refresh')&&req.method==='POST'){await privateAccess.initialize();privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;}
         if(req.url.endsWith('/login')&&req.method==='POST'){await privateAccess.login();privateRetry.observe();respond(200,{...privateAccess.status(),can_configure:true});return;}
-        if(req.url==='/api/private-access'&&req.method==='GET'){respond(200,{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing});return;}
+        if(req.url==='/api/private-access'&&req.method==='GET'){respond(200,{...privateAccess.status(),can_configure:!workspaceClosing,can_close_workspace:!workspaceClosing,local:true});return;}
         if(req.url==='/api/private-access'&&req.method==='PUT'){
           let body='';for await(const chunk of req){body+=chunk;if(body.length>1024){respond(413,{detail:'The setting is too large.'});return;}}
           let value;try{value=JSON.parse(body);}catch{respond(400,{detail:'Choose a valid access setting.'});return;}

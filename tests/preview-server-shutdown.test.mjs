@@ -46,6 +46,14 @@ test('shutdown rejects new private-access enable and refresh requests',async()=>
   assert.deepEqual(f.calls,[]);f.finish();await closing;
 });
 
+test('private access status from this gateway says it comes from the computer running EE',async()=>{
+  const f=fixture();
+  assert.equal(JSON.parse((await f.request('/api/private-access','GET')).body).local,true);
+  const closing=f.request('/api/workspace/close','POST');
+  assert.equal(JSON.parse((await f.request('/api/private-access','GET')).body).local,true);
+  f.finish();await closing;
+});
+
 test('a request whose body arrives after shutdown cannot reopen private access',async()=>{
   const f=fixture();let sendBody;
   const updating=f.request('/api/private-access','PUT',new Promise(resolve=>{sendBody=resolve;}));
