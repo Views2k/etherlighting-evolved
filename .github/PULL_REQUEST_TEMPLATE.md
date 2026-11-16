@@ -1,11 +1,11 @@
 ## Change
 
-Describe the observed problem and resulting behavior.
+Describe the problem and the resulting behavior.
 
 ## Verification
 
-List the relevant checks, results, and remaining acceptance gates. Link the revision-specific evidence.
+List the checks run for this revision and their results: `tools/verify.ps1`, the EE Quality run, and any test on a physical switch. Name the checks that still need a physical switch or an installed copy.
 
 ## Compatibility and data
 
-Describe affected contracts, stored data, supported devices, or recovery behavior when applicable.
+Describe changes to the API, stored data, supported devices or recovery behavior, and whether `CHANGELOG.md` and `docs/API.md` are updated.

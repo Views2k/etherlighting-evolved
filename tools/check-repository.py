@@ -42,11 +42,7 @@ RELEASE_NAME = re.compile(r"\bEE (\d+\.\d+\.\d+)\b")
 # Files that must name the markers, private files or allowed text to look for them.
 GUARD_FILES = {"tools/check-repository.py", ".gitignore"}
 # Text that is accepted where it stands. Each entry is a file and the exact matched text.
-ALLOWED = {
-    # The documentation rewrite replaces the codex/ branch convention and the release named in the README.
-    ("docs/WORKFLOW.md", "codex"),
-    ("README.md", "EE 0.5.0"),
-}
+ALLOWED: set[tuple[str, str]] = set()
 
 
 def read_versions(root):
