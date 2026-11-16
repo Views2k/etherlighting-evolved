@@ -48,7 +48,7 @@ try {
     }
     $env:AVALONIA_TELEMETRY_OPTOUT = '1'
     Invoke-Check 'desktop-build' 'dotnet' @('build',(Join-Path $check 'EtherlightingEvolved.Native.Check.csproj'),'-c','Release','--no-restore')
-    Invoke-Check 'desktop' 'dotnet' @((Join-Path $check 'bin\Release\net8.0\EtherlightingEvolved.Native.Check.dll'),'--output',(Join-Path $OutputRoot 'desktop'),'--service')
+    Invoke-Check 'desktop' 'dotnet' @((Join-Path $check 'bin\Release\net10.0\EtherlightingEvolved.Native.Check.dll'),'--output',(Join-Path $OutputRoot 'desktop'),'--service')
     Invoke-Check 'browser' $node @('tools/smoke-workspace.mjs','--root',$root,'--python',$PythonExe,'--browser',$BrowserExe,'--output',(Join-Path $OutputRoot 'browser'),'--port','4198')
     $passed = $true
 } finally {

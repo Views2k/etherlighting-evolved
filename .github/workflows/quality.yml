@@ -35,6 +35,9 @@ jobs:
           cache-dependency-path: |
             requirements-ci.txt
             pyproject.toml
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
       - name: Install pinned dependencies on the hosted runner
         run: |
           python -m pip install -r requirements-ci.txt
@@ -130,7 +133,10 @@ jobs:
           python-version: '3.12.10'
           cache: pip
           cache-dependency-path: requirements-ci.txt
-      - name: Select the runner's .NET 8 SDK and simulator dependencies
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Install the simulator dependencies
         run: |
           set -euo pipefail
           dotnet --version
@@ -144,7 +150,7 @@ jobs:
           dotnet restore "$project" --configfile desktop/NuGet.Config --locked-mode
           dotnet build "$project" -c Release --no-restore
           mkdir -p outputs/native-check
-          dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check | tee outputs/native-check/check.log
+          dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check | tee outputs/native-check/check.log
       - name: Package both supported architectures
         shell: pwsh
         run: |
