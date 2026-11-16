@@ -8,6 +8,7 @@ import json
 import re
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from urllib.parse import quote
 from uuid import UUID
 
@@ -51,9 +52,18 @@ def _integer(value, minimum=0, maximum=100_000_000):
     return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
 
 
+@dataclass
+class RequestLimit:
+    """Start times of the requests in the last minute, and the earliest time the next request may start."""
+
+    requests: deque = field(default_factory=deque)
+    not_before: float = 0.0
+
+
 class IntegrationClient(ControllerClient):
     def __init__(
-        self, url, api_key, certificate_sha256=None, *, kind="unifi_os", console_id=None, clock=time.monotonic
+        self, url, api_key, certificate_sha256=None, *, kind="unifi_os", console_id=None, clock=time.monotonic,
+        limit=None,
     ):
         super().__init__(url, "", "", certificate_sha256, kind="unifi_os")
         self.console_id = controller_access(kind, "api_key", self.url, console_id)
@@ -64,8 +74,7 @@ class IntegrationClient(ControllerClient):
         self.kind, self.auth_method = kind, "api_key"
         self.api_key = validate_api_key(api_key)
         self._clock = clock
-        self._requests = deque()
-        self._not_before = 0.0
+        self._limit = limit or RequestLimit()
         prefix = f"/v1/connector/consoles/{console_id}" if kind == "cloud_connector" else ""
         self._prefix = prefix + "/proxy/network/integration"
 
@@ -93,9 +102,10 @@ class IntegrationClient(ControllerClient):
 
     def _request_get(self, path):
         now = self._clock()
-        while self._requests and self._requests[0] <= now - 60:
-            self._requests.popleft()
-        wait_until = max(self._not_before, self._requests[0] + 60 if len(self._requests) >= REQUESTS_PER_MINUTE else 0)
+        requests = self._limit.requests
+        while requests and requests[0] <= now - 60:
+            requests.popleft()
+        wait_until = max(self._limit.not_before, requests[0] + 60 if len(requests) >= REQUESTS_PER_MINUTE else 0)
         if now < wait_until:
             raise ControllerError(
                 "rate_limited",
@@ -106,7 +116,7 @@ class IntegrationClient(ControllerClient):
         connection = None
         try:
             connection = self._connect()
-            self._requests.append(self._clock())
+            requests.append(self._clock())
             connection.request(
                 "GET",
                 path,
@@ -119,7 +129,7 @@ class IntegrationClient(ControllerClient):
             if response.status == 429:
                 waits = [value for key, value in response.getheaders() if key.lower() == "retry-after"]
                 delay = min(int(waits[0]), 3600) if len(waits) == 1 and re.fullmatch(r"[0-9]{1,6}", waits[0]) else 60
-                self._not_before = self._clock() + max(1, delay)
+                self._limit.not_before = self._clock() + max(1, delay)
                 raise ControllerError(
                     "rate_limited", "The controller is busy. Try again shortly.", 503, retry_after_seconds=max(1, delay)
                 )
@@ -262,8 +272,8 @@ class IntegrationClient(ControllerClient):
 class ConsoleClient(IntegrationClient):
     """Explicit discovery on the fixed Site Manager origin."""
 
-    def __init__(self, api_key, *, clock=time.monotonic):
-        super().__init__("https://api.ui.com", api_key, clock=clock)
+    def __init__(self, api_key, *, clock=time.monotonic, limit=None):
+        super().__init__("https://api.ui.com", api_key, clock=clock, limit=limit)
 
     def request(self, method, path, payload=None):
         raise ControllerError("invalid_request", "This controller request is not available.")

@@ -19,7 +19,7 @@ import secrets
 from dataclasses import dataclass, field
 
 from . import device_playback as playback
-from .config import Config
+from .config import DEMO_HOSTS, Config
 from .credentials import CredentialStoreError, SavedLogin
 from .engine import Engine
 from .fans import FanControl, FanStore, SimulatedFans, SwitchFans
@@ -43,7 +43,6 @@ from .transport import (
 
 log = logging.getLogger(__name__)
 
-DEMO_HOSTS = {"demo", "simulator", "sim"}
 SCENE_CHOICE_TIMEOUT = 300.0
 
 

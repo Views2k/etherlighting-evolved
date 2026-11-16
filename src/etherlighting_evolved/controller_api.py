@@ -11,8 +11,9 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from .controller import ControllerError, ControllerManager
+from .controller import ControllerError
 from .controller_credentials import ControllerLoginStore
+from .controller_manager import ControllerManager
 from .credentials import CredentialStoreError
 from .port_names import PortNameStore
 

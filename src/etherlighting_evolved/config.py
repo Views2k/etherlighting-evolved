@@ -13,6 +13,9 @@ from pathlib import Path
 
 from .guard import LOOPBACK_BINDS
 
+# Switch hosts that log in to the built-in simulator instead of a switch.
+DEMO_HOSTS = {"demo", "simulator", "sim"}
+
 EXAMPLE_CONFIG = """\
 # Etherlighting Evolved (EE) - optional advanced settings. Everything here has a sensible default;
 # day-to-day you just log in from the UI with the switch IP, SSH username and password.
