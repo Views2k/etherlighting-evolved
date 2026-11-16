@@ -3253,7 +3253,7 @@ public static class ModelChecks
         });
     }
 
-    // ----- preview/port-animation.mjs logic (preview/port-animation.test.mjs) -----
+    // ----- preview/port-animation.mjs logic (tests/port-animation.test.mjs) -----
 
     static void PortAnimationChecks()
     {

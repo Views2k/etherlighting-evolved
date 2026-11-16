@@ -11,9 +11,9 @@ using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
 /// <summary>
-/// Markup helpers for the Settings sections, ported from the small builders at the top of preview/secondary.mjs
-/// (node, section, frame) and the matching rules in style.css. Fields, help text and buttons are the shared ones in
-/// Ui/Ui.cs.
+/// Markup helpers for the Settings sections, ported from the builders in preview/dom.mjs (node) and
+/// preview/secondary.mjs (button, section, frame) and the matching rules in style.css. Fields, help text and plain
+/// buttons are the shared ones in Ui/Ui.cs.
 /// </summary>
 public static class SettingsKit
 {
