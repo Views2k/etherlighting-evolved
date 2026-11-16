@@ -172,6 +172,12 @@ class SessionManager:
     def handoff_pending(self) -> bool:
         return self._handoff.state in {"pending", "unconfirmed"}
 
+    @contextlib.asynccontextmanager
+    async def exclusive(self):
+        """Hold off login, logout, scene choice and handoff until the block ends."""
+        async with self._lock:
+            yield
+
     # Notifications to websocket clients
 
     def listen(self) -> Mailbox:
@@ -936,6 +942,10 @@ class SessionManager:
                                  "Check the data folder and reconnect to retry.", 500) from exc
             del self._unsaved_scenes[store.path]
         return store.load()
+
+    def save_current_scene(self, engine: Engine) -> None:
+        """Save the scene now instead of at the next autosave; a failed write is kept for a later retry."""
+        self._save_scene(engine, self.simulated, retain_failure=True)
 
     def _save_scene(self, engine: Engine, simulated: bool, *, retain_failure: bool = False) -> None:
         store = self._scene_store or (self.scenes[True] if simulated else self._device_store(engine.switch))

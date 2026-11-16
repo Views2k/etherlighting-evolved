@@ -261,5 +261,6 @@ async def test_sync_api_validates_route_body_and_returns_acknowledged_state(conf
             restored = await client.post("/api/presets/Synced/apply")
             assert restored.status_code == 200
             assert restored.json()["sfp_sync"] == original["sfp_sync"]
+            assert all(item["acknowledged_revision"] == item["revision"] for item in restored.json()["sfp"])
     finally:
         await engine.stop()

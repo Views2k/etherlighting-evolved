@@ -39,7 +39,7 @@ from .health import HEALTH_INTERVAL, HealthParseError
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
 from .poe import PoePort, summarize_poe
-from .rules import DEFAULT_RULES, PortFacts, Rule, first_match
+from .rules import DEFAULT_RULES, FIELDS, PortFacts, Rule, first_match
 from .sfp import NATIVE_PERIODS, SfpLight, SfpSync
 from .sfp_playback import SfpPlayback, displayed_rgb
 from .switch import EtherlightSwitch, PortOutput
@@ -692,6 +692,26 @@ class Engine:
                 return index
         raise NotFound(f"no rule {rule_id!r}")
 
+    def explain_rules(self, port: int, specs: list[dict], now: datetime) -> dict:
+        """Show how draft rules would light one port at a given time, without changing the active rules."""
+        # Each draft rule gets the checks a saved rule gets; unique IDs are required only when saving.
+        rules = [self._parse_rule(spec) for spec in specs]
+        facts = self.facts(port, now)
+        optical = port in self.switch.sfp_ports
+        winner = self._sfp_rule(port, rules, now) if optical else first_match(rules, facts)
+        override = None if optical else self.overrides.get(port)
+        results = [{"id": rule.id, "name": rule.name, "enabled": rule.enabled,
+                    "in_scope": bool((not optical or rule.ports) and (not rule.ports or port in rule.ports)),
+                    "matches": bool((not optical or rule.ports) and rule.matches(facts)),
+                    "conditions": [{**condition.to_dict(), "label": FIELDS[condition.field].label,
+                                    "actual": facts.value(condition.field), "passes": condition.test(facts)}
+                                   for condition in rule.conditions]} for rule in rules]
+        return {"port": port, "at": now.isoformat(timespec="minutes"), "rules": results,
+                "winner": {"id": winner.id, "name": winner.name} if winner else None,
+                "source": ("individual_color" if override else "rule" if winner else
+                           "port_effect" if not optical or self._sfp_indicator_active(port) else "sfp_setting"),
+                "output_running": self.mode == "running"}
+
     # Overrides, brightness, mode
 
     def set_override(self, port: Any, color: Any, brightness: Any = None) -> None:
@@ -868,14 +888,17 @@ class Engine:
             return displayed_rgb(self.switch.sfp_rgb16(port), self.gamma)
         return self._display_rgb(*self._sfp_color(port, elapsed))
 
-    def _sfp_rule(self, port: int) -> Rule | None:
+    def _sfp_indicator_active(self, port: int) -> bool:
+        return self.sfp_sync.mode == "ethernet" or port in self._sfp_zones
+
+    def _sfp_rule(self, port: int, rules: list[Rule] | None = None, now: datetime | None = None) -> Rule | None:
         light = self._sfp_light(port)
-        follows_ethernet = self.sfp_sync.mode == "ethernet"
-        indicator_active = follows_ethernet or port in self._sfp_zones
+        indicator_active = self._sfp_indicator_active(port)
         if light.mode == "off" and not indicator_active:
             return None
         # Existing all-copper rules must never silently acquire the SFP indicators.
-        rule = first_match([rule for rule in self.rules if rule.ports], self.facts(port))
+        rule = first_match([rule for rule in (self.rules if rules is None else rules) if rule.ports],
+                           self.facts(port, now))
         if rule is not None and rule.look.style == "effect" and light.mode == "unmanaged" and not indicator_active:
             return None
         return rule
@@ -996,6 +1019,24 @@ class Engine:
                 await asyncio.wait_for(self._sfp_changed.wait(), remaining)
             except TimeoutError:
                 return
+
+    def sfp_revisions(self) -> dict[int, int]:
+        return dict(self._sfp_revisions)
+
+    async def confirm_sfp_output(self, expected: dict[int, int]) -> None:
+        """Wait for each SFP port to acknowledge its expected revision.
+
+        Raises ValueError when another change replaced one of those revisions, and TransportError when output is
+        running but a port has not acknowledged its revision.
+        """
+        for port in sorted(expected):
+            if self._sfp_revisions[port] != expected[port]:
+                raise ValueError("SFP settings changed during confirmation. Review the current setup.")
+            await self.wait_for_sfp(port)
+        if any(self._sfp_revisions[port] != expected[port] for port in expected):
+            raise ValueError("SFP settings changed during confirmation. Review the current setup.")
+        if self.mode == "running" and any(self._sfp_acknowledged[port] != expected[port] for port in expected):
+            raise TransportError("Lighting settings were saved, but SFP output is still pending.")
 
     def set_fps(self, value: Any) -> None:
         fps = bounded_number(value, 1, 30, "frame rate")

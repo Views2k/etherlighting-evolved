@@ -918,6 +918,11 @@ A preset stores zones, rules, brightness and manual colors.
 | `POST /api/presets/{name}/duplicate` | `{"name":"New name"}` copies the saved snapshot without applying it |
 | `POST /api/presets/{name}/rename` | `{"name":"New name"}` renames the saved snapshot without applying it |
 
+Apply uses the same scene transaction as `PUT /api/scene` with `confirm_output`, and returns the state after
+the switch acknowledges the SFP output. It returns `409 output_unconfirmed` when that output is not confirmed,
+and `503 offline_scene_unconfirmed` when the lighting is applied in EE but the switch has not confirmed its offline
+copy.
+
 To save a preview without applying it, `POST /api/presets` accepts `scene` and
 `expected_revision` alongside `name`. The revision must match the current scene;
 the supplied scene uses the same topology, capability, and setting validation as

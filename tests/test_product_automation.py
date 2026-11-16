@@ -178,6 +178,15 @@ def test_rule_tester_uses_priority_and_manual_override_without_writes(config):
         assert engine.snapshot() == before
 
 
+def test_rule_tester_refuses_rules_that_saving_refuses(config):
+    with TestClient(create_app(config, autoconnect=False), base_url="http://localhost") as client:
+        client.post("/api/session/login", json={"host": "demo"})
+        rule = {"name": "Text ports", "ports": "12", "look": {"color": "#ffffff"}}
+        assert client.put("/api/rules", json={"rules": [rule]}).status_code == 400
+        tested = client.post("/api/rules/test", json={"port": 1, "rules": [rule]})
+        assert tested.status_code == 400 and tested.json()["detail"]["code"] == "invalid"
+
+
 @pytest.mark.anyio
 async def test_schedule_does_not_certify_pending_optical_acknowledgment(tmp_path):
     profiles, store, _, sessions = scheduler_fixture(tmp_path)

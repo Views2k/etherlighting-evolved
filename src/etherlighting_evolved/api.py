@@ -31,7 +31,7 @@ from .guard import LOOPBACK_BINDS, RequestGuard
 from .lighting_library import attach_library_routes
 from .port_names import attach_port_name_routes
 from .presets import PresetStore, ProfileConflict, ProfileStoreError
-from .rules import FIELDS, STYLES, TEMPLATES, Rule
+from .rules import FIELDS, STYLES, TEMPLATES
 from .scene_history import attach_routes as attach_history_routes
 from .scene_history import scene_revision
 from .schedules import ACTIONS, Scheduler, ScheduleStore, ScheduleStoreError
@@ -315,27 +315,34 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         except (TransportError, ValueError) as exc:
             raise HTTPException(409, detail={"code": "output_unconfirmed", "message": str(exc)}) from exc
 
-    async def confirm_sfp_output(e, expected_sfp: dict[int, int]):
-        for port in sorted(expected_sfp):
-            if e._sfp_revisions[port] != expected_sfp[port]:
-                raise HTTPException(409, detail={
-                    "code": "output_unconfirmed",
-                    "message": "SFP settings changed during confirmation. Review the current setup.",
-                })
-            await await_output(e.wait_for_sfp, port)
-        if any(e._sfp_revisions[p] != expected_sfp[p] for p in expected_sfp):
-            raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
-                                            "SFP settings changed during confirmation. Review the current setup."})
-        if e.mode == "running" and any(e._sfp_acknowledged[p] != expected_sfp[p] for p in expected_sfp):
-            raise HTTPException(409, detail={"code": "output_unconfirmed", "message":
-                                            "Lighting settings were saved, but SFP output is still pending."})
-
     async def apply_port_change(e, fn, *args, **kwargs):
-        previous = dict(e._sfp_revisions)
+        previous = e.sfp_revisions()
         apply(fn, *args, **kwargs)
-        await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in e.switch.sfp_ports
-                                     if e._sfp_revisions[port] != previous[port]})
+        current = e.sfp_revisions()
+        await await_output(e.confirm_sfp_output, {port: current[port] for port in e.switch.sfp_ports
+                                                  if current[port] != previous[port]})
         return e.state()
+
+    async def commit_scene(e, scene, *, preserve_unchanged: bool, confirm_output: bool) -> dict:
+        """Apply a scene, optionally wait for SFP output, and update the switch's offline copy."""
+        try:
+            affected_sfp = apply(e.apply_snapshot, scene, preserve_unchanged=preserve_unchanged)
+        except AttributeError as exc:
+            raise HTTPException(400, detail={
+                "code": "invalid", "message": "The lighting setup has invalid settings.",
+            }) from exc
+        accepted = scene_envelope(e.snapshot())
+        if confirm_output:
+            revisions = e.sfp_revisions()
+            await await_output(e.confirm_sfp_output, {port: revisions[port] for port in affected_sfp})
+        if getattr(e.switch.transport, "desktop_output", None):
+            sessions.save_current_scene(e)
+            try:
+                await sessions.sync_offline_lighting(e)
+            except (OSError, ValueError, TransportError) as exc:
+                raise HTTPException(503, detail={"code": "offline_scene_unconfirmed",
+                    "message": "Lighting applied in EE. The switch has not confirmed its offline copy."}) from exc
+        return accepted
 
     def simulator() -> SimulatedTransport:
         transport = engine().switch.transport
@@ -464,31 +471,8 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
         if now.tzinfo is not None:
             raise HTTPException(400, detail={"code": "invalid", "message":
                 "Use the EE computer's local date and time."})
-        rules = [apply(Rule.parse, value, num_ports=e.num_ports, extra_ports=tuple(e.switch.sfp_ports))
-                 for value in body.rules]
-        facts = e.facts(body.port, now)
-        optical = body.port in e.switch.sfp_ports
-        indicator_active = optical and (e.sfp_sync.mode == "ethernet" or body.port in e._sfp_zones)
-        light = e._sfp_light(body.port) if optical else None
-        candidates = [rule for rule in rules if not optical or rule.ports]
-        winner = next((rule for rule in candidates if rule.matches(facts)), None)
-        suppressed = optical and ((light.mode == "off" and not indicator_active)
-                     or (winner and winner.look.style == "effect"
-                         and light.mode == "unmanaged" and not indicator_active))
-        if suppressed:
-            winner = None
-        override = e.overrides.get(body.port) if not optical else None
-        results = [{"id": rule.id, "name": rule.name, "enabled": rule.enabled,
-                    "in_scope": bool((not optical or rule.ports) and (not rule.ports or body.port in rule.ports)),
-                    "matches": bool(rule in candidates and rule.matches(facts)),
-                    "conditions": [{**condition.to_dict(), "label": FIELDS[condition.field].label,
-                                    "actual": facts.value(condition.field), "passes": condition.test(facts)}
-                                   for condition in rule.conditions]} for rule in rules]
-        return {"port": body.port, "at": now.isoformat(timespec="minutes"), "rules": results,
-                "winner": {"id": winner.id, "name": winner.name} if winner else None,
-                "source": ("individual_color" if override else "rule" if winner else
-                           "port_effect" if not optical or indicator_active else "sfp_setting"),
-                "output_running": e.mode == "running", "scene_revision": scene_envelope(e.snapshot())["revision"]}
+        return {**apply(e.explain_rules, body.port, body.rules, now),
+                "scene_revision": scene_envelope(e.snapshot())["revision"]}
 
     @api.get("/rules")
     async def rules():
@@ -612,7 +596,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
 
     @api.post("/session/recover")
     async def recover_connection():
-        async with sessions._lock:
+        async with sessions.exclusive():
             e = engine()
             await await_output(e.recover_connection)
             return e.state()
@@ -632,23 +616,8 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
                 "code": "scene_changed",
                 "message": "The lighting setup changed. Review the current setup before applying.",
             })
-        try:
-            affected_sfp = apply(e.apply_snapshot, body.scene, preserve_unchanged=body.preserve_unchanged)
-        except AttributeError as exc:
-            raise HTTPException(400, detail={
-                "code": "invalid", "message": "The lighting setup has invalid settings.",
-            }) from exc
-        accepted = scene_envelope(e.snapshot())
-        if body.confirm_output:
-            await confirm_sfp_output(e, {port: e._sfp_revisions[port] for port in affected_sfp})
-        if getattr(e.switch.transport, "desktop_output", None):
-            sessions._save_scene(e, sessions.simulated, retain_failure=True)
-            try:
-                await sessions.sync_offline_lighting(e)
-            except (OSError, ValueError, TransportError) as exc:
-                raise HTTPException(503, detail={"code": "offline_scene_unconfirmed",
-                    "message": "Lighting applied in EE. The switch has not confirmed its offline copy."}) from exc
-        return accepted
+        return await commit_scene(e, body.scene, preserve_unchanged=body.preserve_unchanged,
+                                  confirm_output=body.confirm_output)
 
     async def restore_history_scene(scene, revision):
         return await restore_scene(SceneRestore(scene=scene, expected_revision=revision,
@@ -734,7 +703,7 @@ def create_app(config: Config | None = None, *, demo: bool = False, autoconnect:
             scene = presets.get(name)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found", "message": f"no preset named {name!r}"}) from None
-        apply(e.apply_snapshot, scene)
+        await commit_scene(e, scene, preserve_unchanged=False, confirm_output=True)
         return e.state()
 
     @api.delete("/presets/{name}")
