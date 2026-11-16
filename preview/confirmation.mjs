@@ -1,3 +1,5 @@
+import {randomId} from './dom.mjs';
+
 const pendingConfirmations = new WeakMap();
 
 export function confirmAction(owner, title, message, accept, signal) {
@@ -10,7 +12,7 @@ export function confirmAction(owner, title, message, accept, signal) {
     const dialog = document.createElement('dialog'); dialog.className = 'dialog';
     const shell = document.createElement('div'); shell.className = 'dialog-sheet';
     const heading = document.createElement('h2'); heading.textContent = title;
-    heading.id = `confirmation-${crypto.randomUUID()}`;
+    heading.id = `confirmation-${randomId()}`;
     dialog.setAttribute('aria-labelledby', heading.id);
     const copy = document.createElement('p'); copy.className = 'muted'; copy.textContent = message;
     copy.id = `${heading.id}-description`; dialog.setAttribute('aria-describedby',copy.id);

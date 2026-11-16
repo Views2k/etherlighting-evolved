@@ -3,12 +3,12 @@ import {mkdir,open,rename,unlink} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {MAX_APPROVED_DEVICES,readOwnedFile} from './approved-device.mjs';
-import {deviceName,pairingCode,privateIPv4} from './lan-address.mjs';
+import {deviceName,LAN_DEFAULT_PORT,pairingCode,privateIPv4} from './lan-address.mjs';
 import {sameOriginRequest,singleHeaders} from './tailnet-access.mjs';
 
 // LAN access is plain HTTP to this PC's private IPv4 addresses. Each device pairs with a code shown on this PC and
 // then sends its own key in a cookie. The codes live in memory only; the settings file keeps a hash of each key.
-export const LAN_DEFAULT_PORT=4280;
+export {LAN_DEFAULT_PORT};
 export const PAIRING_CODE_TTL_MS=300000;
 export const PAIRING_ATTEMPTS=5;
 export const MAX_LAN_DEVICES=MAX_APPROVED_DEVICES;

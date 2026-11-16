@@ -987,6 +987,18 @@ dialog.color-popover .color-popup-footer :is(input,button) { min-height: 44px; }
 .connection-trust[hidden] { display: none; }
 .certificate-fingerprint { font-size: 12px; overflow-wrap: anywhere; user-select: text; }
 .connection-notice { margin-block: 16px 0; }
+.lan-access-settings > .lan-access { margin-top: 18px; }
+.lan-access-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger); border-radius: 4px; background: var(--notice-surface); font-size: 13px; line-height: 1.55; max-width: 64ch; }
+.lan-pairing .lan-access-warning { max-width: none; }
+.lan-addresses, .lan-pairing, .lan-devices, .lan-pairing-active { display: grid; gap: 8px; justify-items: start; }
+.lan-addresses[hidden], .lan-pairing[hidden], .lan-devices[hidden], .lan-pairing-active[hidden] { display: none; }
+.lan-address-list, .lan-device-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; width: 100%; }
+.lan-address { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.lan-address code { font-size: 13px; overflow-wrap: anywhere; user-select: text; }
+.lan-pairing-code { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; user-select: text; }
+.lan-device { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.lan-device-details { display: grid; gap: 2px; min-width: 0; }
+.lan-device-details .help-text { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 540px) {
   .connection-panel { margin: 12px auto; padding: 20px; }
   .connection-heading { flex-wrap: wrap; }

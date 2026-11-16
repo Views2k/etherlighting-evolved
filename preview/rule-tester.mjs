@@ -1,6 +1,6 @@
 import {hostScheduleDate,scheduleClockLabel} from './schedule-clock.mjs';
 import {lightingPorts} from './port-topology.mjs';
-import {field,node} from './dom.mjs';
+import {field,node,randomId} from './dom.mjs';
 const display=value=>value===null||value===undefined?'Not reported':Array.isArray(value)?value.join(' to '):typeof value==='boolean'?value?'Yes':'No':String(value);
 const operators={is:'is',is_not:'is not',in:'is any of',not_in:'is none of',gt:'is above',ge:'is at least',lt:'is below',le:'is at most',eq:'equals',ne:'does not equal',between:'is between'};
 const units={speed:' Mbps',traffic:' Mbps',poe_power:' W'};
@@ -12,7 +12,7 @@ function conditionValue(condition,value,actual=false){
 }
 export function openRuleTester({request,state,rules,signal}) {
   const dialog=node('dialog','dialog rule-test-dialog'),title=node('h2','','Test rules'),form=node('form'),port=node('select'),at=node('input'),output=node('div','rule-test-result'),error=node('p','inline-error');
-  title.id=`rule-test-${crypto.randomUUID()}`;dialog.setAttribute('aria-labelledby',title.id);at.type='datetime-local';at.required=true;
+  title.id=`rule-test-${randomId()}`;dialog.setAttribute('aria-labelledby',title.id);at.type='datetime-local';at.required=true;
   const clock=hostScheduleDate(state);at.value=Number.isFinite(clock.getTime())?new Date(clock.getTime()).toISOString().slice(0,16):'';
   const topology=lightingPorts(state);for(const id of [...topology.copper,...topology.sfp]){const option=node('option','',`${topology.sfp.includes(id)?'SFP':'Port'} ${id}`);option.value=id;port.append(option);}
   const fields=node('div','form-grid');fields.append(field('Port',port),field(`Date and time · ${scheduleClockLabel(state)}`,at));

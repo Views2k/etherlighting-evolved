@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {createRouteHistory} from '../preview/route-history.mjs';
+import {lanPage,loopbackHost} from '../preview/lan-address.mjs';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;return {promise:new Promise(done=>{resolve=done;}),resolve:value=>resolve(value)};};
@@ -84,6 +85,7 @@ test('explicit navigation from an untracked cursor starts a new chain without as
 
 const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
 const navigateSource=source.slice(source.indexOf('async function navigate(target,'),source.indexOf('function renderStudio()'));
+const remoteSource=source.slice(source.indexOf('const remotePage ='),source.indexOf('\n',source.indexOf('const remotePage =')));
 function app(b,confirmDraft,{pendingPlan=null}={}){
   const no=()=>{},rendered=[];
   const context={workspaceReady:true,navigationVersion:0,page:'Profiles',routeHistory:b.routes,workspaceOptions:{live:false},
@@ -93,8 +95,9 @@ function app(b,confirmDraft,{pendingPlan=null}={}){
     renderStudio:()=>rendered.push('Lighting'),renderEffectGallery:()=>()=>{},renderAutomation:async()=>()=>{},renderProfiles:async()=>()=>{},
     renderSettings:async()=>()=>{},renderHelp:async()=>{rendered.push('Help');return ()=>{};},
     workspaceRequest:()=>no,state:{},effects:[],applyProfile:no,acceptSession:no,closeWorkspace:no,refresh:async()=>{},notify:no,
-    previewScene:no,savePreviewProfile:no,undoLastApply:no,lastApplied:null,edits:new Set(),requestedRuleId:undefined,updateDraftBar:no};
-  vm.createContext(context);vm.runInContext(navigateSource,context);return {context,rendered};
+    previewScene:no,savePreviewProfile:no,undoLastApply:no,lastApplied:null,edits:new Set(),requestedRuleId:undefined,updateDraftBar:no,
+    location:{protocol:'http:',hostname:'127.0.0.1',port:'4180'},loopbackHost,lanPage};
+  vm.createContext(context);vm.runInContext(`${remoteSource}\n${navigateSource}`,context);return {context,rendered};
 }
 const populated=()=>{const b=browser();b.routes.commit('Lighting',{fromHistory:true});b.routes.commit('Settings');b.routes.commit('Profiles');return b;};
 
@@ -178,6 +181,15 @@ test('pages opened through private access are told that they are remote',async()
   await context.navigate('Settings');
   context.workspaceOptions={live:true,remote:false};await context.navigate('Help');await context.navigate('Settings');
   assert.deepEqual(received,[true,false]);
+});
+
+test('a page on another computer is remote even when the workspace answer says otherwise, and a LAN page says so',async()=>{
+  const b=populated(),{context}=app(b,async()=>true),received=[];
+  Object.assign(context,{workspaceOptions:{live:true,remote:false},location:{protocol:'http:',hostname:'192.168.1.2',port:'4280'},
+    renderSettings:async(_host,options)=>{received.push([options.remote,options.lan]);return ()=>{};}});
+  await context.navigate('Settings');
+  context.location={protocol:'https:',hostname:'ee.example.ts.net',port:'8444'};await context.navigate('Help');await context.navigate('Settings');
+  assert.deepEqual(received,[[true,true],[true,false]]);
 });
 
 test('invalid lighting color still blocks navigation and preserves the draft',async()=>{

@@ -25,6 +25,8 @@ export async function request(path, method = 'GET', body, {workspace} = {}) {
     error.status = response.status;
     error.uncertain = writing && response.status >= 500;
     error.details = typeof detail === 'object' ? detail : {};
+    // A LAN device whose pairing was removed gets this from every request, so the workspace shows the pairing screen.
+    if (error.code === 'lan_pairing_required') globalThis.dispatchEvent(new Event('ee-lan-pairing-required'));
     throw error;
   }
   return result;

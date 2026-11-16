@@ -8,12 +8,12 @@ import {createOperationGate, matchingProfile, sceneFingerprint, profileNameError
 import {effectById} from './effect-renderer.mjs';
 import {createProfilePreviews, profileLayoutNotice} from './profile-preview.mjs';
 import {lightingPorts} from './port-topology.mjs';
-import {handoffConfirmation, handoffFans, remoteCanRestore, requestHandoff, renderControllerConnection, renderPrivateAccess, showConnectionStatus, sshHostKey} from './connections.mjs';
+import {handoffConfirmation, handoffFans, remoteCanRestore, requestHandoff, renderControllerConnection, renderLanAccess, renderPrivateAccess, showConnectionStatus, sshHostKey} from './connections.mjs';
 import {switchConnectionStatus} from './workspace-session.mjs';
 import {commitScene} from './scene-transaction.mjs';
 import {receiveScheduleClock,scheduleClockLabel} from './schedule-clock.mjs';
 import {openColorPicker} from './color-picker.mjs';
-import {field, input, node, select} from './dom.mjs';
+import {field, input, node, randomId, select} from './dom.mjs';
 
 const copy = value => structuredClone(value);
 const portName = (port, sfp) => sfp.includes(port) ? `SFP ${port}` : `Port ${port}`;
@@ -516,7 +516,7 @@ async function renderRules(host, {request, state, onChange, getState = () => sta
     form.addEventListener('submit', event => {
       event.preventDefault(); if (!form.reportValidity()) return; sync();
       const error = validateRuleDraft(draft,specs); if (error) { status(error,true); return; }
-      const payload = copy(draft), id = selectedId || crypto.randomUUID().replaceAll('-',''); payload.id=id;
+      const payload = copy(draft), id = selectedId || randomId(); payload.id=id;
       void gate.run(async () => {
         if (!await prepareMutation()) return;
         const index = rules.findIndex(rule => rule.id === id);
@@ -561,7 +561,7 @@ async function renderRules(host, {request, state, onChange, getState = () => sta
 
 function nameDialog(title, current, scenes, signal, unchanged) {
   return new Promise(resolve => {
-    const dialog = node('dialog','dialog'), heading = node('h2','',title); heading.id = `profile-name-${crypto.randomUUID()}`;
+    const dialog = node('dialog','dialog'), heading = node('h2','',title); heading.id = `profile-name-${randomId()}`;
     dialog.setAttribute('aria-labelledby',heading.id);
     const form = node('form'), name = input(current), error = node('p','inline-error'); name.maxLength = 64; name.required = true; name.setAttribute('aria-label','Profile name');
     error.id = `${heading.id}-error`; error.setAttribute('aria-live','polite'); name.setAttribute('aria-describedby',error.id);
@@ -708,9 +708,9 @@ export async function renderProfiles(host, {request, state, onChange, getState =
 
 export {renderProfiles as renderScenes};
 
-// remote: Settings is open on a device that uses private access, which cannot forget the saved switch login or set up
-// UniFi Network.
-export async function renderSettings(host, {request, onHelp, onSessionChange, onCloseWorkspace, onChange, remote = false}) {
+// remote: Settings is open on a device that uses Tailscale or LAN access, which cannot forget the saved switch login or
+// set up UniFi Network. lan: this page itself uses LAN access.
+export async function renderSettings(host, {request, onHelp, onSessionChange, onCloseWorkspace, onChange, remote = false, lan = false}) {
   const {header,notice,status} = frame(host,'Settings','Connections, appearance, and application details.');
   const gate = operationGate(host,status), content = node('div','settings-content panel'), controllerHost = node('div','controller-settings');
   const lifecycle = new AbortController();
@@ -742,12 +742,15 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
   // service does not answer.
   request('/api/about').then(info => { if (gate.active) disclaimer.textContent = info.disclaimer; }, () => {});
   let controllerCleanup, switchState;
-  const privateHost=node('div','private-access-settings'),lastSessionHost=node('div','last-session-settings');
+  // Each panel starts by replacing its host's children, so the two share the Remote section through their own hosts.
+  const remoteHost=node('div','remote-settings'),privateHost=node('div','private-access-settings'),lanHost=node('div','lan-access-settings');
+  remoteHost.append(privateHost,lanHost);
+  const lastSessionHost=node('div','last-session-settings');
   const lastSessionCleanup=mountLastSession(lastSessionHost,{request});
   const appearance=node('section','settings-appearance panel'),themeCleanup=mountThemeSettings(appearance);
   const workspace = node('div','settings-workspace'), navigation = node('nav','settings-nav'), pane = node('div','settings-pane');
   navigation.setAttribute('aria-label','Settings sections');
-  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[privateHost,'Remote'],[lastSessionHost,'Last session'],[appearance,'Appearance'],[about,'About']];
+  const sections = [[content,'Connection'],[health,'Health'],[controllerHost,'UniFi'],[remoteHost,'Remote'],[lastSessionHost,'Last session'],[appearance,'Appearance'],[about,'About']];
   const sectionButtons = sections.map(([section,label],index) => {
     const control = button(label, () => {
       const top = pane.scrollTop + section.getBoundingClientRect().top - pane.getBoundingClientRect().top;
@@ -766,9 +769,10 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
     });
   };
   pane.addEventListener('scroll',updateSection,{passive:true});
-  pane.append(content,health,controllerHost,privateHost,lastSessionHost,appearance,about);workspace.append(navigation,pane);host.append(workspace,notice);
+  pane.append(content,health,controllerHost,remoteHost,lastSessionHost,appearance,about);workspace.append(navigation,pane);host.append(workspace,notice);
   updateSection();
   const privateCleanup=renderPrivateAccess(privateHost,request,{signal:lifecycle.signal});
+  const lanCleanup=renderLanAccess(lanHost,request,{signal:lifecycle.signal,remote,lan});
   const reload = () => gate.run(async () => {
     try {
       const [session, state, capabilities] = await Promise.all([request('/api/session'),request('/api/state'),request('/api/private-access').catch(()=>({can_close_workspace:false}))]); if (!gate.active) return;
@@ -785,7 +789,7 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
         if(key)content.append(node('p','muted',key.keyType?`SSH key fingerprint (${key.keyType})`:'SSH key fingerprint'),
           node('code','certificate-fingerprint',key.fingerprint),node('p','help-text',SSH_KEY_HELP));
         const handoff=button('Handoff to UniFi',()=>gate.run(async()=>{
-          const unsaved=controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges();
+          const unsaved=controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges()||lanCleanup.hasChanges();
           const message=handoffConfirmation(state.fans?.supported===true,unsaved,remote&&!remoteCanRestore(session));
           if(!await confirmAction(host,'Handoff to UniFi?',message,'Handoff to UniFi',lifecycle.signal)||!gate.active)return;
           handoff.textContent='Handing off…';status('Handing lighting back to UniFi…');
@@ -817,15 +821,15 @@ export async function renderSettings(host, {request, onHelp, onSessionChange, on
     } catch(error) { retryPanel(content,'Connection details could not be loaded.',reload); throw error; }
   });
   header.append(button('Refresh connection',reload)); content.append(node('p','secondary-loading','Loading connection details…')); void reload();
-  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();lastSessionCleanup();themeCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
+  const cleanup = () => { pane.removeEventListener('scroll',updateSection);lifecycle.abort();controllerCleanup?.();privateCleanup();lanCleanup();lastSessionCleanup();themeCleanup();gate.close(); host.inert = false; host.removeAttribute('aria-busy'); };
   cleanup.update = (state,session,unavailable = false) => {
     if (!gate.active) return;
     if (switchState) showConnectionStatus(switchState,switchConnectionStatus(session,unavailable));
     updateHealth(state,unavailable);
     if (state.controller) controllerCleanup?.update?.(state.controller,unavailable);
   };
-  cleanup.hasChanges=()=>Boolean(controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges());
-  cleanup.canLeave=async()=>{await gate.settle();await privateCleanup.canLeave();if(!gate.active)return false;if(cleanup.hasChanges()&&!await confirmAction(host,'Leave connection settings?','Your unapplied connection changes will be discarded.','Leave',lifecycle.signal))return false;return gate.active&&(await controllerCleanup?.canLeave?.()??true);};return cleanup;
+  cleanup.hasChanges=()=>Boolean(controllerCleanup?.hasChanges?.()||privateCleanup.hasChanges()||lanCleanup.hasChanges());
+  cleanup.canLeave=async()=>{await gate.settle();await privateCleanup.canLeave();await lanCleanup.canLeave();if(!gate.active)return false;if(cleanup.hasChanges()&&!await confirmAction(host,'Leave connection settings?','Your unapplied connection changes will be discarded.','Leave',lifecycle.signal))return false;return gate.active&&(await controllerCleanup?.canLeave?.()??true);};return cleanup;
 }
 
 export function renderHelp(host, {state = {}} = {}) {

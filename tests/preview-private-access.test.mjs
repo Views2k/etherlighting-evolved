@@ -356,7 +356,8 @@ test('private access says what devices on Tailscale can use',async context=>{
   const dom=rendererDom(context),cleanup=renderPrivateAccess(dom.host,async()=>disabled);dom.after(cleanup);await flush();
   const help=dom.byClass(dom.host,'help-text').map(item=>item.textContent);
   assert.equal(help[1],'Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.');
-  assert.equal(help[0],'Use Tailscale to open this workspace on your phone or another device.');
+  assert.equal(help[0],'Use Tailscale to open this workspace on your phone or another device over an encrypted connection, at home or away. Tailscale is optional. LAN access in Settings works on your own network without it.');
+  assert.equal(dom.findAll(dom.host,item=>item.tagName==='h2')[0].textContent,'Tailscale private access');
 });
 
 test('the audience is chosen explicitly, sent once with Apply, and confirmed from the reply',async context=>{
