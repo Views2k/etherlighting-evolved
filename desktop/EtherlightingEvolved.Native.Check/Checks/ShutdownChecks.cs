@@ -124,6 +124,13 @@ internal static class ShutdownChecks
         check(failed && LastEntry("service_start_failed") is { } start && start.Int("exit_code") == 4
               && start.Arr("output").Any(line => line.Str() == "Startup failed at https://example.test/"),
             "desktop.log records why the service did not start, without address credentials");
+
+        var missing = new ServiceHost(Path.Combine(directory, "missing-node"), script, directory, packaged: false, demo: true, directory);
+        var refused = false;
+        try { await missing.StartAsync(CancellationToken.None); }
+        catch (System.ComponentModel.Win32Exception) { refused = true; }
+        check(refused && !missing.Running && LastEntry("service_start_failed")?.Str("errors.0.type") == typeof(System.ComponentModel.Win32Exception).FullName,
+            "desktop.log records a service that could not be launched at all");
     }
 
     static JsonNode? LastEntry(string kind) =>

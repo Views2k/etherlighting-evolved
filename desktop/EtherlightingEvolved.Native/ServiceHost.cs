@@ -19,7 +19,6 @@ public sealed class ServiceHost
     readonly ConcurrentQueue<string> output = new();
     Task<bool>? stopping, forcing;
     Process? process;
-    TaskCompletionSource<Uri>? ready;
 
     internal ServiceHost(string node, string script, string root, bool packaged, bool demo, string dataDirectory)
     {
@@ -54,57 +53,20 @@ public sealed class ServiceHost
 
     public async Task<Uri> StartAsync(CancellationToken token)
     {
-        Directory.CreateDirectory(dataDirectory);
-        var port = FreePort(demo ? 4190 : 4180);
-        var start = new ProcessStartInfo(node, [script])
-        {
-            WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-        };
-        foreach (var key in start.Environment.Keys.ToList())
-            if (key.StartsWith("EE_", StringComparison.OrdinalIgnoreCase) || key.StartsWith("PYTHON", StringComparison.OrdinalIgnoreCase)
-                || key is "NODE_OPTIONS" or "NODE_PATH")
-                start.Environment.Remove(key);
-        if (packaged) start.Environment["EE_RUNTIME_MODE"] = "packaged";
-        start.Environment["EE_PREVIEW_LIVE"] = demo ? "0" : "1";
-        start.Environment["EE_PREVIEW_PORT"] = port.ToString();
-        start.Environment["EE_WORKSPACE_DATA_DIR"] = dataDirectory;
-        // The gateway closes the workspace, confirming lighting cleanup, when this program's handle to it closes.
-        start.Environment["EE_DESKTOP_HOST"] = "1";
-        ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var expected = $"Browser preview: http://127.0.0.1:{port}";
-        var running = process = new Process { StartInfo = start, EnableRaisingEvents = true };
-        running.OutputDataReceived += (_, line) =>
-        {
-            if (line.Data?.Trim() == expected) ready.TrySetResult(new Uri($"http://127.0.0.1:{port}/"));
-        };
-        running.ErrorDataReceived += (_, line) =>
-        {
-            if (line.Data is not { } text) return;
-            output.Enqueue(DesktopLog.Clean(text));
-            while (output.Count > 64) output.TryDequeue(out var _);
-        };
-        running.Exited += async (_, _) =>
-        {
-            ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
-            // Until Address is set StartAsync reports the failure, and a requested stop is expected.
-            lock (stopLock)
-                if (Address is null || stopping is not null || forcing is not null) return;
-            await Drain(running).ConfigureAwait(false);
-            DesktopLog.Service("service_stopped", running.ExitCode, output);
-            Stopped?.Invoke(running.ExitCode);
-        };
-        try { running.Start(); }
+        Process running;
+        Task<Uri> ready;
+        try { (running, ready) = Launch(); }
         catch (Exception error)
         {
+            // The window says desktop.log holds the cause of a failed start, including one before the service runs.
             DesktopLog.Error("service_start_failed", error);
             throw;
         }
-        running.BeginOutputReadLine();
-        running.BeginErrorReadLine();
         try
         {
-            var address = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
+            running.BeginOutputReadLine();
+            running.BeginErrorReadLine();
+            var address = await ready.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
             using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
             var workspace = Json.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
             if (workspace.Bool("live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
@@ -129,6 +91,55 @@ public sealed class ServiceHost
             try { running.StandardInput.Close(); } catch (Exception) { }
             if (!running.WaitForExit(25000)) Kill();
         }
+    }
+
+    /// <summary>Starts the gateway on a free local port. The task gives its address once it listens.</summary>
+    (Process Running, Task<Uri> Ready) Launch()
+    {
+        Directory.CreateDirectory(dataDirectory);
+        var port = FreePort(demo ? 4190 : 4180);
+        var start = new ProcessStartInfo(node, [script])
+        {
+            WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (var key in start.Environment.Keys.ToList())
+            if (key.StartsWith("EE_", StringComparison.OrdinalIgnoreCase) || key.StartsWith("PYTHON", StringComparison.OrdinalIgnoreCase)
+                || key is "NODE_OPTIONS" or "NODE_PATH")
+                start.Environment.Remove(key);
+        if (packaged) start.Environment["EE_RUNTIME_MODE"] = "packaged";
+        start.Environment["EE_PREVIEW_LIVE"] = demo ? "0" : "1";
+        start.Environment["EE_PREVIEW_PORT"] = port.ToString();
+        start.Environment["EE_WORKSPACE_DATA_DIR"] = dataDirectory;
+        // The gateway closes the workspace, confirming lighting cleanup, when this program's handle to it closes.
+        start.Environment["EE_DESKTOP_HOST"] = "1";
+        var ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var expected = $"Browser preview: http://127.0.0.1:{port}";
+        var running = new Process { StartInfo = start, EnableRaisingEvents = true };
+        running.OutputDataReceived += (_, line) =>
+        {
+            if (line.Data?.Trim() == expected) ready.TrySetResult(new Uri($"http://127.0.0.1:{port}/"));
+        };
+        running.ErrorDataReceived += (_, line) =>
+        {
+            if (line.Data is not { } text) return;
+            output.Enqueue(DesktopLog.Clean(text));
+            while (output.Count > 64) output.TryDequeue(out var _);
+        };
+        running.Exited += async (_, _) =>
+        {
+            ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
+            // Until Address is set StartAsync reports the failure, and a requested stop is expected.
+            lock (stopLock)
+                if (Address is null || stopping is not null || forcing is not null) return;
+            await Drain(running).ConfigureAwait(false);
+            DesktopLog.Service("service_stopped", running.ExitCode, output);
+            Stopped?.Invoke(running.ExitCode);
+        };
+        running.Start();
+        // Only a started process is kept: Running and Kill would throw for one that never ran.
+        process = running;
+        return (running, ready.Task);
     }
 
     /// <summary>Waits briefly for the last output lines of a service that has exited.</summary>
