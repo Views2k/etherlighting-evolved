@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import math
 import shlex
 import time
@@ -21,8 +22,10 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .storage import atomic_write_json
+from .storage import atomic_write_json, quarantine
 from .transport import TransportError
+
+log = logging.getLogger(__name__)
 
 MODES = ("switch", "curve", "manual", "target")
 # CPU temperature in degrees C and fan speed in percent. Speeds between points are interpolated.
@@ -160,9 +163,22 @@ class FanStore:
         self.path = path
 
     def load(self) -> FanSettings:
+        """The saved choice. Without a usable one the switch keeps control of its fans, the safe default."""
         try:
-            return FanSettings.from_dict(json.loads(self.path.read_text("utf-8")))
-        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            data = json.loads(self.path.read_text("utf-8"))
+        except FileNotFoundError:
+            return FanSettings()
+        except OSError as exc:
+            log.warning("The saved fan settings could not be read, so the switch controls the fans: %s", exc)
+            return FanSettings()
+        except ValueError:
+            data = None
+        try:
+            if not isinstance(data, dict):
+                raise ValueError("saved fan settings must be an object")
+            return FanSettings.from_dict(data)
+        except (ValueError, TypeError):
+            quarantine(self.path, "The saved fan settings could not be used, so the switch controls the fans")
             return FanSettings()
 
     def save(self, settings: FanSettings) -> None:

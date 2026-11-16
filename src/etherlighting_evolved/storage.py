@@ -1,11 +1,15 @@
-"""Saved files: atomic replacement and reading for the JSON stores."""
+"""Saved files: atomic replacement, reading, and setting aside files that cannot be used."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -34,3 +38,14 @@ def read_json(path: Path, default):
     except (OSError, json.JSONDecodeError):
         return default
     return data if isinstance(data, type(default)) else default
+
+
+def quarantine(path: Path, problem: str) -> None:
+    """Move an unusable saved file aside under a dated name, so its store can start over without losing it."""
+    target = path.with_name(f"{path.name}.corrupt-{datetime.now(UTC):%Y%m%dT%H%M%SZ}")
+    try:
+        path.rename(target)
+    except OSError as exc:
+        log.warning("%s, and %s could not be moved aside: %s", problem, path, exc)
+        return
+    log.warning("%s; it was moved to %s", problem, target)

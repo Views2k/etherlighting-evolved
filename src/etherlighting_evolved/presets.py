@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 
 from .storage import atomic_write_json as write_json
-from .storage import read_json
+from .storage import quarantine, read_json
 
 _NAME_RE = re.compile(r"^[\w .\-]{1,64}$")
 
@@ -177,13 +177,24 @@ class DeviceSceneStore(SceneStore):
         self.identity = identity
 
     def load(self) -> dict | None:
-        if not self.path.exists():
+        """The saved scene, or None when there is none.
+
+        A file that cannot be parsed or verified is moved aside and treated as missing, so the next login offers
+        the lighting setup choice instead of failing on every attempt.
+        """
+        try:
+            envelope = json.loads(self.path.read_text("utf-8"))
+        except FileNotFoundError:
             return None
-        envelope = read_json(self.path, {})
-        if (envelope.get("version") != 1 or envelope.get("identity") != self.identity
-                or not isinstance(envelope.get("scene"), dict) or not envelope["scene"]):
-            raise ValueError("The saved lighting for this switch could not be verified.")
-        return envelope["scene"]
+        except OSError as exc:
+            raise ValueError("The saved lighting for this switch could not be read.") from exc
+        except ValueError:
+            envelope = None
+        if (isinstance(envelope, dict) and envelope.get("version") == 1 and envelope.get("identity") == self.identity
+                and isinstance(envelope.get("scene"), dict) and envelope["scene"]):
+            return envelope["scene"]
+        quarantine(self.path, "The saved lighting for this switch could not be verified")
+        return None
 
     def save(self, scene: dict) -> None:
         write_json(self.path, {"version": 1, "identity": self.identity, "scene": scene})

@@ -156,15 +156,23 @@ def test_settings_validation_and_lines():
             FanSettings.from_dict(bad)
 
 
-def test_store_round_trip_and_unreadable_file(tmp_path):
+def test_store_round_trip(tmp_path):
     store = FanStore(tmp_path / "fans.json")
     assert store.load() == FanSettings()
     store.save(FanSettings(mode="target", target_celsius=58))
     assert store.load() == FanSettings(mode="target", target_celsius=58)
-    (tmp_path / "fans.json").write_text("{not json", "utf-8")
-    assert store.load() == FanSettings()
-    (tmp_path / "fans.json").write_text(json.dumps({"mode": "manual", "manual_percent": 5}), "utf-8")
-    assert store.load() == FanSettings()
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", json.dumps({"mode": "manual", "manual_percent": 5}),
+                                     json.dumps({"curve": []})])
+def test_unusable_settings_are_moved_aside_and_the_switch_keeps_control(tmp_path, caplog, content):
+    path = tmp_path / "fans.json"
+    path.write_text(content, "utf-8")
+    assert FanStore(path).load() == FanSettings()
+    assert not path.exists()
+    [moved] = tmp_path.glob("fans.json.corrupt-*")
+    assert moved.read_text("utf-8") == content
+    assert str(moved) in caplog.text
 
 
 def test_parse_reading():
