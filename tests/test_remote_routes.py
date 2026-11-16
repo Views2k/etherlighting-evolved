@@ -15,8 +15,12 @@ from fastapi.testclient import TestClient
 from etherlighting_evolved.api import create_app
 from etherlighting_evolved.routes.ws import WS_COMMANDS
 
-ROUTES_FILE = Path(__file__).resolve().parents[1] / "preview" / "remote-routes.mjs"
+ROOT = Path(__file__).resolve().parents[1]
+ROUTES_FILE = ROOT / "preview" / "remote-routes.mjs"
+API_REFERENCE = ROOT / "docs" / "API.md"
 PREFIX = "export const ROUTE_ACCESS = "
+# Local-only host-key routes that are listed before the engine has them.
+PENDING_ENGINE_ROUTES = {("POST", "/api/session/host-key/accept"), ("POST", "/api/session/host-key/replace")}
 METHOD_ORDER = ["GET", "POST", "PUT", "PATCH", "DELETE", "WS"]
 OWNER_LOCAL = {
     ("POST", "/api/session/login"), ("POST", "/api/session/forget-host-key"),
@@ -82,13 +86,18 @@ def test_every_engine_route_is_classified(config):
                          + ", ".join(f"{method} {path}" for method, path in sorted(missing)))
 
 
-def test_no_stale_remote_engine_entries(config):
+def test_no_stale_engine_entries(config):
     # A remote entry for a route the engine no longer has would open a later route with the same path. A local entry
-    # may name a route the engine does not have, so a route can be listed before it lands, and its entry denies
-    # nothing that would otherwise be allowed.
-    stale = pairs(load_access()["routes"], source="engine", remote=True) - engine_routes(config)
+    # under a remote placeholder refuses requests that the placeholder would forward.
+    stale = pairs(load_access()["routes"], source="engine") - engine_routes(config) - PENDING_ENGINE_ROUTES
     assert not stale, "Delete these rows from preview/remote-routes.mjs: " + ", ".join(
         f"{method} {path}" for method, path in sorted(stale))
+
+
+def test_api_reference_lists_the_local_routes():
+    section = API_REFERENCE.read_text("utf-8").split("These requests are local-only:\n\n", 1)[1].split("\n\n", 1)[0]
+    listed = set(re.findall(r"^\| `([A-Z]+) (/api/[^`]+)` \|", section, re.MULTILINE))
+    assert listed == pairs(load_access()["routes"], remote=False)
 
 
 def test_entries_are_well_formed():
