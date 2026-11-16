@@ -52,10 +52,15 @@ export function createServiceDiagnostics(directory,{maxBytes=65536,build=null}={
     }
     if(event==='workspace_close_failed')entry.reason=reasons.has(details.reason)?details.reason:'unexpected_error';
     if(event==='engine_failure'||event==='engine_log'){
-      if(event==='engine_failure')entry.error_type=identifier(details.error_type)||'UnknownError';
-      else{
+      if(event==='engine_failure'){
+        entry.error_type=identifier(details.error_type)||'UnknownError';
+        // EE's own errors carry a fixed identifier such as output_recovery_required.
+        if(typeof details.code==='string'&&/^[a-z_]{1,64}$/.test(details.code))entry.code=details.code;
+      }else{
         entry.level=['WARNING','ERROR','CRITICAL'].includes(details.level)?details.level:'ERROR';
         entry.logger=identifier(details.logger)||'other';
+        // The engine sends EE's %-style log templates without their arguments, so they name no host or user.
+        if(typeof details.template==='string')entry.template=details.template.replace(/\p{Cc}/gu,'').slice(0,120);
       }
       entry.frames=Array.isArray(details.frames)?details.frames.slice(-8).map(frame=>({
         module:identifier(frame?.module)||'unknown',function:identifier(frame?.function)||'unknown',

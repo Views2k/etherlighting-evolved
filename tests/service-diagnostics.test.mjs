@@ -29,6 +29,22 @@ test('structured failures retain useful code locations without exception values 
   assert.equal(JSON.stringify(f.entries()).includes(secret),false);
 });
 
+test('failure codes are kept only when they are identifiers',context=>{
+  const f=fixture(context);
+  for(const code of ['output_recovery_required','Bad-Code','x'.repeat(65),'private value',42])
+    f.log.stderr(JSON.stringify({event:'engine_failure',error_type:'ValueError',code,frames:[]})+'\n');
+  assert.deepEqual(f.entries().map(entry=>entry.code),['output_recovery_required',undefined,undefined,undefined,undefined]);
+});
+
+test('log templates are kept without control characters and capped at 120 characters',context=>{
+  const f=fixture(context);
+  for(const template of ['automatic login to %s failed: %s','line\nbreak\u0007\u009b','x'.repeat(200),['private value']])
+    f.log.stderr(JSON.stringify({event:'engine_log',level:'WARNING',logger:'etherlighting_evolved.session',template,frames:[]})+'\n');
+  assert.deepEqual(f.entries().map(entry=>entry.template),['automatic login to %s failed: %s','linebreak','x'.repeat(120),undefined]);
+  f.log.record('engine_exit',{code:1,template:'private value'});
+  assert.equal(f.entries().at(-1).template,undefined);
+});
+
 test('raw and overlong pipe output cannot leak into diagnostics or grow the input buffer',context=>{
   const f=fixture(context);
   f.log.stderr('private raw exception\n');
