@@ -78,8 +78,7 @@ class HostKeyStore:
         # "host:port" keys, because those releases accept only string values in this file.
         version = data.pop("version", str(HOST_KEY_FORMAT_VERSION))
         try:
-            check_version(int(version) if version.isdecimal() else None, HOST_KEY_FORMAT_VERSION,
-                          "The saved SSH host keys")
+            check_version(int(version) if version.isdecimal() else None, HOST_KEY_FORMAT_VERSION, "SSH host keys")
         except (NewerFormatError, ValueError) as exc:
             raise TransportError(str(exc)) from exc
         return data

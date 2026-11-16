@@ -66,7 +66,8 @@ def test_host_keys_in_an_unknown_format_are_refused_and_never_overwritten(tmp_pa
     content = json.dumps({"version": version, "switch.invalid:22": "SHA256:original"})
     path.write_text(content, "utf-8")
     store = HostKeyStore(path)
-    message = "newer version of EE" if version == "2" else "invalid format"
+    message = ("SSH host keys were saved by a newer version of EE. Update EE to use them." if version == "2"
+               else "SSH host keys have an invalid format version.")
     with pytest.raises(TransportError, match=message):
         store.verify_or_pin("second.invalid", 22, "SHA256:second")
     with pytest.raises(TransportError, match=message):
