@@ -1,4 +1,11 @@
-"""Export deterministic backend effect frames for the browser preview contract."""
+"""Export deterministic backend effect frames for the browser and desktop preview contracts.
+
+Usage: python tools/preview_fixtures.py <checkout> <folder>
+
+Writes effect-frames.json, color-sources.json, traffic-trails-frames.json, activity-glow-frames.json and
+poe-usage-frames.json, rendered by the engine in <checkout>/src. Pass tests/fixtures as the folder to refresh the
+checked-in files; tools/check-fixtures.py compares them with a fresh export.
+"""
 import json
 import sys
 from datetime import datetime, timedelta
@@ -8,6 +15,13 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "src"))
 from etherlighting_evolved.effects import EFFECTS  # noqa: E402
 from etherlighting_evolved.effects.base import RenderContext  # noqa: E402
 from etherlighting_evolved.links import PortLink  # noqa: E402
+
+output = Path(sys.argv[2])
+
+
+def write(name, data):
+    (output / name).write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
+
 
 variants = {
     "breathing": [{"ripple": True, "floor": 0}],
@@ -79,10 +93,9 @@ for effect in EFFECTS.values():
                     frames.append({"config": {"id": effect.id, "params": instance.params_json()},
                                    "count": count, "time": t, "hour": hour,
                                    "colors": [c.to_hex() for c in instance.render(t, ctx)]})
-target = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "effect-frames.json"
-target.parent.mkdir(exist_ok=True)
-target.write_text(json.dumps(frames, separators=(",", ":")) + "\n", encoding="utf-8")
-target.with_name("color-sources.json").write_text(json.dumps(color_sources, separators=(",", ":")) + "\n", encoding="utf-8")
+output.mkdir(parents=True, exist_ok=True)
+write("effect-frames.json", frames)
+write("color-sources.json", color_sources)
 sequences = []
 for count in (1, 8, 16):
     for params in ({}, {"speed": 0.7, "width": 1.25, "max_mbps": 100},
@@ -107,7 +120,7 @@ for count in (1, 8, 16):
             sequence["frames"].append({"time": t, "facts": facts,
                                        "colors": [color.to_hex() for color in instance.render(t, ctx)]})
         sequences.append(sequence)
-target.with_name("traffic-trails-frames.json").write_text(json.dumps(sequences, separators=(",", ":")) + "\n", encoding="utf-8")
+write("traffic-trails-frames.json", sequences)
 glow_sequences = []
 for count in (1, 8, 16):
     for params in ({}, {"speed": 4, "minimum_mbps": 100},
@@ -131,7 +144,7 @@ for count in (1, 8, 16):
             sequence["frames"].append({"time": t, "facts": facts,
                                        "colors": [color.to_hex() for color in instance.render(t, ctx)]})
         glow_sequences.append(sequence)
-target.with_name("activity-glow-frames.json").write_text(json.dumps(glow_sequences, separators=(",", ":")) + "\n", encoding="utf-8")
+write("activity-glow-frames.json", glow_sequences)
 print(f"Exported {len(frames)} deterministic effect frames.")
 print(f"Exported {len(color_sources)} shared color-source cases.")
 print(f"Exported {len(sequences)} traffic-trail sequences.")
@@ -154,5 +167,5 @@ for count in (1, 8, 16):
             sequence["frames"].append({"time": t, "facts": facts,
                                        "colors": [color.to_hex() for color in instance.render(t, ctx)]})
         power_sequences.append(sequence)
-target.with_name("poe-usage-frames.json").write_text(json.dumps(power_sequences, separators=(",", ":")) + "\n", encoding="utf-8")
+write("poe-usage-frames.json", power_sequences)
 print(f"Exported {len(power_sequences)} PoE-usage sequences.")

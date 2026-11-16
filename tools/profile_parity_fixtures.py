@@ -1,4 +1,10 @@
-"""Regenerate saved-profile colors from a supplied backend src directory."""
+"""Export the colors the engine shows for saved profiles, for the browser and desktop preview contracts.
+
+Usage: python tools/profile_parity_fixtures.py <checkout> <folder>
+
+Writes profile-colors.json, composed by the engine in <checkout>/src. Pass tests/fixtures as the folder to refresh
+the checked-in file; tools/check-fixtures.py compares it with a fresh export.
+"""
 
 import json
 import sys
@@ -6,7 +12,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
+sys.path.insert(0, str(Path(sys.argv[1]).resolve() / "src"))
 
 from etherlighting_evolved.engine import Engine  # noqa: E402
 from etherlighting_evolved.switch import EtherlightSwitch  # noqa: E402
@@ -101,4 +107,6 @@ for name, scene in cases:
         {"name": name, "scene": engine.snapshot(), "state": {"num_ports": engine.num_ports}, "colors": colors}
     )
 
-Path(__file__).with_name("profile-colors.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+output = Path(sys.argv[2])
+output.mkdir(parents=True, exist_ok=True)
+(output / "profile-colors.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
