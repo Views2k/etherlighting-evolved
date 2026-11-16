@@ -161,7 +161,7 @@ class Engine:
     ) -> None:
         self.switch = switch
         self.num_ports = switch.num_ports
-        self._profile_model = getattr(getattr(switch, "hardware_profile", None), "key", None)
+        self._profile_model = switch.hardware_profile.key if switch.hardware_profile else None
         self._output_sfp_ports = tuple(switch.sfp_ports)
         self.fps = bounded_number(fps, 1, 30, "frame rate")
         self.max_commands = bounded_number(max_commands, 5, self.MAX_COMMANDS, "command limit")
@@ -455,7 +455,7 @@ class Engine:
 
     def poe_summary(self) -> dict:
         age = None if self._poe_updated_at is None else max(0, timing.monotonic() - self._poe_updated_at)
-        return summarize_poe(getattr(self.switch, "poe_sample", None), range(1, self.num_ports + 1),
+        return summarize_poe(self.switch.poe_sample, range(1, self.num_ports + 1),
                              age=age, connected=self.connected, max_age=max(5.0, self.link_poll * 2.5))
 
     # Zones
@@ -1196,13 +1196,13 @@ class Engine:
     # Scenes (presets, autosave)
 
     def _telemetry_ports(self) -> tuple[int, ...]:
-        profile = getattr(self.switch, "hardware_profile", None)
+        profile = self.switch.hardware_profile
         if profile is not None:
             return (*profile.copper_ports, *profile.optical_ports, *profile.stack_ports)
         return (*range(1, self.num_ports + 1), *self.switch.sfp_ports)
 
     def _validate_switch_topology(self) -> None:
-        model = getattr(getattr(self.switch, "hardware_profile", None), "key", None)
+        model = self.switch.hardware_profile.key if self.switch.hardware_profile else None
         if self.switch.num_ports != self.num_ports or (self._profile_model and model != self._profile_model):
             raise ValueError("The switch layout changed. Start a new lighting session for this device.")
         ports = tuple(self.switch.sfp_ports)
@@ -1402,7 +1402,7 @@ class Engine:
             "reconnect_required": self._reconnect_blocked or self._native_blocked or self._output_uncertain(),
             "switch": self.switch_info,
             "hardware_profile": (self.switch.hardware_profile.public_dict()
-                                 if getattr(self.switch, "hardware_profile", None) is not None else None),
+                                 if self.switch.hardware_profile is not None else None),
             "num_ports": self.num_ports,
             "sfp": self.sfp_state(),
             "sfp_sync": self.sfp_sync.to_dict(),
@@ -1894,16 +1894,16 @@ class Engine:
                 self._publish(self.frame_message())
 
     async def _collect_health(self) -> None:
-        generation = getattr(self.switch.transport, "lighting_generation", None)
+        generation = self.switch.transport.lighting_generation
         try:
             sample = await self.switch.read_health()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if self.connected and generation is getattr(self.switch.transport, "lighting_generation", None):
+            if self.connected and generation is self.switch.transport.lighting_generation:
                 self._health_error = "invalid_response" if isinstance(exc, HealthParseError) else "unavailable"
             return
-        if self.connected and generation is getattr(self.switch.transport, "lighting_generation", None):
+        if self.connected and generation is self.switch.transport.lighting_generation:
             self._switch_health = sample
             self._health_updated_at = timing.monotonic()
             self._health_error = None
@@ -1950,9 +1950,9 @@ class Engine:
                 await asyncio.sleep(0.2)
                 continue
             try:
-                generation = getattr(self.switch.transport, "lighting_generation", None)
+                generation = self.switch.transport.lighting_generation
                 links = await self.switch.read_links()
-                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                if not self.connected or generation is not self.switch.transport.lighting_generation:
                     continue
                 sample_time = timing.monotonic()
                 if generation is not self._telemetry_generation:
@@ -1971,7 +1971,7 @@ class Engine:
                 }
                 self.links = links
                 poe = await self.switch.read_poe()
-                if not self.connected or generation is not getattr(self.switch.transport, "lighting_generation", None):
+                if not self.connected or generation is not self.switch.transport.lighting_generation:
                     continue
                 self.poe = poe
                 self._poe_updated_at = timing.monotonic()

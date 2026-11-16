@@ -599,7 +599,7 @@ class SessionManager:
         return self.info()
 
     def _fan_control(self, switch, simulated: bool) -> FanControl:
-        supported = getattr(switch, "hardware_profile", None) is PRO_XG8
+        supported = switch.hardware_profile is PRO_XG8
         backend = SimulatedFans() if simulated else SwitchFans(switch.transport)
         store = FanStore(self.config.data_dir / ("fans-demo.json" if simulated else "fans.json"))
         return FanControl(backend, store, supported=supported)
