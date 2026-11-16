@@ -43,9 +43,6 @@ public static class Rules
          {"key":"stp_state","label":"Spanning tree","type":"choice","choices":["forwarding","blocking","learning","listening","discarding","disabled"]}]
         """)!;
 
-    /// <summary>fieldByKey(key): the field, or the first field.</summary>
-    public static JsonObject FieldByKey(string? key) => Js.Objects(Fields).FirstOrDefault(field => Js.StrictEquals(field["key"], key)) ?? (JsonObject)Fields[0]!;
-
     /// <summary>OPERATORS: condition operator labels in display order.</summary>
     public static readonly IReadOnlyList<KeyValuePair<string, string>> Operators =
     [
@@ -53,8 +50,6 @@ public static class Rules
         new("ne", "does not equal"), new("between", "is between"), new("is", "is"), new("is_not", "is not"), new("in", "is one of"),
         new("not_in", "is not one of"),
     ];
-
-    public static string? OperatorLabel(string? op) => Operators.FirstOrDefault(pair => pair.Key == op).Value;
 
     static readonly string[] Weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 

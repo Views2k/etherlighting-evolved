@@ -57,15 +57,8 @@ public static class Js
 
     public static bool? Bool(JsonNode? node) => node is JsonValue value && value.TryGetValue(out bool flag) ? flag : null;
 
-    public static bool IsNumber(JsonNode? node) => Num(node) is not null;
-
-    public static bool IsString(JsonNode? node) => Str(node) is not null;
-
     /// <summary>typeof value === 'boolean'.</summary>
     public static bool IsBoolean(JsonNode? node) => Bool(node) is not null;
-
-    /// <summary>A plain object: not null and not an array.</summary>
-    public static bool IsObject(JsonNode? node) => node is JsonObject;
 
     /// <summary>value === true.</summary>
     public static bool IsTrue(JsonNode? node) => Bool(node) == true;
@@ -598,9 +591,6 @@ public static class Js
         }
         return a.Length.CompareTo(b.Length);
     }
-
-    /// <summary>A stable numeric sort ((a, b) => a - b).</summary>
-    public static List<double> SortNumbers(IEnumerable<double> values) => values.Order().ToList();
 
     /// <summary>[...new Set(values)] for numbers (SameValueZero), in first-seen order.</summary>
     public static List<double> Unique(IEnumerable<double> values)

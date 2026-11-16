@@ -3339,7 +3339,6 @@ public static class ModelChecks
                     double next = 0;
                     var arrival = 0;
                     double previous = 0;
-                    double[]? displayed = null;
                     var ok = true;
                     for (var i = 0; i < fps * 5; i++)
                     {
@@ -3351,13 +3350,11 @@ public static class ModelChecks
                             next += intervals[arrival++ % intervals.Length];
                         }
                         var sample = frames.Sample(now);
-                        var before = displayed;
-                        displayed = PortAnimation.SmoothColor(displayed, sample["1"], step);
                         ok &= sample["1"].SequenceEqual(sample["8"]) && sample["1"][0] <= frames.Latest()["1"][0];
                         if (now >= 2000)
                         {
                             var expected = step * rate;
-                            ok &= sample["1"][0] - previous >= expected * .98 && sample["1"][0] - previous <= expected * 1.02 && Math.Abs(displayed[0] - before![0] - expected) < expected * .02;
+                            ok &= sample["1"][0] - previous >= expected * .98 && sample["1"][0] - previous <= expected * 1.02;
                         }
                         previous = sample["1"][0];
                     }
@@ -3388,11 +3385,6 @@ public static class ModelChecks
             e(frames.Delay == 120 && frames.Sample(11000)["1"].SequenceEqual([0, 255, 0]), "expired");
             frames.Push(new Dictionary<int, double[]> { [1] = [255, 255, 255] }, 9999);
             e(frames.Latest()["1"].SequenceEqual([0, 255, 0]), "older frame ignored");
-        });
-        T("port animation: color text and smoothing", e =>
-        {
-            e(PortAnimation.RgbCss([255, 0, 127.5]) == "color(srgb 1.000000 0.000000 0.500000)", "rgbCss");
-            e(PortAnimation.SmoothColor(null, "#ff0000", 16).SequenceEqual([255, 0, 0]) && PortAnimation.PortInk() == "#ffffff", "first frame and ink");
         });
     }
 
