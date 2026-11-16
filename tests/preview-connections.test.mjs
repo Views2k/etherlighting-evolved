@@ -16,6 +16,12 @@ test('unknown connection failures never disclose their raw message', () => {
   }
 });
 
+test('an unusable saved scene shows the service message that names its recovery', () => {
+  const message = 'The saved lighting for this switch was saved by a newer version of EE. Update EE to use it.';
+  assert.equal(connectionError(Object.assign(new Error(message), {code:'invalid_saved_scene'})), message);
+  assert.equal(connectionError({code:'invalid_saved_scene'}), 'The connection could not be confirmed. Check the details and try again.');
+});
+
 test('unqualified models offer a compatibility action without retrying credentials', () => {
   assert.match(connectionError({code:'compatibility_verification_required'}),/compatibility verification/);
   assert.doesNotMatch(connectionError({code:'compatibility_verification_required'}),/password|try again/i);

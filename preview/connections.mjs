@@ -39,10 +39,14 @@ const messages = {
   controller_invalid_response: 'The controller response could not be read. Check the UniFi Network address.',
   site_required: 'Choose the UniFi site that contains your switch.',
   switch_not_found: 'The connected switch was not found in this site. Check the selected site.',
+  // The service's own text says which saved lighting failed (damaged behind switch playback, or saved by a newer
+  // EE) and how to recover, and it names no host or user.
+  invalid_saved_scene: error => typeof error.message === 'string' ? error.message : null,
 };
 
 export function connectionError(error, fallback = 'The connection could not be confirmed. Check the details and try again.') {
-  const message = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
+  const entry = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
+  const message = typeof entry === 'function' ? entry(error) : entry;
   return message || (error?.name === 'TimeoutError' ? messages.timeout : fallback);
 }
 
