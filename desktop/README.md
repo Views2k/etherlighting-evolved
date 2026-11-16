@@ -1,6 +1,6 @@
 # Etherlighting Evolved desktop
 
-The desktop workspace uses Avalonia 11.3 and .NET 8. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
+The desktop workspace uses Avalonia 11.3 and .NET 10. Lighting, Effects, Automation, Profiles, Settings and Help use native controls. The window exchanges scene changes and live port readings with the EE gateway.
 
 ## Run the app
 
@@ -45,13 +45,13 @@ The menu entry runs `EtherlightingEvolved` by name. Make sure `$HOME/.local/bin`
 
 ## Build and test
 
-Use the .NET 8 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
+Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md). Run the following from the repository root after dependency restore.
 
 [WINDOWS POWERSHELL]
 
 ```powershell
 dotnet build desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj -c Release --no-restore
-dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net8.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
+dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
 ```
 
 The check program renders windows off screen. Its service checks use a simulator with isolated data. To use the app interactively from the same build, launch the source app in demo mode.

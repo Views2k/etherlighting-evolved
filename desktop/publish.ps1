@@ -71,7 +71,7 @@ foreach ($rid in $Runtime) {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>EtherlightingEvolved</string>
   <key>CFBundleIconFile</key><string>ee.icns</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
