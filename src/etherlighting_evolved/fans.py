@@ -11,7 +11,7 @@ uses the Python version.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -245,8 +245,19 @@ class SwitchFans:
         self.transport = transport
         # Shell variables for EE's directory, the fan controller and the port temperatures.
         self.paths = f"d={shlex.quote(location)}; h={shlex.quote(hw)}; q={shlex.quote(phy)}"
-        self.script = SCRIPT.read_text("ascii")
-        self.digest = hashlib.sha256(self.script.encode("ascii")).hexdigest()
+
+    # Read on first use, so a damaged installation costs fan control but never a lighting login.
+    @functools.cached_property
+    def script(self) -> str:
+        try:
+            return SCRIPT.read_text("ascii")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("The fan control program of this EE installation is missing or damaged. "
+                             "Reinstall EE to use fan control.") from exc
+
+    @functools.cached_property
+    def digest(self) -> str:
+        return hashlib.sha256(self.script.encode("ascii")).hexdigest()
 
     async def _run(self, command: str, timeout: float = 10) -> str:
         # Fan commands use their own shell: a failure there must not close the lighting connection.
@@ -254,8 +265,9 @@ class SwitchFans:
         return (await run("(\n" + command + "\n)", channel=_CHANNEL, timeout=timeout)).strip()
 
     async def read(self) -> dict[str, Any]:
+        digest = self.digest
         reading = parse_reading(await self._run(self.paths + _READ))
-        reading["script_current"] = reading.pop("script") == self.digest
+        reading["script_current"] = reading.pop("script") == digest
         return reading
 
     def _inside(self, command: str) -> str:
@@ -290,7 +302,9 @@ class SwitchFans:
         if await self._run(self._inside(command)) != "saved":
             raise TransportError("The switch could not save the fan setting.")
         if reading["controller"] != "running":
-            start = ('rm -f stop status\nnohup sh fans.sh run </dev/null >/dev/null 2>&1 &\n'
+            # A controller that stopped after a sensor fault leaves ./active behind. Removing it makes the check
+            # below wait for the new controller's own first clean step.
+            start = ('rm -f stop status active active.new\nnohup sh fans.sh run </dev/null >/dev/null 2>&1 &\n'
                      'echo $! > pid && echo started')
             if await self._run(self._inside(start)) != "started":
                 raise TransportError("The switch did not start fan control.")
@@ -306,8 +320,10 @@ class SwitchFans:
             if status.split()[:1] in (["unsupported"], ["released"]):
                 break
             await asyncio.sleep(0.25)
-        with contextlib.suppress(TransportError, ValueError):
+        try:
             await self.stop()
+        except TransportError as exc:
+            raise TransportError("The switch did not confirm the fan setting or the return to switch control.") from exc
         raise TransportError("The switch did not confirm the fan setting. The fans are back on switch control.")
 
     async def stop(self) -> None:
@@ -480,6 +496,9 @@ class FanControl:
             except TransportError:
                 self.reading = None
                 raise
+            except ValueError as exc:
+                self.unsupported = str(exc)
+                return
             self.reading = reading
             line = self.settings.config_line()
             running = reading["controller"] == "running"

@@ -510,6 +510,65 @@ async def test_controller_releases_on_bad_sensor(mock_switch):
 
 
 @needs_shell
+async def test_sensor_fault_returns_the_fans_to_the_switch_and_backs_off(mock_switch):
+    control = FanControl(backend_for(mock_switch, mock_switch["location"]), None, supported=True)
+    try:
+        await control.update({"mode": "manual", "manual_percent": 40})
+        put(mock_switch["hw"] / "temp1_input", "garbage")
+        assert _wait(lambda: _daemon_state(mock_switch["daemon"]) != "T", 15)
+        # The restarted controller faults too; its earlier ./active line must not confirm the setting.
+        await control.poll()
+        assert control.error == "The switch did not confirm the fan setting. The fans are back on switch control."
+        assert control._retry_at > time.monotonic()
+        await control.poll()
+        assert _daemon_state(mock_switch["daemon"]) != "T"
+    finally:
+        await control.backend.stop()
+
+
+@needs_shell
+def test_guard_never_kills_a_process_that_reuses_the_controller_pid(mock_switch):
+    controller, elsewhere = mock_switch["root"] / "controller", mock_switch["root"] / "elsewhere"
+    controller.mkdir()
+    elsewhere.mkdir()
+    start = "nohup sh -c 'echo $$ > other.pid; exec sleep 60' </dev/null >/dev/null 2>&1 &\n"
+    subprocess.run([SHELL, "-s"], input=start.encode(), cwd=elsewhere, capture_output=True, env=BASE_ENV, timeout=20)
+    assert _wait(lambda: (elsewhere / "other.pid").exists() and (elsewhere / "other.pid").read_text().strip(), 5)
+    other = (elsewhere / "other.pid").read_text().strip()
+    try:
+        # A heartbeat far past the limit: a controller this old would be killed as hung.
+        put(controller / "status", "1 manual 40")
+        result = shell(fans.SCRIPT.as_posix(), "guard", other, env=mock_switch["env"], cwd=controller)
+        assert result.returncode == 0
+        assert (controller / "status").read_text().strip() == "released"
+        assert shell("-c", f"kill -0 {other}").returncode == 0
+    finally:
+        shell("-c", f"kill {other} 2>/dev/null")
+
+
+async def test_missing_fan_program_does_not_stop_a_lighting_login(config, tmp_path, monkeypatch):
+    from test_session_restore import LocalTransport
+
+    from etherlighting_evolved.session import SessionManager
+
+    monkeypatch.setattr(fans, "SCRIPT", tmp_path / "missing" / "fans.sh")
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
+    try:
+        pending = (await sessions.connect("switch.invalid", "fixture", "fixture-only"))["pending_scene_choice"]
+        info = await sessions.choose_scene(pending["connection_id"], "start_new", pending["legacy_revision"])
+        assert info["logged_in"]
+        control = sessions.engine.fans
+        assert control.supported
+        await control.poll()
+        state = control.to_dict()
+        assert not state["supported"] and "Reinstall EE" in state["unsupported_reason"]
+        with pytest.raises(ValueError, match="Reinstall EE"):
+            await control.update({"mode": "manual", "manual_percent": 50})
+    finally:
+        await sessions.close()
+
+
+@needs_shell
 async def test_unsupported_model_is_refused(mock_switch):
     put(mock_switch["root"] / "system.info", "systemid=ed72")
     location = mock_switch["location"]

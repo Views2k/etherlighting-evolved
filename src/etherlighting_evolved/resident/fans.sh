@@ -118,6 +118,8 @@ daemons() { pidof ubnt-fanctrl 2>/dev/null; }
 release() { for d in $(daemons); do kill -CONT "$d" 2>/dev/null; done; }
 hold() { for d in $(daemons); do kill -STOP "$d" 2>/dev/null || return 1; done; return 0; }
 mark() { printf '%s\n' "$1" > status.new && mv -f status.new status; }
+# True when process $1 runs in this directory. A PID taken over by another process fails this check.
+mine() { [ "$(readlink "/proc/$1/cwd" 2>/dev/null)" = "$(pwd -P)" ]; }
 
 check() {
     [ "$(awk -F= '/systemid=/{print $2}' "$SYSINFO" 2>/dev/null)" = ed76 ] ||
@@ -161,7 +163,7 @@ guard() {
     num "$owner" || exit 1
     while :; do
         sleep "$TICK"
-        if ! kill -0 "$owner" 2>/dev/null; then
+        if ! kill -0 "$owner" 2>/dev/null || ! mine "$owner"; then
             release; mark released; exit 0
         fi
         beat=; now=
