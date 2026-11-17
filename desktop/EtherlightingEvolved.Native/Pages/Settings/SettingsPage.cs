@@ -23,7 +23,7 @@ static class Registration
 
 /// <summary>
 /// Port of renderSettings (preview/secondary.mjs): connection status and handoff, switch health, the UniFi Network
-/// controller, mobile and remote access, the last session, appearance and about, with a section list on the left
+/// controller, Tailscale and LAN access, the last session, appearance and about, with a section list on the left
 /// that scrolls the pane on the right.
 /// </summary>
 public sealed class SettingsPage : Page
@@ -41,6 +41,7 @@ public sealed class SettingsPage : Page
     readonly DetailsList healthDetails = new();
     readonly Panel controllerHost = new();
     readonly Connect.PrivateAccessPanel privateAccess;
+    readonly Connect.LanAccessPanel lanAccess;
     readonly LastSession lastSession;
     readonly ThemeSettings themeSettings;
     readonly Control appearance;
@@ -99,6 +100,8 @@ public sealed class SettingsPage : Page
 
         // Remote, Last session and Appearance
         privateAccess = new Connect.PrivateAccessPanel(request);
+        lanAccess = new Connect.LanAccessPanel(request, (title, text, accept) => Shell.Overlay.Confirm(title, text, accept, this), Workspace.Remote, Workspace.Lan);
+        var remoteAccess = new StackPanel { Spacing = 20, Children = { privateAccess, lanAccess } };
         lastSession = new LastSession(request);
         themeSettings = new ThemeSettings();
         appearance = SettingsKit.Panel(themeSettings, maxWidth: 960);
@@ -113,7 +116,7 @@ public sealed class SettingsPage : Page
         Avalonia.Automation.AutomationProperties.SetName(navigation, "Settings sections");
         foreach (var (section, label) in new (Control, string)[]
                  {
-                     (contentPanel, "Connection"), (health, "Health"), (controllerHost, "UniFi"), (privateAccess, "Remote"), (lastSession, "Last session"), (appearance, "Appearance"),
+                     (contentPanel, "Connection"), (health, "Health"), (controllerHost, "UniFi"), (remoteAccess, "Remote"), (lastSession, "Last session"), (appearance, "Appearance"),
                      (about, "About"),
                  })
         {
@@ -215,7 +218,7 @@ public sealed class SettingsPage : Page
             var state = await stateTask;
             if (!gate.Active) return;
             var simulated = session.Truthy("simulated");
-            // A window that uses private access cannot forget the saved switch login or set up UniFi Network.
+            // A window on another device cannot forget the saved switch login or set up UniFi Network.
             var remote = Workspace.Remote;
             health.IsVisible = !simulated;
             sections[1].Button.IsVisible = !simulated;
@@ -240,7 +243,7 @@ public sealed class SettingsPage : Page
                 Button? handoff = null;
                 handoff = SettingsKit.ActionButton("Handoff to UniFi", () => gate.Run(async () =>
                 {
-                    var unsaved = controller?.HasChanges == true || privateAccess.HasChanges;
+                    var unsaved = controller?.HasChanges == true || privateAccess.HasChanges || lanAccess.HasChanges;
                     var message = Connections.HandoffConfirmation(state.Bool("fans.supported") == true, unsaved, remote && !Connections.RemoteCanRestore(session));
                     if (!await Confirm("Handoff to UniFi?", message, "Handoff to UniFi") || !gate.Active) return;
                     handoff!.SetLabel("Handing off…");
@@ -291,7 +294,7 @@ public sealed class SettingsPage : Page
             content.Children.Add(details);
             if (Shell.OpenInBrowser is { } openInBrowser)
             {
-                content.Children.Add(UiKit.HelpText("Open this workspace in the default browser on this computer, with the same Mobile & remote access controls."));
+                content.Children.Add(UiKit.HelpText("Open this workspace in the default browser on this computer, with the same Tailscale and LAN access settings."));
                 content.Children.Add(SettingsKit.ActionButton("Open in browser", openInBrowser, "quiet"));
             }
             Status();
@@ -357,12 +360,13 @@ public sealed class SettingsPage : Page
         if (Workspace.State["controller"] is { } value && value.Truthy()) controller?.Update(value, unavailable);
     }
 
-    public override bool HasChanges => controller?.HasChanges == true || privateAccess.HasChanges;
+    public override bool HasChanges => controller?.HasChanges == true || privateAccess.HasChanges || lanAccess.HasChanges;
 
     public override async Task<bool> CanLeave()
     {
         await gate.Settle();
         await privateAccess.CanLeave();
+        await lanAccess.CanLeave();
         if (!gate.Active) return false;
         if (HasChanges && !await Confirm("Leave connection settings?", "Your unapplied connection changes will be discarded.", "Leave")) return false;
         return gate.Active && (controller is null || await controller.CanLeave());
@@ -374,6 +378,7 @@ public sealed class SettingsPage : Page
         scrollAnimation?.Stop();
         controller?.Close();
         privateAccess.Close();
+        lanAccess.Close();
         lastSession.Close();
         themeSettings.Close();
         gate.Close();

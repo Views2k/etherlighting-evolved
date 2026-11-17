@@ -224,10 +224,14 @@ internal static class RemoteAccessChecks
             var shownKey = settings.GetLogicalDescendants().OfType<SelectableTextBlock>().Where(block => block.Text == fingerprint).ToList();
             check(shownKey.Count == 1 && shownKey[0].IsEffectivelyVisible && Texts(settings).Contains("SSH key fingerprint (ssh-ed25519)"),
                 "Settings shows the connected switch's SSH key fingerprint as selectable text with its key type");
-            var paneBody = settings.GetLogicalDescendants().OfType<StackPanel>().First(panel => panel.Children.OfType<PrivateAccessPanel>().Any());
+            var remoteSection = settings.GetLogicalDescendants().OfType<StackPanel>().First(panel => panel.Children.OfType<PrivateAccessPanel>().Any());
+            var paneBody = (Panel)remoteSection.Parent!;
             check(Find(settings, "Forget saved switch login") is null && Find(settings, "UniFi")?.IsVisible == false && !paneBody.Children[2].IsVisible
                   && !settings.GetLogicalDescendants().OfType<ControllerConnection>().Any(),
                 "remote Settings leaves out Forget saved switch login and UniFi Network setup");
+            var lan = remoteSection.Children.OfType<LanAccessPanel>().Single();
+            check(Texts(lan).SequenceEqual(["LAN access", LanAccessPanel.HostOnly]) && !Requests(directory).Any(line => line.Contains("/api/lan-access", StringComparison.Ordinal)),
+                "remote Settings shows LAN access read-only beside Tailscale and reads no LAN access status");
             check(Find(settings, "Handoff to UniFi") is not null && Texts(settings).Contains(Scope),
                 "remote Settings keeps Handoff to UniFi and says what devices on Tailscale can use");
             check(Find(settings, "Open in browser") is null, "a window connected by address does not offer Open in browser");

@@ -42,7 +42,7 @@ public sealed class AppShell : UserControl
     int navigationVersion;
     readonly List<string> history = [];
     int historyIndex = -1;
-    bool startedOnce, serviceStopped;
+    bool startedOnce, serviceStopped, pairingShown;
 
     public AppShell(Workspace workspace)
     {
@@ -72,6 +72,7 @@ public sealed class AppShell : UserControl
         {
             UpdatePage();
             Status("The workspace connection was interrupted.", true);
+            if (Workspace.Lan) _ = CheckPairing();
         };
         Workspace.StreamRestored += () =>
         {
@@ -119,7 +120,7 @@ public sealed class AppShell : UserControl
             await Run(() => OpenWorkspaceAddress(address));
     }
 
-    public const string AddressHelp = "Enter the private HTTPS workspace address or a local address.";
+    public const string AddressHelp = "Enter the Tailscale private HTTPS address, the LAN address shown in LAN access on the computer running EE, such as http://192.168.1.2:4280, or a local address.";
 
     /// <summary>The window asks to hide to the notification area (traffic-light close and minimize).</summary>
     public event Action? HideRequested;
@@ -513,11 +514,16 @@ public sealed class AppShell : UserControl
             if (Workspace.Session.Truthy("logged_in") || Workspace.Session.Truthy("pending_scene_choice")) await AcceptSession(Workspace.Session);
             else ShowConnection();
         }
+        catch (ApiException error) when (error.Code == "lan_pairing_required" && Workspace.Lan)
+        {
+            // A key saved for this address that the computer running EE no longer accepts gets the revoked text.
+            await Pair(Workspace.Api.DeviceKey is not null);
+        }
         catch (Exception)
         {
             var retry = UiKit.Button("Try again", "primary");
             retry.Click += async (_, _) => await Start();
-            ShowConnectionProblem("Check the workspace connection and try again.", retry);
+            ShowConnectionProblem(Workspace.Lan ? Connections.LanUnreachable(OperatingSystem.IsMacOS()) : "Check the workspace connection and try again.", retry);
         }
 
         // A host that predates /api/about still opens; About then shows no service version.
@@ -526,6 +532,43 @@ public sealed class AppShell : UserControl
             try { return await Workspace.Request("/api/about") as JsonObject ?? []; }
             catch (ApiException) { return []; }
         }
+    }
+
+    /// <summary>
+    /// Asks for a pairing code for this LAN workspace and opens it once paired. After Cancel the window says why it
+    /// cannot open the workspace and offers pairing again.
+    /// </summary>
+    async Task Pair(bool revoked)
+    {
+        pairingShown = true;
+        bool paired;
+        try { paired = await Pages.Connect.LanPairingDialog.Show(this, revoked); }
+        finally { pairingShown = false; }
+        if (paired)
+        {
+            await Start();
+            return;
+        }
+        var again = UiKit.Button("Pair", "primary");
+        again.Click += async (_, _) => await Pair(revoked);
+        ShowConnectionProblem("Pair this computer with EE to open this workspace.", again);
+    }
+
+    /// <summary>
+    /// The stream of a LAN workspace closed. A device whose pairing was removed stops reconnecting and pairs again; any
+    /// other answer, or none, leaves the stream to reconnect on its own.
+    /// </summary>
+    async Task CheckPairing()
+    {
+        if (pairingShown) return;
+        JsonNode? info;
+        try { info = await Workspace.Api.GetAsync("/api/workspace"); }
+        catch (ApiException) { return; }
+        if (info.Bool("paired") != false || pairingShown || Workspace.Closing) return;
+        Workspace.StopFrames();
+        Studio.SaveUiState(PageName);
+        ResetWorkspace();
+        await Pair(revoked: true);
     }
 
     /// <summary>

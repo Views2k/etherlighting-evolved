@@ -39,6 +39,9 @@ internal static class ShellChecks
               WorkspaceAddress.Parse("https://example.test/?token=example") is null &&
               WorkspaceAddress.Parse("https://name:secret@example.test/") is null &&
               WorkspaceAddress.Parse("http://example.test") is null, "the workspace picker accepts private HTTPS and local HTTP origins");
+        check(AppShell.AddressHelp == "Enter the Tailscale private HTTPS address, the LAN address shown in LAN access on the computer running EE, such as http://192.168.1.2:4280, or a local address."
+              && Options.Parse(["--url", "http://192.168.1.2:4280"]).Url?.Port == 4280,
+            "the address help names the Tailscale, LAN and local addresses, and --url accepts a LAN address");
         var environment = Environment.GetEnvironmentVariable("EE_WORKSPACE_URL");
         try
         {
@@ -96,7 +99,7 @@ internal static class ShellChecks
                     var served = (await workspace.Request("/api/effects")).Arr().Select(effect => effect.Str("id"));
                     check(EffectRenderer.EffectList.Select(effect => effect.Str("id")).SequenceEqual(served),
                         "the service's effect catalog is installed before any page opens");
-                    check(Connections.CanAcceptHostKey(await workspace.Request("/api/private-access")),
+                    check(Connections.CanAcceptHostKey(await workspace.Request("/api/private-access"), workspace.Api.BaseUri),
                         "the gateway started by the desktop app reports this computer, so the Connect page can accept a changed SSH key");
                     foreach (var name in AppShell.PageNames)
                     {
@@ -144,6 +147,7 @@ internal static class ShellChecks
                     window.Close();
                 }
                 await AdminAccessChecks.Service(host, address, check);
+                await LanAccessChecks.Service(host, address, check);
                 check(await host.StopAsync(), "the desktop test stops its simulator cleanly");
             }
             finally { deadline.Cancel(); }

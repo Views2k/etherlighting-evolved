@@ -213,7 +213,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
     {
         // The administration key goes only to the gateway this program started, never to an address chosen by hand.
         var owned = service is { Address: { } started } && started == address;
-        workspace = new Workspace(address, owned ? service!.AdminKey : null);
+        workspace = new Workspace(address, owned ? service!.AdminKey : null, DeviceKeys.Get(address));
         window = new ShellWindow(new AppShell(workspace)
         {
             OpenWorkspaceAddress = service is null && options.Shot is null ? ChangeWorkspace : null,

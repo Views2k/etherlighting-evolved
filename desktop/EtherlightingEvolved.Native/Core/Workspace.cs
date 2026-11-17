@@ -21,7 +21,8 @@ public sealed class Workspace : IAsyncDisposable
     readonly Dictionary<string, long> frameRevisions = [];
 
     /// <param name="adminKey">The administration key of the gateway this program started, for that address only.</param>
-    public Workspace(Uri baseUri, string? adminKey = null) => Api = new EeApi(baseUri, adminKey);
+    /// <param name="deviceKey">The key this computer received when it paired with a LAN workspace at this address.</param>
+    public Workspace(Uri baseUri, string? adminKey = null, string? deviceKey = null) => Api = new EeApi(baseUri, adminKey, deviceKey);
 
     public EeApi Api { get; }
 
@@ -35,8 +36,15 @@ public sealed class Workspace : IAsyncDisposable
     /// <summary>/api/workspace: whether this workspace controls a real switch ("live").</summary>
     public JsonObject Options { get; set; } = new() { ["live"] = false };
 
-    /// <summary>/api/workspace: true when this window reaches the workspace through private access.</summary>
-    public bool Remote => Options.Bool("remote") == true;
+    /// <summary>
+    /// True when this window reaches the workspace through Tailscale or LAN access. Any address that is not on this
+    /// computer counts, whatever /api/workspace says, so a changed answer cannot bring back the switch login or UniFi
+    /// Network setup.
+    /// </summary>
+    public bool Remote => Options.Bool("remote") == true || !Api.BaseUri.IsLoopback;
+
+    /// <summary>The window reaches the workspace through LAN access, so its connection is not encrypted.</summary>
+    public bool Lan => Api.Lan;
 
     /// <summary>/api/about: the service's version and disclaimer. Empty for a service that does not report them.</summary>
     public JsonObject About { get; set; } = [];

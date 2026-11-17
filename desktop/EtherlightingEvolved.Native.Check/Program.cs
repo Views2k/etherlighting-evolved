@@ -33,6 +33,9 @@ if (args.Contains("--service") || args.Contains("--quit-check"))
 await WorkspaceTransportChecks.Run(Check);
 AdminAccessChecks.Contracts(Check);
 await AdminAccessChecks.Transport(Check);
+LanAccessChecks.Contracts(Check);
+await LanAccessChecks.Transport(Check);
+LanAccessChecks.KeyStore(Check);
 if (args.Contains("--transport-check")) return failures.Count == 0 ? 0 : 1;
 
 ModelChecks.Run(Check);
@@ -48,6 +51,8 @@ HostKeyReviewChecks.Run(Check);
 AdminAccessChecks.Panel(Check);
 PrivateAccessPanelChecks.Run(Check);
 RemoteAccessChecks.Contracts(Check);
+LanAccessChecks.Panel(Check);
+LanAccessChecks.Pairing(output, Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");

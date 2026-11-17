@@ -232,9 +232,9 @@ public static class Connections
 
     /// <summary>
     /// Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
-    /// request (null) counts as remote.
+    /// request (null) counts as remote. A LAN answer can be changed on the way, so the address must be on this computer.
     /// </summary>
-    public static bool CanAcceptHostKey(JsonNode? privateAccess) => privateAccess.Bool("local") == true;
+    public static bool CanAcceptHostKey(JsonNode? privateAccess, Uri baseUri) => baseUri.IsLoopback && privateAccess.Bool("local") == true;
 
     // ---- Handoff to UniFi
 
@@ -519,6 +519,45 @@ public static class Connections
     public static string PrivateAccessError(JsonNode? error) => PrivateAccessError(error.Str() ?? error.Str("code"));
 
     public static string PrivateAccessError(Exception? error) => PrivateAccessError((error as ApiException)?.Code);
+
+    // ---- LAN access
+
+    /// <summary>Read-only help in a local window or tab without administration access.</summary>
+    public const string LanAdminRequired = "To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.";
+
+    public const string LanAccessFallback = "LAN access could not be confirmed. Refresh status before trying again.";
+
+    public const string LanDeviceLimit = "16 devices are paired, the most EE allows. Remove one before pairing another.";
+
+    static readonly Dictionary<string, string> LanAccessMessages = new(StringComparer.Ordinal)
+    {
+        ["lan_access_port_in_use"] = "Another program uses this port. Choose another LAN port in Connection options.",
+        ["lan_access_listener_failed"] = "EE could not open its LAN port. Choose another LAN port in Connection options, then try again.",
+        ["lan_access_save_failed"] = "The LAN access setting could not be saved. Check the local data folder and try again.",
+        ["lan_access_turned_off"] = "The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again.",
+        ["lan_access_revoke_unsaved"] = "EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off.",
+        ["lan_access_invalid_configuration"] = "The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again.",
+        ["lan_access_port_change_requires_off"] = "Turn off LAN access before changing its port.",
+        ["lan_access_off"] = "Turn on LAN access before pairing a device.",
+        ["lan_access_device_limit"] = LanDeviceLimit,
+        ["lan_access_failed"] = "LAN access could not be updated. Refresh status and try again.",
+        ["not_found"] = "That device is no longer paired.",
+        ["workspace_closing"] = "EE is closing. Reopen EE to change LAN access.",
+        ["admin_required"] = LanAdminRequired,
+    };
+
+    /// <summary>The message for a LAN access error code, a status error object or a refused request (lanAccessError).</summary>
+    public static string LanAccessError(string? code) =>
+        code is not null && LanAccessMessages.TryGetValue(code, out var message) ? message : LanAccessFallback;
+
+    public static string LanAccessError(JsonNode? error) => LanAccessError(error.Str() ?? error.Str("code"));
+
+    public static string LanAccessError(Exception? error) => LanAccessError((error as ApiException)?.Code);
+
+    /// <summary>The workspace at a LAN address could not be opened. macOS 15 and later ask before an app reaches the network.</summary>
+    public static string LanUnreachable(bool macOS) =>
+        "EE could not be reached at this address. LAN access may be off, or the computer running EE may have a new address. Check LAN access in Settings on that computer." +
+        (macOS ? " On macOS 15 or later, also check that Etherlighting Evolved is allowed under System Settings > Privacy & Security > Local Network." : "");
 
     static bool HasControl(string value) => value.Any(c => c <= ' ' || c == '\u007f');
 

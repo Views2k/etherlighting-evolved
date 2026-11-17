@@ -72,12 +72,16 @@ internal static class HostKeyReviewChecks
               && Connections.HostKeyError(new TimeoutException()) == "The SSH key could not be saved. Connect again to review the key.",
             "refused key replacements show the browser's messages");
 
-        check(Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_close_workspace":true,"local":true}"""))
-              && Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_configure":false,"can_close_workspace":false,"admin_required":true,"local":true}"""))
-              && !Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_configure":false,"can_close_workspace":false,"can_change_port":false}"""))
-              && !Connections.CanAcceptHostKey(JsonNode.Parse("""{"local":false}"""))
-              && !Connections.CanAcceptHostKey(JsonNode.Parse("{}")) && !Connections.CanAcceptHostKey(null),
+        var local = new Uri("http://127.0.0.1:4180/");
+        check(Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_close_workspace":true,"local":true}"""), local)
+              && Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_configure":false,"can_close_workspace":false,"admin_required":true,"local":true}"""), local)
+              && !Connections.CanAcceptHostKey(JsonNode.Parse("""{"can_configure":false,"can_close_workspace":false,"can_change_port":false}"""), local)
+              && !Connections.CanAcceptHostKey(JsonNode.Parse("""{"local":false}"""), local)
+              && !Connections.CanAcceptHostKey(JsonNode.Parse("{}"), local) && !Connections.CanAcceptHostKey(null, local),
             "only the local gateway's answer allows accepting a key, also without close access; the private gateway's answer and a failed request count as remote");
+        check(new[] { "http://192.168.1.2:4280/", "https://ee.example.ts.net:8444/" }
+                .All(address => !Connections.CanAcceptHostKey(JsonNode.Parse("""{"local":true}"""), new Uri(address))),
+            "a window on another computer cannot accept a key, even when an answer that could be changed on the way says it is local");
 
         check(Connections.ConnectionError(Changed()) == "The switch’s SSH key changed. Review the saved and new keys before connecting."
               && Connections.ConnectionError(JsonNode.Parse("""{"code":"host_key_untrusted"}""")) == Connections.DefaultError,
