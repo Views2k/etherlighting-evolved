@@ -3,7 +3,7 @@
 
 export const LAN_DEFAULT_PORT = 4280;
 
-// The canonical dotted form of an address in 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16, or null. Node reports an
+// The canonical dotted form of an address in 10/8, 172.16/12 or 192.168/16, or null. Node reports an
 // IPv4 connection on a dual-stack socket in its ::ffff: mapped form.
 export function privateIPv4(text) {
   if (typeof text !== 'string') return null;

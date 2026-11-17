@@ -8,7 +8,7 @@ The Windows installer includes the desktop app, gateway and lighting engine. Sta
 
 Fans controls the fans of a USW-Pro-XG-8-PoE. Fan control runs on the switch and keeps running after you quit EE; **Switch control** returns the fans to the switch's own controller. The uninstaller does not connect to the switch, so before you uninstall, connect to each switch EE controls and choose **Handoff to UniFi** in Settings. The [README](../README.md#what-ee-changes-on-the-switch) lists what EE leaves on the switch.
 
-For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime, but no workspace service, and only the Windows app connects to a switch. Connect to the workspace of a Windows computer that runs EE through its private HTTPS workspace address, or to a simulator started from a source checkout on the same computer. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, or an HTTP origin on this computer, without account details, a path or a query. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
+For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime, but no workspace service, and only the Windows app connects to a switch. Connect to the workspace of a Windows computer that runs EE through its Tailscale private HTTPS address, through its LAN address with a pairing code (see [Connect over your network without Tailscale](#connect-over-your-network-without-tailscale)), or to a simulator started from a source checkout on the same computer. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, an HTTP origin on this computer, or an HTTP origin at a private IPv4 address, one that starts with 10, 172.16 to 172.31 or 192.168, with a port other than 80, without account details, a path or a query. Host names such as `.local` names and IPv6 addresses are not accepted for LAN access. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
 
 On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
 
@@ -18,7 +18,7 @@ The app keeps `desktop.log` in its data folder: `%LOCALAPPDATA%\Etherlighting Ev
 
 ### Connect a tagged Tailscale device
 
-Devices signed in to the workspace owner’s Tailscale account can use the private workspace address directly. For a tagged device, enable **Use Tailscale** in **Mobile & remote access** on the Windows host. Open PowerShell as the user who runs EE and enter the device’s full Tailscale DNS name when prompted.
+Devices signed in to the workspace owner’s Tailscale account can use the private workspace address directly. For a tagged device, enable **Use Tailscale** in **Tailscale private access** on the Windows host. Open PowerShell as the user who runs EE and enter the device’s full Tailscale DNS name when prompted.
 
 [WINDOWS POWERSHELL]
 
@@ -31,6 +31,44 @@ $device = Read-Host 'Full Tailscale DNS name of the device to approve'
 On the approved device, choose **Change workspace address** and enter the private address shown by the Windows host. Repeat the approval command for each tagged device. The host can approve an offline device when Tailscale still confirms its identity and assigned addresses.
 
 Use `status $device` to check that device, `status` to count saved approvals, or `revoke $device` to remove its access and keep the others. Use `revoke --all` to clear all device approvals.
+
+### Connect over your network without Tailscale
+
+LAN access lets phones and other computers on your network open EE at the Windows computer's address, without Tailscale. It is off by default, and it runs only while EE controls a real switch, not in the demo. Paired devices have the same limits as devices on Tailscale: they can use lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app and reconnect to the saved switch, but switch login, UniFi Network setup and the LAN and Tailscale settings work only on the computer running EE.
+
+LAN access uses plain HTTP, so traffic between your devices and the computer running EE is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device's access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on the computer running EE. EE on another device never asks for switch or UniFi passwords; if it does, do not enter them. Use Tailscale for an encrypted connection.
+
+On the Windows computer:
+
+1. Make sure Windows lists the network as private. In Windows Settings, open **Network & internet**, choose the connection and set **Network profile type** to **Private**. Windows marks new networks as public.
+2. In EE, open **Settings**, go to **LAN access**, select **Allow devices on my network** and choose **Apply setting**.
+3. The first time EE's service listens on the network, Windows shows a Windows Security Alert for Node.js JavaScript Runtime, the program that runs EE's service. Allow it on private networks only. Allowing it needs administrator approval.
+4. LAN access lists the address for other devices, such as `http://192.168.1.2:4280`. Choose **Pair a device** to show a pairing code. A code works once and ends after 5 minutes, after 5 wrong attempts, or when you show a new one.
+
+On the phone or other computer, open the address in a browser, or in the macOS or Linux client choose **Change workspace address** and enter it. Enter the pairing code and a name for the device. The desktop client offers the computer's name. Each device needs its own code.
+
+The Windows firewall rule belongs to the program file, not to EE:
+
+- If you chose Cancel in the alert, Windows blocks Node.js JavaScript Runtime at that path and does not ask again. Open Windows Security, choose **Firewall & network protection**, then **Allow an app through firewall**, choose **Change settings** and select **Private** for Node.js JavaScript Runtime.
+- If no alert appears, for example because notifications for blocked apps are turned off or a policy manages the firewall, add the program on the same page with **Allow another app**.
+- Any script that EE's `node.exe` runs can accept connections on the networks you allow. In an installation for all users the file is `C:\Program Files\Etherlighting Evolved\runtime\node.exe`, which only administrators can change. In an installation for one user it is `%LOCALAPPDATA%\Programs\Etherlighting Evolved\runtime\node.exe`, in that user's folder, and each Windows user who installs EE has a separate file and decision.
+- A rule for private networks does not apply while Windows lists the current network as public.
+- Upgrades keep the path, so the decision stays. Turning LAN access off and uninstalling EE leave the rule in place; remove it on **Allow an app through firewall**.
+- EE does not check the firewall. If a device cannot open the address, check the firewall settings on the computer running EE.
+
+Do not forward the LAN port on your router. LAN access uses port 4280 unless you choose another port under **Connection options** while LAN access is off. It uses IPv4 only. It accepts connections from private IPv4 addresses, those that start with 10, 172.16 to 172.31 or 192.168, including other VLANs that your router routes to the computer running EE. It refuses Tailscale addresses; devices on Tailscale use the encrypted Tailscale address instead.
+
+Give the computer running EE a fixed address, for example with a DHCP reservation in your router or in UniFi Network. When its address changes, each device opens the new address and pairs again, and the old entries stay listed until you remove them.
+
+LAN access lists each paired device with how it paired, when and from which address, and when it was last used. **Remove** ends that device's access at once, including an open workspace. Turning LAN access off removes and disconnects every paired device, and each one needs a new code after you turn it on again. At most 16 devices can be paired.
+
+On an iPhone or iPad, a Home Screen copy keeps its own cookies and pairs separately from Safari. Android cannot install the workspace as an app from a plain-HTTP address. Browsers with an HTTPS-only mode show a warning before they open the address.
+
+On macOS 15 or later, the app asks before it connects to devices on your local network. Allow it, or later turn on Etherlighting Evolved under System Settings > Privacy & Security > Local Network.
+
+The macOS and Linux clients, and the Windows app opened with `--url`, keep the key for each LAN address in `workspace-keys.json` in the data folder listed under [Desktop log](#desktop-log): one key per address, at most 16. A key is replaced only by a new pairing with that address.
+
+An uninstall for one user deletes the LAN access setting and the paired devices, so a later installation starts with LAN access off. An uninstall for all users runs as an administrator and cannot reliably reach your data folder, so the setting and the paired devices stay until LAN access is turned off, and a later installation opens LAN access again when it starts. Turn LAN access off before you uninstall to remove them in either case.
 
 ### Add EE to the Linux applications menu
 
