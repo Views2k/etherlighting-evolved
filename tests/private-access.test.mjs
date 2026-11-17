@@ -81,14 +81,39 @@ test('turning private access on shows the Tailscale setup step until it is turne
   assert.equal(f.started,0);await assert.rejects(readFile(f.configPath),{code:'ENOENT'});
 });
 
-test('a saved setting that is off reads only Serve status and reports no missing Tailscale',async t=>{
+const savedSetting=async f=>JSON.parse(await readFile(f.configPath,'utf8'));
+
+test('a setting turned off with its route confirmed gone runs no Tailscale command at start, refresh, turn-off or quit',async t=>{
   const f=await fixture(t);await f.manager.configure(true);await f.manager.configure(false);
+  assert.equal((await savedSetting(f)).routeRemoved,true);
   f.calls=[];
   const next=createPrivateAccessManager(f.options);
-  assert.equal((await next.initialize()).error,null);assert.deepEqual(f.calls,[['serve','status','--json']]);
+  assert.equal((await next.initialize()).error,null);await next.initialize();
+  assert.equal((await next.configure(false,{audience:'accounts'})).audience,'accounts');
+  assert.deepEqual(await next.shutdown(),{route:'absent',https_port:8444});
+  assert.deepEqual(f.calls,[]);assert.equal((await savedSetting(f)).routeRemoved,true);
+});
+
+test('an off setting without that confirmation reads Serve status until it sees the route gone',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();
+  // A setting turned off by release 0.5.1, whose route is already gone.
+  await writeFile(f.configPath,JSON.stringify({...await savedSetting(f),enabled:false}));
   const missing=createPrivateAccessManager({...f.options,runTailscale:async()=>missingTailscale()});
   const status=await missing.initialize();
   assert.equal(status.enabled,false);assert.equal(status.error,null);assert.equal(status.setup_action,null);
+  assert.equal((await savedSetting(f)).routeRemoved,undefined);
+  f.calls=[];
+  assert.equal((await createPrivateAccessManager(f.options).initialize()).error,null);
+  assert.deepEqual(f.calls,[['serve','status','--json']]);assert.equal((await savedSetting(f)).routeRemoved,true);
+  f.calls=[];
+  await createPrivateAccessManager(f.options).initialize();
+  assert.deepEqual(f.calls,[]);
+});
+
+test('a saved route confirmation is refused on a setting that is on',async t=>{
+  const f=await fixture(t);await f.manager.configure(true);await f.manager.close();
+  await writeFile(f.configPath,JSON.stringify({...await savedSetting(f),routeRemoved:true}));
+  assert.equal((await createPrivateAccessManager(f.options).initialize()).error.code,'private_access_invalid_configuration');
 });
 
 test('explicit enable and disable preserve the existing service and persist no login or node ID',async t=>{
@@ -559,7 +584,7 @@ test('a leftover route whose local port is taken is removed and then restored on
   assert.equal(f.route.Web[AUTHORITY].Handlers['/'].Proxy,'http://127.0.0.1:52001');
 });
 
-test('a restore never changes Serve or the saved file when the setting is off or the port is not EE\'s',async t=>{
+test('a restore never changes Serve, or the saved file beyond recording a route seen gone, when the setting is off or the port is not EE\'s',async t=>{
   for(const variant of ['off','identity','occupied','public']){
     const f=await fixture(t);await f.manager.configure(true);await f.manager.shutdown();
     if(variant==='off')await writeFile(f.configPath,JSON.stringify({...JSON.parse(await readFile(f.configPath,'utf8')),enabled:false}));
@@ -569,7 +594,9 @@ test('a restore never changes Serve or the saved file when the setting is off or
     const before=structuredClone(f.route),file=await readFile(f.configPath,'utf8');f.calls=[];
     const status=await createPrivateAccessManager(f.options).initialize();
     assert.equal(status.ready,false,variant);assert.deepEqual(writes(f),[],variant);
-    assert.deepEqual(f.route,before,variant);assert.equal(await readFile(f.configPath,'utf8'),file,variant);
+    assert.deepEqual(f.route,before,variant);
+    if(variant==='off')assert.deepEqual(await savedSetting(f),{...JSON.parse(file),routeRemoved:true});
+    else assert.equal(await readFile(f.configPath,'utf8'),file,variant);
   }
 });
 

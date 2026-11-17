@@ -68,9 +68,11 @@ function validateSaved(value){
   const listenerPort=value.version===1?PRIVATE_LISTENER_PORT:value.listenerPort;
   if(!validPort(httpsPort)||!validPort(listenerPort)||Number(new URL(value.origin).port)!==httpsPort)fail('private_access_invalid_configuration');
   if(value.audience!==undefined&&!ACCESS_AUDIENCES.includes(value.audience))fail('private_access_invalid_configuration');
+  if(value.routeRemoved!==undefined&&(value.routeRemoved!==true||value.enabled))fail('private_access_invalid_configuration');
   // The audience is stored only when it differs from the owner-only default, so earlier records stay unchanged.
+  // routeRemoved marks a setting that is off and whose route EE has confirmed gone; records without it are rechecked.
   return {version:2,enabled:value.enabled,origin:value.origin,ownerHash:value.ownerHash,nodeHash:value.nodeHash,httpsPort,listenerPort,
-    ...(value.audience==='accounts'?{audience:'accounts'}:{})};
+    ...(value.audience==='accounts'?{audience:'accounts'}:{}),...(value.routeRemoved?{routeRemoved:true}:{})};
 }
 
 function portKey(key,port){return key===String(port)||key.endsWith(`:${port}`);}
@@ -208,13 +210,15 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       fail('private_access_cleanup_unconfirmed');
     return 'removed';
   }
-  // A saved setting that is off still names the route EE added last, which must be gone. A Serve status that the CLI
-  // cannot give is not reported while private access is off; enable() and a port change read it again before they
-  // change anything.
-  async function routeLeft(){
+  // A saved setting that is off names the route EE added last. Until EE has seen that route gone and saved that, each
+  // start, refresh and quit checks for it; afterwards private access runs no Tailscale command while it is off. A Serve
+  // status that the CLI cannot give is not reported while private access is off; enable() and a port change read it
+  // again before they change anything.
+  async function confirmRouteGone(){
     let text;
-    try{text=await run(['serve','status','--json']);}catch{return false;}
-    return routeState(parseJSON(text),saved.origin,saved.listenerPort)!=='absent';
+    try{text=await run(['serve','status','--json']);}catch{return;}
+    if(routeState(parseJSON(text),saved.origin,saved.listenerPort)!=='absent')fail('private_access_cleanup_unconfirmed');
+    await save(record({...saved,routeRemoved:true}));
   }
   async function initialize(){
     if(stopped)return status();
@@ -224,7 +228,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       if(!saved?.enabled){
         await close();
         if(setupRequested)await identity();
-        if(saved&&await routeLeft())fail('private_access_cleanup_unconfirmed');
+        if(saved&&!saved.routeRemoved)await confirmRouteGone();
         return status();
       }
       const current=await identity();
@@ -269,7 +273,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       await close();await load();
       if(!saved){state.enabled=false;return status();}
       await save(record({...saved,enabled:false}));
-      await removeRoute();
+      if(!saved.routeRemoved){await removeRoute();await save(record({...saved,routeRemoved:true}));}
     }catch(error){state.ready=false;state.url=null;setError(error);}
     return status();
   }
@@ -297,6 +301,7 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
         await close();
         try{await load();}catch(error){return {route:'unconfirmed',https_port:null,code:error.code};}
         if(!saved)return {route:'none',https_port:null};
+        if(saved.routeRemoved)return {route:'absent',https_port:saved.httpsPort};
         if(Date.now()>=deadline)return {route:'unconfirmed',https_port:saved.httpsPort,code:'private_access_cleanup_unconfirmed'};
         try{return {route:await removeRoute(),https_port:saved.httpsPort};}
         catch(error){
@@ -318,12 +323,13 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
       if(requestedAudience!==undefined)audience=requestedAudience;
       if(requestedPort!==undefined&&requestedPort!==httpsPort){
         if(saved?.enabled||state.enabled||state.ready)fail('private_access_port_change_requires_off');
-        if(saved&&routeState(await serve(),saved.origin,saved.listenerPort)!=='absent')fail('private_access_cleanup_unconfirmed');
+        if(saved&&!saved.routeRemoved&&routeState(await serve(),saved.origin,saved.listenerPort)!=='absent')fail('private_access_cleanup_unconfirmed');
         const previousPort=httpsPort;httpsPort=requestedPort;
-        // Persist a new port only with a verified identity; preserve the previous ownership record until then.
+        // Persist a new port only with a verified identity; preserve the previous ownership record until then. EE has
+        // never added a route on the new port, and the old one is gone.
         try{
           const current=await identity();
-          await save(record({version:2,enabled:false,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort}));
+          await save(record({version:2,enabled:false,origin:current.origin,ownerHash:current.ownerHash,nodeHash:current.nodeHash,httpsPort,listenerPort,routeRemoved:true}));
         }catch(error){httpsPort=previousPort;throw error;}
       }
       await (enabled?enable():disable());

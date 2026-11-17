@@ -60,6 +60,13 @@ test('a port without EE\'s route needs no change', async t => {
   assert.deepEqual(writes(f), []);
 });
 
+test('a setting turned off with its route confirmed gone needs no Tailscale command', async t => {
+  const f = await fixture(t);
+  await writeFile(f.file, JSON.stringify({...JSON.parse(f.record), enabled: false, routeRemoved: true}) + '\n');
+  assert.deepEqual(await removePrivateAccessRoute(f.directory, f.run), {exitCode: 0, message: 'EE has no Tailscale Serve route on this computer.'});
+  assert.deepEqual(f.calls, []);
+});
+
 test('a route EE does not own is left alone and its port is reported', async t => {
   for (const variant of ['occupied', 'funnel']) {
     const f = await fixture(t);
