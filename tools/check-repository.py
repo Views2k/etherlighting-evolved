@@ -13,7 +13,8 @@ from pathlib import Path
 # Local notes, credentials and application state. .gitignore must keep every one of them out of the repository.
 PRIVATE_NAMES = {
     "AGENTS.md", "CLAUDE.md", "handoff.md", ".env", "ee.toml", "login.json", "controller-login.json",
-    "private-access.json", "approved-device.json", "known_hosts", "known_switches.json", "desktop.json",
+    "private-access.json", "lan-access.json", "workspace-keys.json", "approved-device.json", "known_hosts",
+    "known_switches.json", "desktop.json",
     "native.json", "preferences.json", "scene.json", "scene-demo.json", "scene-history.json", "presets.json",
     "schedules.json", "switch-connection-intent.json", "switch-playback.json", "lighting-library.json",
     "fans.json", "fans-demo.json", "last-session.json", "port_led_fw.bin",

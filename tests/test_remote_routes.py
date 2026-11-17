@@ -1,6 +1,6 @@
-"""preview/remote-routes.mjs lists what devices on Tailscale may reach through the private gateway.
+"""preview/remote-routes.mjs lists what devices on Tailscale or the LAN may reach through the private and LAN gateways.
 
-The gateway refuses every route without a remote entry, so a route missing from the list fails here instead of
+The gateways refuse every route without a remote entry, so a route missing from the list fails here instead of
 silently becoming unavailable on those devices.
 """
 
@@ -27,6 +27,8 @@ OWNER_LOCAL = {
     ("POST", "/api/controller/cancel"), ("PUT", "/api/controller/preferences"),
     ("PUT", "/api/private-access"), ("POST", "/api/private-access/refresh"), ("POST", "/api/private-access/login"),
     ("POST", "/api/workspace/close"), ("POST", "/api/workspace/admin-link"),
+    ("GET", "/api/lan-access"), ("PUT", "/api/lan-access"), ("POST", "/api/lan-access/code"),
+    ("DELETE", "/api/lan-access/devices/{device_id}"), ("POST", "/api/lan-access/pair"),
 }
 CLIENT_ROUTES = {
     ("GET", "/api/effects"), ("GET", "/api/session"), ("GET", "/api/state"), ("GET", "/api/ports"),
@@ -129,8 +131,8 @@ def test_client_routes_stay_remote():
 def test_websocket_commands_are_pinned():
     assert {"ping", "set_port", "set_ports", "clear_port", "set_effect", "set_params", "update_rule",
             "set_brightness", "release", "resume"} == WS_COMMANDS, (
-        "WebSocket commands reach devices on Tailscale. A command that must stay on the host computer needs a REST "
-        "route.")
+        "WebSocket commands reach devices on Tailscale or the LAN. A command that must stay on the host computer needs "
+        "a REST route.")
 
 
 def test_unlisted_websocket_command_is_rejected(config):
