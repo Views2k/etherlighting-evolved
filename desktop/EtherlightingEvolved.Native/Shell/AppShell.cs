@@ -699,35 +699,28 @@ public sealed class AppShell : UserControl
 /// <summary>The 16px loading spinner: a ring in the spinner track color with an accent head, turning every 700 ms.</summary>
 public sealed class Spinner : Control
 {
-    readonly Avalonia.Animation.Animation turn = new()
-    {
-        Duration = TimeSpan.FromMilliseconds(700), IterationCount = Avalonia.Animation.IterationCount.Infinite,
-        Children =
-        {
-            new Avalonia.Animation.KeyFrame { Cue = new Avalonia.Animation.Cue(0), Setters = { new Avalonia.Styling.Setter(RotateTransform.AngleProperty, 0.0) } },
-            new Avalonia.Animation.KeyFrame { Cue = new Avalonia.Animation.Cue(1), Setters = { new Avalonia.Styling.Setter(RotateTransform.AngleProperty, 360.0) } },
-        },
-    };
-    CancellationTokenSource? running;
-
     public Spinner()
     {
         Width = Height = 16;
         RenderTransform = new RotateTransform();
         RenderTransformOrigin = RelativePoint.Center;
-    }
-
-    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
-    {
-        base.OnAttachedToVisualTree(e);
-        running = new CancellationTokenSource();
-        _ = turn.RunAsync(this, running.Token);
-    }
-
-    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
-    {
-        running?.Cancel();
-        base.OnDetachedFromVisualTree(e);
+        // Avalonia supports a looping animation only from a style, which runs while the control is shown.
+        // Animation.RunAsync still applies one but returns a failed task, which ended up in desktop.log.
+        Styles.Add(new Avalonia.Styling.Style(selector => Avalonia.Styling.Selectors.OfType<Spinner>(selector))
+        {
+            Animations =
+            {
+                new Avalonia.Animation.Animation
+                {
+                    Duration = TimeSpan.FromMilliseconds(700), IterationCount = Avalonia.Animation.IterationCount.Infinite,
+                    Children =
+                    {
+                        new Avalonia.Animation.KeyFrame { Cue = new Avalonia.Animation.Cue(0), Setters = { new Avalonia.Styling.Setter(RotateTransform.AngleProperty, 0.0) } },
+                        new Avalonia.Animation.KeyFrame { Cue = new Avalonia.Animation.Cue(1), Setters = { new Avalonia.Styling.Setter(RotateTransform.AngleProperty, 360.0) } },
+                    },
+                },
+            },
+        });
     }
 
     public override void Render(DrawingContext context)
