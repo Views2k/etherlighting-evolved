@@ -81,28 +81,32 @@ def test_sfp_display_composition_keeps_output_bytes_and_fractional_values(monkey
                        "brightness": 73, "effect": "steady"})
     expected_color = Color(77, 166, 255).scaled(.37)
     expected_output = to_output(expected_color, 51 * .73, gamma=2.2)
-    state = engine.sfp_state()[0]
+    state = engine.sfp_indicators.state()[0]
     assert state["display_rgb"] == pytest.approx([c * .37 * .51 * .73 for c in (77, 166, 255)])
-    assert engine.sfp_outputs()[9] == expected_output
+    assert engine.sfp_indicators.outputs()[9] == expected_output
     assert state["preview"] == expected_output.preview().to_hex()
     engine.set_sfp(9, {"effect": "two_color", "secondary_color": "red", "period": 6})
-    assert engine.sfp_state()[0]["display_rgb"] != state["display_rgb"]
+    assert engine.sfp_indicators.state()[0]["display_rgb"] != state["display_rgb"]
 
 
 def test_sfp_display_handles_rule_brightness_off_and_unmanaged():
     engine = display_engine(native=True, brightness=20)
-    assert engine.sfp_state()[0]["display_rgb"] is None
+    assert engine.sfp_indicators.state()[0]["display_rgb"] is None
     engine.links[9] = PortLink(9, True, False, 0, False, anomaly=1)
     engine.add_rule({"name": "SFP anomaly", "ports": [9],
                      "conditions": [{"field": "anomaly", "op": "is", "value": True}],
                      "look": {"style": "solid", "color": "#4da6ff", "brightness": 51}})
     engine.set_sfp(9, {"brightness": 50})
-    state = engine.sfp_state()[0]
+    state = engine.sfp_indicators.state()[0]
     assert state["mode"] == "unmanaged"
     assert state["display_rgb"] == pytest.approx([19.635, 42.33, 65.025])
-    engine._sfp_releasing.add(9)
-    assert engine.sfp_state()[0]["display_rgb"] is None
-    engine._sfp_releasing.clear()
+    anomaly = engine.links[9]
+    engine.links[9] = PortLink(9, True, False, 0, False)
+    engine.sfp_indicators.sync_rules()
+    assert engine.sfp_indicators.begin_release(9) is not None
+    engine.links[9] = anomaly
+    assert engine.sfp_indicators.state()[0]["display_rgb"] is None
+    engine.sfp_indicators.end_release(9)
     engine.set_sfp(9, {"mode": "off"})
-    assert engine.sfp_state()[0]["display_rgb"] == [0, 0, 0]
-    assert engine.sfp_outputs()[9].color.is_off
+    assert engine.sfp_indicators.state()[0]["display_rgb"] == [0, 0, 0]
+    assert engine.sfp_indicators.outputs()[9].color.is_off

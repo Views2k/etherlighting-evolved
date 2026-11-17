@@ -237,16 +237,16 @@ def test_busy_switch_slows_engine_down_and_calm_switch_speeds_it_up(monkeypatch)
     clock = [100.0]
     monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
     engine = make_engine()
-    engine._adjust_throttle(0.10)
-    assert engine.command_budget == 15
+    engine.budget.adjust(0.10)
+    assert engine.budget.value == 15
     for _ in range(10):
         clock[0] += 1
-        engine._adjust_throttle(0.05)
-    assert engine.command_budget == 5
+        engine.budget.adjust(0.05)
+    assert engine.budget.value == 5
     for _ in range(10):
         clock[0] += 1
-        engine._adjust_throttle(0.9)
-    assert engine.command_budget == 30  # shell recovery never exceeds its own ceiling
+        engine.budget.adjust(0.9)
+    assert engine.budget.value == 30  # shell recovery never exceeds its own ceiling
 
 
 async def wait_for(condition, timeout=2.0):
@@ -434,10 +434,10 @@ async def test_a_busy_switch_gets_fewer_commands():
     await engine.start()
     try:
         for _ in range(40):
-            if engine.command_budget < 30:
+            if engine.budget.value < 30:
                 break
             await asyncio.sleep(0.1)
-        assert engine.command_budget < 30
+        assert engine.budget.value < 30
         assert engine.state()["stats"]["switch_cpu_idle"] < 0.3
     finally:
         await engine.stop()

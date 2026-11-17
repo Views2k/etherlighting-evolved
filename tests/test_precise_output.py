@@ -211,7 +211,7 @@ async def test_effect_brightness_and_sfp_use_separate_encodings():
     _, frame = engine.compose(t=0.75)
     assert all(o.precise_rgb is not None for o in frame)
     assert len({o.precise_rgb for o in frame}) == 1
-    assert engine.sfp_outputs()[9].precise_rgb is None
+    assert engine.sfp_indicators.outputs()[9].precise_rgb is None
 
 
 @pytest.mark.anyio

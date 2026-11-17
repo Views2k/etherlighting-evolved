@@ -24,9 +24,9 @@ def test_sync_defaults_preserve_existing_independent_behavior():
     engine.set_sfp(9, {"mode": "color", "color": "red"})
     engine.set_sfp(10, {"mode": "color", "color": "blue"})
     assert engine.state()["sfp_sync"] == {"mode": "independent", "source_port": 1}
-    assert engine.sfp_outputs()[9].color == Color(255, 0, 0)
-    assert engine.sfp_outputs()[10].color == Color(0, 0, 255)
-    assert [item["effective_settings"] for item in engine.sfp_state()] == [
+    assert engine.sfp_indicators.outputs()[9].color == Color(255, 0, 0)
+    assert engine.sfp_indicators.outputs()[10].color == Color(0, 0, 255)
+    assert [item["effective_settings"] for item in engine.sfp_indicators.state()] == [
         engine.sfp[9].to_dict(), engine.sfp[10].to_dict(),
     ]
 
@@ -39,17 +39,17 @@ def test_together_uses_sfp_nine_settings_and_clock_without_overwriting_ten():
     original_ten = engine.sfp[10]
     engine.set_sfp_sync({"mode": "together"})
     for at in (0, 0.25, 0.8, 1.75, 2.5):
-        assert engine._sfp_color(9, at) == engine._sfp_color(10, at)
-    assert engine._sfp_color(10, 0) == (Color(0, 0, 128), 24)
-    assert engine.sfp_state()[1]["effective_settings"] == engine.sfp[9].to_dict()
-    revisions = dict(engine._sfp_revisions)
+        assert engine.sfp_indicators.color(9, at) == engine.sfp_indicators.color(10, at)
+    assert engine.sfp_indicators.color(10, 0) == (Color(0, 0, 128), 24)
+    assert engine.sfp_indicators.state()[1]["effective_settings"] == engine.sfp[9].to_dict()
+    revisions = dict(engine.sfp_indicators.revisions)
     engine.set_sfp(9, {"color": "green"})
-    assert all(engine._sfp_revisions[p] > revisions[p] for p in (9, 10))
-    assert engine._sfp_color(9, 1) == engine._sfp_color(10, 1)
+    assert all(engine.sfp_indicators.revisions[p] > revisions[p] for p in (9, 10))
+    assert engine.sfp_indicators.color(9, 1) == engine.sfp_indicators.color(10, 1)
     assert engine.sfp[10] == original_ten
     engine.set_sfp_sync({"mode": "independent"})
-    assert engine.sfp_outputs()[10].color == BLACK
-    assert engine.sfp_state()[1]["effective_settings"] == original_ten.to_dict()
+    assert engine.sfp_indicators.outputs()[10].color == BLACK
+    assert engine.sfp_indicators.state()[1]["effective_settings"] == original_ten.to_dict()
 
 
 def test_ethernet_follows_final_composed_source_and_applies_gamma_and_brightness_once():
@@ -60,19 +60,19 @@ def test_ethernet_follows_final_composed_source_and_applies_gamma_and_brightness
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 4})
     engine.compose(t=0)
     expected = to_output(*engine._shown[3], engine.gamma, precise=True)
-    for output in engine.sfp_outputs().values():
+    for output in engine.sfp_indicators.outputs().values():
         assert output.color == expected.color
         assert output.level == expected.level
-    assert all(engine._sfp_color(p, 2) == engine._shown[3] for p in (9, 10))
-    assert all(item["effective_settings"] is None for item in engine.sfp_state())
+    assert all(engine.sfp_indicators.color(p, 2) == engine._shown[3] for p in (9, 10))
+    assert all(item["effective_settings"] is None for item in engine.sfp_indicators.state())
     engine.set_override(4, "#1234ab", brightness=81)
     engine.compose(t=0.1)
-    assert engine._sfp_color(9, 0.1) == (Color.parse("#1234ab"), 81)
+    assert engine.sfp_indicators.color(9, 0.1) == (Color.parse("#1234ab"), 81)
     engine.clear_override(4)
     engine.set_rules([{"name": "Source", "ports": [4], "conditions": [],
                        "look": {"color": "#aabbcc", "brightness": 62}}])
     engine.compose(t=0.2)
-    assert engine._sfp_color(10, 0.2) == (Color.parse("#aabbcc"), 62)
+    assert engine.sfp_indicators.color(10, 0.2) == (Color.parse("#aabbcc"), 62)
 
 
 def test_ethernet_tracks_effect_and_crossfade_without_a_second_envelope():
@@ -82,14 +82,14 @@ def test_ethernet_tracks_effect_and_crossfade_without_a_second_envelope():
     seen = []
     for at in (0, 0.2, 0.6, 1.2):
         engine.compose(t=at, clock=at)
-        followed = engine._sfp_color(9, at)
-        assert followed == engine._shown[7] == engine._sfp_color(10, at)
+        followed = engine.sfp_indicators.color(9, at)
+        assert followed == engine._shown[7] == engine.sfp_indicators.color(10, at)
         seen.append(followed)
     assert len(set(seen)) > 1
     engine.set_effect("static", {"color": "red"})
     engine.compose(t=1.3, clock=1.3)
     engine.compose(t=1.8, clock=1.8)
-    color, brightness = engine._sfp_color(10, 1.8)
+    color, brightness = engine.sfp_indicators.color(10, 1.8)
     assert (color, brightness) == engine._shown[7]
     assert color.r > 0 and color.b > 0
 
@@ -101,7 +101,7 @@ def test_ethernet_follower_keeps_fractional_intensity_in_precise_sfp_output(gamm
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 2})
     engine.compose(t=0)
     expected = to_output(*engine._shown[1], gamma, precise=True)
-    for output in engine.sfp_outputs().values():
+    for output in engine.sfp_indicators.outputs().values():
         assert output.precise_rgb == expected.precise_rgb
         assert output.level == expected.level
         assert output.breath is None
@@ -118,14 +118,14 @@ def test_explicit_sfp_rules_keep_priority_and_targeting_over_sync(mode):
     first = engine.add_rule(alert([10], brightness=80))
     engine.add_rule(alert([10], color="green", brightness=20))
     anomaly(engine, 10, True)
-    engine._sync_sfp_rules()
-    assert engine._sfp_color(10, 0) == (Color(255, 0, 0), 80 if mode == "ethernet" else 40)
-    assert engine._sfp_color(9, 0)[0] == Color(0, 0, 255)
-    assert engine.sfp_state()[1]["rule"]["id"] == first.id
+    engine.sfp_indicators.sync_rules()
+    assert engine.sfp_indicators.color(10, 0) == (Color(255, 0, 0), 80 if mode == "ethernet" else 40)
+    assert engine.sfp_indicators.color(9, 0)[0] == Color(0, 0, 255)
+    assert engine.sfp_indicators.state()[1]["rule"]["id"] == first.id
     engine.delete_rule(first.id)
-    assert engine._sfp_color(10, 0)[0] == Color(0, 255, 0)
+    assert engine.sfp_indicators.color(10, 0)[0] == Color(0, 255, 0)
     anomaly(engine, 10, False)
-    assert engine._sfp_color(9, 0) == engine._sfp_color(10, 0)
+    assert engine.sfp_indicators.color(9, 0) == engine.sfp_indicators.color(10, 0)
 
 
 @pytest.mark.parametrize("changes", [{}, {"mode": "invalid"}, {"source_port": 9}, {"source_port": 0},
@@ -133,10 +133,11 @@ def test_explicit_sfp_rules_keep_priority_and_targeting_over_sync(mode):
                                       {"mode": None}, {"unexpected": 1}])
 def test_invalid_sync_changes_are_atomic(changes):
     engine = engine_for_sfp()
-    before = deepcopy((engine.snapshot(), engine._sfp_revisions, engine._sfp_release_ports))
+    indicators = engine.sfp_indicators
+    before = (engine.snapshot(), dict(indicators.revisions), set(indicators.release_ports))
     with pytest.raises(ValueError):
         engine.set_sfp_sync(changes)
-    assert (engine.snapshot(), engine._sfp_revisions, engine._sfp_release_ports) == before
+    assert (engine.snapshot(), dict(indicators.revisions), set(indicators.release_ports)) == before
 
 
 def test_sync_requires_verified_indicators_and_available_source():
@@ -162,7 +163,7 @@ def test_scene_roundtrip_preserves_sync_and_old_scenes_restore_independent():
     restored.apply_snapshot(saved)
     assert restored.snapshot() == saved
     assert restored.frame_message()["sfp_sync"] == saved["sfp_sync"]
-    assert all(item["control"]["state"] == "pending" for item in restored.sfp_state())
+    assert all(item["control"]["state"] == "pending" for item in restored.sfp_indicators.state())
     invalid = deepcopy(saved)
     invalid["sfp_sync"]["source_port"] = 10
     with pytest.raises(ValueError):
@@ -188,7 +189,7 @@ async def test_sync_waits_for_both_matching_acknowledgments_and_release_is_confi
         assert not waiting.done()
         engine.switch.write_gate.set()
         await asyncio.wait_for(waiting, 1)
-        assert all(engine._sfp_acknowledged[p] == engine._sfp_revisions[p] for p in (9, 10))
+        assert all(engine.sfp_indicators.acknowledged[p] == engine.sfp_indicators.revisions[p] for p in (9, 10))
         assert engine.switch.sfp_applied[9] == engine.switch.sfp_applied[10]
         engine.set_sfp_sync({"mode": "independent"})
         await asyncio.wait_for(wait_for_every_sfp(engine), 1)
@@ -204,7 +205,7 @@ async def test_sync_waits_for_both_matching_acknowledgments_and_release_is_confi
 async def test_sync_cleanup_failure_retains_existing_fail_closed_behavior():
     engine = engine_for_sfp()
     engine.set_sfp_sync({"mode": "ethernet"})
-    engine.switch.sfp_applied.update(engine.sfp_outputs())
+    engine.switch.sfp_applied.update(engine.sfp_indicators.outputs())
     engine.switch.fail_sfp_release = True
     engine.set_sfp_sync({"mode": "independent"})
     with pytest.raises(TransportError, match="SFP release"):
@@ -226,10 +227,10 @@ async def test_new_sync_request_cannot_be_acknowledged_by_an_older_inflight_fram
         engine.set_sfp_sync({"source_port": 8})
         with pytest.raises(ValueError, match="superseded"):
             await asyncio.wait_for(waiting, 1)
-        assert all(engine._sfp_acknowledged[p] != engine._sfp_revisions[p] for p in (9, 10))
+        assert all(engine.sfp_indicators.acknowledged[p] != engine.sfp_indicators.revisions[p] for p in (9, 10))
         engine.switch.write_gate.set()
         await asyncio.wait_for(wait_for_every_sfp(engine), 1)
-        assert all(engine._sfp_acknowledged[p] == engine._sfp_revisions[p] for p in (9, 10))
+        assert all(engine.sfp_indicators.acknowledged[p] == engine.sfp_indicators.revisions[p] for p in (9, 10))
     finally:
         engine.switch.write_gate.set()
         await engine.stop()

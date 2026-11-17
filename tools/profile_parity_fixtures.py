@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).resolve() / "src"))
 
 from etherlighting_evolved.engine import Engine  # noqa: E402
+from etherlighting_evolved.port_output import display_rgb  # noqa: E402
 from etherlighting_evolved.switch import EtherlightSwitch  # noqa: E402
 from etherlighting_evolved.transport import SimulatedTransport  # noqa: E402
 
@@ -101,8 +102,8 @@ for name, scene in cases:
     engine = Engine(switch, transition=0, rules=[])
     engine.apply_snapshot(deepcopy(scene))
     engine.compose(t=0, clock=0, now=datetime(2026, 10, 31, 12))
-    colors = {str(port): engine._display_rgb(*engine._shown[port - 1]) for port in range(1, engine.num_ports + 1)}
-    colors.update({str(port): engine._display_rgb(*engine._sfp_color(port, 0)) for port in engine.sfp})
+    colors = {str(port): display_rgb(*engine.port_color(port)) for port in range(1, engine.num_ports + 1)}
+    colors.update({str(port): display_rgb(*engine.sfp_indicators.color(port, 0)) for port in engine.sfp})
     result.append(
         {"name": name, "scene": engine.snapshot(), "state": {"num_ports": engine.num_ports}, "colors": colors}
     )

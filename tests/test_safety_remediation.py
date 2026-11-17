@@ -226,7 +226,7 @@ def test_existing_frames_include_shared_health_without_switch_reads(monkeypatch)
     simulator = SimulatedTransport(latency=0)
     engine = Engine(EtherlightSwitch(simulator), rules=[])
     monkeypatch.setattr(engine_module.timing, "monotonic", lambda: 100.0)
-    engine.cpu_idle, engine.cpu_load, engine._cpu_updated_at = 0.8, 0.2, 97.0
+    engine.cpu_idle, engine.cpu_load, engine.budget.cpu_updated_at = 0.8, 0.2, 97.0
     engine.error, engine._reconnect_blocked = "Reconnect your switch", True
     state, frame = engine.state(), engine.frame_message()
     assert frame["stats"] == state["stats"]
