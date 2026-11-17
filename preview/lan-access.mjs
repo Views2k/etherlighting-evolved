@@ -203,7 +203,7 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
     }
     return found;
   }
-  async function pair({code,name,client},remoteAddress){
+  async function pair({code,name,client},from){
     const active=currentPairing();
     if(!active?.code)return {status:403,body:PAIRING_FAILED};
     if(!timingSafeEqual(Buffer.from(code),Buffer.from(active.code))){
@@ -214,7 +214,7 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
     // A matching code is used up whatever happens next.
     pairing={...active,code:null};
     const key=randomBytes(32).toString('hex');
-    const device={id:randomBytes(8).toString('hex'),name,client,key_sha256:sha256(key),paired_at:iso(now()),paired_from:privateIPv4(remoteAddress)};
+    const device={id:randomBytes(8).toString('hex'),name,client,key_sha256:sha256(key),paired_at:iso(now()),paired_from:from};
     try{await save({...record,devices:[...record.devices,device]});}
     catch{pairing={...pairing,ended:'failed'};return {status:500,body:PAIRING_SAVE_FAILED};}
     pairing={...pairing,ended:'used'};
@@ -254,12 +254,14 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
         response.end(JSON.stringify(body));
       };
       if(Number(request.headers['content-length'])>MAX_SETTING_BYTES){reply(413,TOO_LARGE);return true;}
+      // Taken before the body is read, while the connection is certainly open.
+      const from=privateIPv4(request.socket.remoteAddress);
       const text=await readLimited(request,MAX_SETTING_BYTES);
       if(text===null){reply(413,TOO_LARGE);return true;}
       // The body is checked before the code is looked at, so a malformed request costs no attempt.
       const body=pairingBody(text);
       if(!body){reply(400,PAIRING_INVALID);return true;}
-      const result=await serial(()=>pair(body,request.socket.remoteAddress));
+      const result=await serial(()=>pair(body,from));
       reply(result.status,result.body,result.cookie);
       return true;
     },

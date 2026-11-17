@@ -115,7 +115,7 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
       request.on('data',chunk=>{received+=chunk.length;if(received>MAX_BODY_BYTES){response.destroy();upstream.destroy();}});
       request.pipe(upstream);
     }
-    const next=http.createServer(serverOptions,async(request,response)=>{
+    const next=http.createServer({requestTimeout:30000,headersTimeout:10000,...serverOptions},async(request,response)=>{
       const result=await authorize(request);
       if(server!==next||response.destroyed||request.socket.destroyed)return;
       const paired=result?.ok===true;
@@ -124,7 +124,11 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
       }
       const pathname=requestPath(request.url);
       if(pathname===null){json(response,403,access.pathDenied??PRIVATE_PATH_DENIED);return;}
-      if(access.answer&&await access.answer(request,response,pathname,result))return;
+      if(access.answer){
+        // A body that ends early or stalls past the request timeout rejects here; it ends this request only.
+        try{if(await access.answer(request,response,pathname,result))return;}
+        catch{response.destroy();return;}
+      }
       if(pathname==='/api/workspace'&&request.method==='GET'){json(response,200,access.workspace?.(result)??REMOTE_WORKSPACE);return;}
       if(!paired){
         if(isApi(pathname)||!remoteRoutes.allowed(request.method,pathname))json(response,403,access.pairingRequired);
@@ -135,7 +139,7 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
       if(!remoteRoutes.allowed(request.method,pathname)){json(response,403,LOCAL_ACCESS);return;}
       forward(request,response);
     });
-    next.requestTimeout=30000;next.headersTimeout=10000;next.maxConnections=maxConnections;
+    next.maxConnections=maxConnections;
     const perAddress=new Map();
     next.on('connection',socket=>{
       if(access.acceptConnection&&!access.acceptConnection(socket)){socket.destroy();return;}

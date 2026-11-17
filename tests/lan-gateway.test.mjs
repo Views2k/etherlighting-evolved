@@ -19,7 +19,7 @@ const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolv
 const filled=route=>route.replace(/\{[a-z_]+\}/g,'1');
 
 // answerUpgrade(accept) decides when the upstream answers a WebSocket upgrade; by default it answers at once.
-async function fixture(t,{answerUpgrade=accept=>accept()}={}){
+async function fixture(t,{answerUpgrade=accept=>accept(),serverOptions}={}){
   const received=[],upstreamSockets=new Set();
   const upstream=http.createServer((req,res)=>{
     received.push({method:req.method,url:req.url,headers:req.headers});
@@ -31,7 +31,7 @@ async function fixture(t,{answerUpgrade=accept=>accept()}={}){
     answerUpgrade(()=>{socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');socket.pipe(socket);});
   });
   const targetPort=await listen(upstream);
-  const gateway=createPrivateGateway({targetPort,listenPort:0,status:()=>({...PRIVATE_STATUS}),maxConnections:64,maxConnectionsPerAddress:16});
+  const gateway=createPrivateGateway({targetPort,listenPort:0,status:()=>({...PRIVATE_STATUS}),serverOptions,maxConnections:64,maxConnectionsPerAddress:16});
   const directory=await mkdtemp(path.join(tmpdir(),'ee-lan-gateway-'));
   const state={port:0,remote:PHONE};
   const lan=createLanAccessManager({configPath:path.join(directory,'lan-access.json'),interfaces:()=>({Ethernet:[{family:'IPv4',internal:false,address:PC}]}),
@@ -230,6 +230,30 @@ test('bodies over 1 MiB and pairing bodies over 1 KB stop at the LAN gateway',{t
   const pairing=await f.send('/api/lan-access/pair',{method:'POST',headers:{'content-length':'1025'},body:'a'.repeat(1025)});
   assert.equal(pairing.status,413);
   assert.equal(f.received.some(item=>item.url==='/api/rules'&&item.method==='PUT'&&item.headers['content-length']==='1048577'),false);
+});
+
+// A pairing body that promises 100 bytes and sends 11. The socket stays open unless close is true.
+async function partialPairing(f,close){
+  const socket=net.connect(f.state.port,'127.0.0.1');socket.on('error',()=>{});await once(socket,'connect');
+  const closed=once(socket,'close');socket.resume();
+  socket.write(`POST /api/lan-access/pair HTTP/1.1\r\nHost: ${PC}:${f.state.port}\r\nOrigin: ${f.origin()}\r\n`
+    +'Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{"code":"12');
+  if(close)setTimeout(()=>socket.destroy(),50);
+  await closed;
+}
+
+test('a pairing request that closes before its body ends leaves the gateway running',{timeout:5000},async t=>{
+  const f=await fixture(t);
+  await partialPairing(f,true);
+  assert.deepEqual(body(await f.send('/api/workspace')),{live:true,remote:true,lan:true,paired:false});
+  await f.pairDevice();
+});
+
+test('a pairing request that stalls past the request timeout leaves the gateway running',{timeout:5000},async t=>{
+  const f=await fixture(t,{serverOptions:{requestTimeout:300,headersTimeout:200,connectionsCheckingInterval:50}});
+  await partialPairing(f,false);
+  assert.deepEqual(body(await f.send('/api/workspace')),{live:true,remote:true,lan:true,paired:false});
+  await f.pairDevice();
 });
 
 test('the read-only private access answer has no local field',async t=>{
