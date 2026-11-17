@@ -38,7 +38,7 @@ EXAMPLE_ADDRESSES = {"192.168.1.2", "10.0.0.1"}
 TAILNET_NAME = re.compile(r"([\w-]+)\.ts\.net\b")
 EXAMPLE_TAILNETS = {"example", "fixture-tailnet"}
 AI_MARKER = re.compile(
-    r"\b(?:chatgpt|openai|anthropic|claude|codex|copilot)\b|co-authored-by|generated with|worktree-agent", re.I)
+    r"\b(?:chatgpt|openai|anthropic|claude|codex|copilot)\b|co-authored-by|\bgenerated with\b|worktree-agent", re.I)
 RELEASE_NAME = re.compile(r"\bEE (\d+\.\d+\.\d+)\b")
 # Files that must name the markers, private files or allowed text to look for them.
 GUARD_FILES = {"tools/check-repository.py", ".gitignore"}
