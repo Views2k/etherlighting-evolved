@@ -83,7 +83,7 @@ async def test_fan_mode_is_saved_per_switch(sessions, switches, config):
 
 
 class ReleasedFans(CountingFans):
-    """A controller started by EE 0.5.1, which runs that release's fans.sh until EE installs its own."""
+    """A controller started by release 0.5.1, which runs that release's fans.sh until EE installs its own."""
 
     current = False
 
