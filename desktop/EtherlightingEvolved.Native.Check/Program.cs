@@ -52,6 +52,7 @@ AdminAccessChecks.Panel(Check);
 PrivateAccessPanelChecks.Run(Check);
 RemoteAccessChecks.Contracts(Check);
 LanAccessChecks.Panel(Check);
+SpinnerChecks.Run(Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");
