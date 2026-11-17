@@ -52,7 +52,6 @@ AdminAccessChecks.Panel(Check);
 PrivateAccessPanelChecks.Run(Check);
 RemoteAccessChecks.Contracts(Check);
 LanAccessChecks.Panel(Check);
-LanAccessChecks.Pairing(output, Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");
@@ -74,6 +73,9 @@ Check(midnight["line.color"] is Avalonia.Media.Color { R: 0xe7, G: 0xef, B: 0xfc
 
 // Port tiles: repaint only on a visible change, and the drawn light matches the reported color
 PortTileChecks.Run(Check, output);
+
+// Pairing from another computer runs the window's message loop, so it follows the checks that capture rendered frames.
+LanAccessChecks.Pairing(output, Check);
 
 // Optional: start the simulator from this checkout and exercise the native pages and editing workflows against it
 if (args.Contains("--service"))
