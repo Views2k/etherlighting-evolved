@@ -167,7 +167,7 @@ async def test_first_write_after_enrollment_during_release_contains_the_new_grou
     async def capture(copper, **kwargs):
         frames.append(kwargs["sfp"])
         if len(frames) == 1:
-            engine.sfp_indicators.release_ports.add(10)
+            engine.set_sfp(10, {"mode": "unmanaged"})
         else:
             engine._stopping = True
         return 0

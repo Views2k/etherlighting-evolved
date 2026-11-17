@@ -172,15 +172,16 @@ def test_legacy_global_effect_migrates_but_legacy_bound_ports_do_not_change_layo
 def test_malformed_nested_scene_is_rejected_atomically(field, value):
     engine = engine_for_layout()
     engine.set_sfp(25, {"mode": "color", "color": "blue"})
+    indicators = engine.sfp_indicators
     before = engine.snapshot()
-    before_revisions = deepcopy((engine.revision, engine.sfp_indicators.revisions, engine.sfp_indicators.release_ports))
+    before_revisions = (engine.revision, dict(indicators.revisions), set(indicators.release_ports))
     scene = deepcopy(before)
     scene["brightness"] = 12
     scene[field] = value
     with pytest.raises(ValueError):
         engine.apply_snapshot(scene)
     assert engine.snapshot() == before
-    assert (engine.revision, engine.sfp_indicators.revisions, engine.sfp_indicators.release_ports) == before_revisions
+    assert (engine.revision, dict(indicators.revisions), set(indicators.release_ports)) == before_revisions
 
 
 @pytest.mark.parametrize("field,value", [("copper_ports", [1, True]), ("copper_ports", [1, 1]),

@@ -131,7 +131,9 @@ def test_zero_master_brightness_has_exact_zero_precision_components(effect, sfp_
 def test_releasing_sfp_is_omitted_and_never_joins_the_copper_frame(sfp_clock):
     engine = engine_for_effect("pulse")
     engine.set_sfp(10, {"mode": "color", "effect": "two_color"})
-    engine.sfp_indicators.releasing.add(9)
+    engine.set_sfp(9, {"mode": "unmanaged"})
+    assert engine.sfp_indicators.begin_release(9) is not None
+    engine.set_sfp(9, {"mode": "color"})
     assert set(engine.sfp_indicators.outputs()) == {10}
     assert engine.sfp_indicators.outputs()[10].precise_rgb is not None
     assert len(engine.compose(t=1)[1]) == 8

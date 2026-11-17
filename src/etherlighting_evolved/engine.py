@@ -10,7 +10,8 @@ Each frame is built in this order, and each step can override the one before it:
 Only ports that changed visibly are sent to the switch, plus a full refresh every `keepalive` seconds, because the
 switch's own Etherlighting service keeps reapplying its colors. A change made through the API wakes the render
 loop immediately instead of waiting for the next frame. Every write stays within the adaptive command budget
-(command_budget.py), and the SFP port indicators are rendered and confirmed in sfp_indicators.py.
+(command_budget.py). The SFP port indicators are rendered and their revisions tracked in sfp_indicators.py; Engine
+waits for the switch to confirm them.
 
 Colors are gamma corrected, and a port whose zone, rule or effect changes crossfades to its new color.
 """
@@ -736,18 +737,15 @@ class Engine:
     async def _release_sfp_port(self, port: int) -> None:
         indicators = self.sfp_indicators
         async with self._native_quiesce_lock:
-            if port not in indicators.release_ports or indicators.requires_output(port):
+            revision = indicators.begin_release(port)
+            if revision is None:
                 return
-            revision = indicators.revisions[port]
-            indicators.releasing.add(port)
             try:
                 await self._write_idle.wait()
-                if indicators.requires_output(port) or indicators.revisions[port] != revision:
+                if indicators.release_superseded(port, revision):
                     return
                 await self.switch.release_sfp(port)
-                if not indicators.requires_output(port) and indicators.revisions[port] == revision:
-                    indicators.acknowledged[port] = revision
-                    indicators.release_ports.discard(port)
+                indicators.release_confirmed(port, revision)
             except (TransportError, asyncio.CancelledError) as exc:
                 self._native_blocked = True
                 self.mode = "released"
@@ -755,8 +753,7 @@ class Engine:
                 self._output_halt.set()
                 raise
             finally:
-                indicators.releasing.discard(port)
-                indicators.changed.set()
+                indicators.end_release(port)
                 self._dirty.set()
 
     async def wait_for_sfp(self, port: int) -> None:
@@ -921,11 +918,10 @@ class Engine:
                 raise TransportError(self._error) from exc
             self.switch_info = info
             self._native_release_pending = self._native_engaged = False
-            self.sfp_indicators.release_pending = self.sfp_indicators.engaged = False
             self._native_blocked = self._reconnect_blocked = False
             self._reconnect_failures = 0
             self.connected, self.error = True, None
-            self.sfp_indicators.invalidate()
+            self.sfp_indicators.recovered()
             if not self._stopping:
                 self._loop_failed = False
                 self.resume()
@@ -1259,7 +1255,7 @@ class Engine:
             rendered = (rendered + [BLACK] * len(zone.ports))[: len(zone.ports)]
             for port, color in zip(zone.ports, rendered, strict=True):
                 if port in self.sfp_indicators.zones:
-                    self.sfp_indicators.zone_colors[port] = color
+                    self.sfp_indicators.record_zone_color(port, color)
                     continue
                 colors[port - 1] = color
                 sources[port - 1] = {"kind": "zone", "id": zone.id, "name": zone.name}
@@ -1470,7 +1466,7 @@ class Engine:
             self.budget.refresh()
 
             if not self._native_blocked and not self._output_uncertain():
-                for port in tuple(self.sfp_indicators.release_ports):
+                for port in self.sfp_indicators.release_ports:
                     try:
                         await self._release_sfp_port(port)
                     except TransportError as exc:
@@ -1488,9 +1484,7 @@ class Engine:
                 before = self.switch.stats.attempted_commands
                 try:
                     self._native_engaged |= any(output.breath is not None for output in self.last_outputs)
-                    sfp = self.sfp_indicators.outputs()
-                    sfp_revisions = {port: self.sfp_indicators.revisions[port] for port in sfp}
-                    self.sfp_indicators.engaged |= bool(sfp)
+                    sfp, sfp_revisions = self.sfp_indicators.frame()
                     sent = await self.switch.write(self.last_outputs,
                                                    max_commands=self.budget.value,
                                                    stop=self._output_halt,

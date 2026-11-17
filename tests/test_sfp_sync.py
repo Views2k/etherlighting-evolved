@@ -133,10 +133,11 @@ def test_explicit_sfp_rules_keep_priority_and_targeting_over_sync(mode):
                                       {"mode": None}, {"unexpected": 1}])
 def test_invalid_sync_changes_are_atomic(changes):
     engine = engine_for_sfp()
-    before = deepcopy((engine.snapshot(), engine.sfp_indicators.revisions, engine.sfp_indicators.release_ports))
+    indicators = engine.sfp_indicators
+    before = (engine.snapshot(), dict(indicators.revisions), set(indicators.release_ports))
     with pytest.raises(ValueError):
         engine.set_sfp_sync(changes)
-    assert (engine.snapshot(), engine.sfp_indicators.revisions, engine.sfp_indicators.release_ports) == before
+    assert (engine.snapshot(), dict(indicators.revisions), set(indicators.release_ports)) == before
 
 
 def test_sync_requires_verified_indicators_and_available_source():

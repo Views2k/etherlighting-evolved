@@ -7,8 +7,9 @@ the switch confirms the output written for it, and an indicator that needs no ou
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from . import timing
@@ -55,23 +56,23 @@ class SfpIndicators:
         self.lights: dict[int, SfpLight] = {port: SfpLight() for port in ports}
         self.sync = SfpSync()
         self.zones: dict[int, Zone] = {}  # indicators that belong to an effect group
-        self.zone_colors: dict[int, Color] = {}
+        self._zone_colors: dict[int, Color] = {}
         self.playback = SfpPlayback()
-        self.revisions = {port: 0 for port in ports}
-        self.acknowledged = {port: 0 for port in ports}
-        self.release_ports: set[int] = set()
-        self.releasing: set[int] = set()
-        self.engaged = False
-        self.release_pending = False
+        self._revisions = {port: 0 for port in ports}
+        self._acknowledged = {port: 0 for port in ports}
+        self._release_ports: set[int] = set()
+        self._releasing: set[int] = set()
+        self._engaged = False
+        self._release_pending = False
         self.changed = asyncio.Event()
-        self.rule_ids: dict[int, str | None] = {port: None for port in ports}
+        self._rule_ids: dict[int, str | None] = {port: None for port in ports}
 
     def add_ports(self, ports: Iterable[int]) -> None:
         for port in ports:
             self.lights.setdefault(port, SfpLight())
-            self.revisions.setdefault(port, 0)
-            self.acknowledged.setdefault(port, 0)
-            self.rule_ids.setdefault(port, None)
+            self._revisions.setdefault(port, 0)
+            self._acknowledged.setdefault(port, 0)
+            self._rule_ids.setdefault(port, None)
 
     # Settings
 
@@ -118,7 +119,7 @@ class SfpIndicators:
                    if port not in previous or port not in self.zones
                    or previous[port].effect is not self.zones[port].effect}
         for port in changed:
-            self.zone_colors.pop(port, None)
+            self._zone_colors.pop(port, None)
         return changed
 
     def load(self, lights: dict[int, SfpLight], sync: SfpSync, affected: set[int],
@@ -130,18 +131,18 @@ class SfpIndicators:
         """
         self.lights, self.sync = lights, sync
         for port in affected:
-            self.revisions[port] += 1
+            self._revisions[port] += 1
             if self.requires_output(port):
-                self.release_ports.discard(port)
+                self._release_ports.discard(port)
             elif required_before[port]:
-                self.release_ports.add(port)
+                self._release_ports.add(port)
             else:
-                self.acknowledged[port] = self.revisions[port]
+                self._acknowledged[port] = self._revisions[port]
         self.sync_rules()
-        affected = affected | {port for port in self.lights if self.revisions[port] != revisions_before[port]}
+        affected = affected | {port for port in self.lights if self._revisions[port] != revisions_before[port]}
         for port in affected & set(self.switch.sfp_ports):
             if self.requires_output(port):
-                self.acknowledged[port] = -1
+                self._acknowledged[port] = -1
         if affected:
             self.changed.set()
         return affected
@@ -185,7 +186,7 @@ class SfpIndicators:
         return self._engine.mode == "running" and any(
             port not in self.zones and self._port_animating(port)
             and (self.sync.mode == "ethernet" or self.light(port).brightness > 0)
-            and port not in self.releasing
+            and port not in self._releasing
             for port in self.switch.sfp_ports
         ) and self.switch.sfp_precise
 
@@ -193,76 +194,139 @@ class SfpIndicators:
         for port in self.switch.sfp_ports:
             rule = self.rule(port)
             rule_id = rule.id if rule is not None else None
-            if self.rule_ids[port] != rule_id:
-                self.rule_ids[port] = rule_id
-                self.revisions[port] += 1
+            if self._rule_ids[port] != rule_id:
+                self._rule_ids[port] = rule_id
+                self._revisions[port] += 1
                 self.changed.set()
                 if not self.requires_output(port):
-                    self.release_ports.add(port)
+                    self._release_ports.add(port)
             if self.requires_output(port):
-                self.release_ports.discard(port)
+                self._release_ports.discard(port)
 
     # Revisions and acknowledgments
+
+    @property
+    def revisions(self) -> Mapping[int, int]:
+        return MappingProxyType(self._revisions)
+
+    @property
+    def acknowledged(self) -> Mapping[int, int]:
+        """The last revision of each indicator that the switch confirmed, or -1 after its confirmation was discarded."""
+        return MappingProxyType(self._acknowledged)
+
+    @property
+    def release_ports(self) -> tuple[int, ...]:
+        """The indicators waiting to be handed back to the switch, in the order the render loop releases them."""
+        return tuple(self._release_ports)
+
+    @property
+    def release_pending(self) -> bool:
+        """Whether a global release must still hand every indicator back to the switch."""
+        return self._release_pending
 
     def revise(self, ports: set[int]) -> None:
         if not ports:
             return
         for port in ports:
-            self.revisions[port] += 1
+            self._revisions[port] += 1
             if self.requires_output(port):
-                self.release_ports.discard(port)
+                self._release_ports.discard(port)
             else:
-                self.release_ports.add(port)
+                self._release_ports.add(port)
         self.changed.set()
 
     def invalidate(self) -> None:
         """Give every indicator that needs output a new revision, after a change that affects all of them."""
         for port in self.switch.sfp_ports:
             if self.requires_output(port):
-                self.revisions[port] += 1
+                self._revisions[port] += 1
         self.changed.set()
+
+    def frame(self) -> tuple[dict[int, PortOutput], dict[int, int]]:
+        """Return the output to write in this frame and the revision each output is for.
+
+        Once any output is written, a global release has to hand the indicators back to the switch.
+        """
+        outputs = self.outputs()
+        revisions = {port: self._revisions[port] for port in outputs}
+        self._engaged |= bool(outputs)
+        return outputs, revisions
 
     def acknowledge(self, outputs: dict[int, PortOutput], revisions: dict[int, int]) -> None:
         """Acknowledge each written revision that is still current once the switch confirms its output."""
         for port, output in outputs.items():
-            if self.revisions[port] == revisions[port] and self.switch.sfp_acknowledged(port, output):
-                self.acknowledged[port] = revisions[port]
+            if self._revisions[port] == revisions[port] and self.switch.sfp_acknowledged(port, output):
+                self._acknowledged[port] = revisions[port]
+        self.changed.set()
+
+    def begin_release(self, port: int) -> int | None:
+        """Mark an indicator that waits to be handed back to the switch as releasing, and return its revision.
+
+        Returns None when the indicator does not wait for release or needs output again.
+        """
+        if port not in self._release_ports or self.requires_output(port):
+            return None
+        self._releasing.add(port)
+        return self._revisions[port]
+
+    def release_superseded(self, port: int, revision: int) -> bool:
+        """Whether the indicator needs output again or got a newer revision since its release began."""
+        return self.requires_output(port) or self._revisions[port] != revision
+
+    def release_confirmed(self, port: int, revision: int) -> None:
+        """Acknowledge a release the switch confirmed, unless a newer request superseded it."""
+        if not self.release_superseded(port, revision):
+            self._acknowledged[port] = revision
+            self._release_ports.discard(port)
+
+    def end_release(self, port: int) -> None:
+        self._releasing.discard(port)
         self.changed.set()
 
     def request_release(self) -> None:
-        self.release_pending |= self.engaged or any(
+        self._release_pending |= self._engaged or any(
             self.switch.sfp_status(port)["owned"] or self.switch.sfp_status(port)["state"] == "uncertain"
             for port in self.lights)
         self.changed.set()
 
     def released(self) -> None:
         """Record a confirmed release; indicators that still need output wait for a new confirmation."""
-        self.release_pending = self.engaged = False
+        self._release_pending = self._engaged = False
         for port in self.lights:
             if not self.requires_output(port):
-                self.acknowledged[port] = self.revisions[port]
-                self.release_ports.discard(port)
+                self._acknowledged[port] = self._revisions[port]
+                self._release_ports.discard(port)
             else:
-                self.revisions[port] += 1
-                self.acknowledged[port] = -1
+                self._revisions[port] += 1
+                self._acknowledged[port] = -1
         self.changed.set()
+
+    def recovered(self) -> None:
+        """Drop the pending release once recovery cleaned up the switch output; indicators that need output are
+        written again."""
+        self._release_pending = self._engaged = False
+        self.invalidate()
 
     def connection_lost(self) -> None:
         for port in self.switch.sfp_ports:
             if self.requires_output(port):
-                self.revisions[port] += 1
-                self.acknowledged[port] = -1
+                self._revisions[port] += 1
+                self._acknowledged[port] = -1
         self.changed.set()
 
     def control(self, port: int) -> dict:
         status = dict(self.switch.sfp_status(port))
         if (status["state"] != "uncertain"
-                and (port in self.release_ports or port in self.releasing
-                     or self.acknowledged[port] != self.revisions[port])):
+                and (port in self._release_ports or port in self._releasing
+                     or self._acknowledged[port] != self._revisions[port])):
             status["state"] = "pending"
         return status
 
     # Rendering
+
+    def record_zone_color(self, port: int, color: Color) -> None:
+        """Keep the color that the indicator's effect group rendered for it in the latest frame."""
+        self._zone_colors[port] = color
 
     def color(self, port: int, elapsed: float) -> tuple[Color, float]:
         engine = self._engine
@@ -272,7 +336,7 @@ class SfpIndicators:
         follows_ethernet = self.sync.mode == "ethernet"
         grouped = port in self.zones
         if grouped:
-            color, brightness = self.zone_colors.get(port, BLACK), engine.brightness
+            color, brightness = self._zone_colors.get(port, BLACK), engine.brightness
         elif follows_ethernet:
             color, brightness = engine.port_color(self.sync.source_port)
         else:
@@ -292,7 +356,7 @@ class SfpIndicators:
         outputs = {}
         native = {}
         for port in self.switch.sfp_ports:
-            if port in self.releasing or not self.requires_output(port):
+            if port in self._releasing or not self.requires_output(port):
                 self.playback.discard(port)
                 continue
             spec = self._native_spec(port)
@@ -327,7 +391,7 @@ class SfpIndicators:
         light = self.light(port)
         if not follows and light.native_duration is None:
             return None
-        revision = tuple(self.revisions.values()) if self.sync.mode != "independent" else self.revisions[port]
+        revision = tuple(self._revisions.values()) if self.sync.mode != "independent" else self._revisions[port]
         look = tuple(sorted(rule.look.to_dict().items())) if rule is not None else None
         key = (self.sync, revision, look, engine.gamma)
         color, brightness = self.color(port, engine.scene_elapsed())
@@ -373,8 +437,8 @@ class SfpIndicators:
              "effective_settings": (None if port in self.zones or self.sync.mode == "ethernet"
                                     else self.light(port).to_dict()),
              "playback": self._playback_state(port), "native_transition": self._transition_state(port),
-             "control": self.control(port), "revision": self.revisions[port],
-             "acknowledged_revision": self.acknowledged[port],
+             "control": self.control(port), "revision": self._revisions[port],
+             "acknowledged_revision": self._acknowledged[port],
              "link": engine.links[port].link_up if port in engine.links else None,
              "anomaly": bool(engine.links[port].anomaly) if port in engine.links else None,
              "rule": {"id": rule.id, "name": rule.name} if (rule := self.rule(port)) else None,

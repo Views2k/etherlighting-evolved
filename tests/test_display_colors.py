@@ -100,9 +100,13 @@ def test_sfp_display_handles_rule_brightness_off_and_unmanaged():
     state = engine.sfp_indicators.state()[0]
     assert state["mode"] == "unmanaged"
     assert state["display_rgb"] == pytest.approx([19.635, 42.33, 65.025])
-    engine.sfp_indicators.releasing.add(9)
+    anomaly = engine.links[9]
+    engine.links[9] = PortLink(9, True, False, 0, False)
+    engine.sfp_indicators.sync_rules()
+    assert engine.sfp_indicators.begin_release(9) is not None
+    engine.links[9] = anomaly
     assert engine.sfp_indicators.state()[0]["display_rgb"] is None
-    engine.sfp_indicators.releasing.clear()
+    engine.sfp_indicators.end_release(9)
     engine.set_sfp(9, {"mode": "off"})
     assert engine.sfp_indicators.state()[0]["display_rgb"] == [0, 0, 0]
     assert engine.sfp_indicators.outputs()[9].color.is_off

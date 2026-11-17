@@ -181,9 +181,11 @@ def test_saved_sfp_effects_round_trip_as_pending_intent_without_acknowledgment()
 def test_connection_loss_advances_sfp_revision_before_invalidating_its_ack():
     engine = engine_for_sfp()
     engine.set_sfp(9, {"mode": "color", "color": "red"})
-    engine.switch.sfp_applied.update(engine.sfp_indicators.outputs())
-    engine.sfp_indicators.acknowledged[9] = engine.sfp_indicators.revisions[9]
+    outputs, revisions = engine.sfp_indicators.frame()
+    engine.switch.sfp_applied.update(outputs)
+    engine.sfp_indicators.acknowledge(outputs, revisions)
     before = engine.sfp_indicators.state()[0]
+    assert before["acknowledged_revision"] == before["revision"]
     engine._lost(TransportError("fixture disconnect"))
     after = engine.sfp_indicators.state()[0]
     assert after["revision"] > before["revision"]
