@@ -25,7 +25,7 @@ function refreshFixture(){
     nextRefreshId:0,appliedRefreshId:0,liveUplinkVersion:0,closingWorkspace:false,streamPaused:false,
     currentSocket:null,disconnected:false,retryTimer:null,updateDraftBar:no,updateConnection:no,
     receiveScheduleClock:no,scheduleLiveUpdate:no,pushLiveColors:no,status:no,performance:{now:()=>now},
-    showSceneChoice:async(_send,next)=>next,request:no,
+    showSceneChoice:async(_send,next)=>next,request:no,workspaceOptions:{live:true,remote:false},
     WebSocket:Socket,location:{protocol:'http:',host:'fixture'},document:{hidden:false,querySelector:()=>({})},
     clearTimeout:no,setTimeout:no,uplinkMeasurements:measurements,
     workspaceRequest:()=>path=>{const item=deferred();reads.push({path,...item});return item.promise;}};
@@ -69,6 +69,16 @@ test('a pending refresh and a retired socket cannot restore readings after a los
   reads[1].resolve([]);await pending;
   assert.equal(c.currentSocket.readyState,1);assert.equal(c.state.uplink_bandwidth,null);assert.equal(measurements.last,null);
   c.currentSocket.message({type:'frame',...snapshot(1,'B')});assert.equal(measurements.last.reading.download,1e6);
+});
+
+test('a LAN page whose pairing was removed stops reconnecting and shows the pairing screen',async()=>{
+  for(const paired of [false,true]){
+    const {c}=refreshFixture(),timers=[],shown=[];
+    Object.assign(c,{workspaceOptions:{live:true,remote:true,lan:true},setTimeout:(callback,ms)=>timers.push(ms),
+      apiRequest:async path=>{assert.equal(path,'/api/workspace');return {live:true,remote:true,lan:true,paired};},showLanPairing:revoked=>shown.push(revoked)});
+    c.currentSocket.close();await new Promise(setImmediate);
+    assert.deepEqual([shown,timers],paired?[[],[1500]]:[[true],[]]);
+  }
 });
 
 test('out-of-order refreshes keep the latest completed snapshot',async()=>{

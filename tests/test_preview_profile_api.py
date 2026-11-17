@@ -5,9 +5,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from etherlighting_evolved.api import create_app, scene_envelope
+from etherlighting_evolved.api import create_app
 from etherlighting_evolved.engine import Engine
 from etherlighting_evolved.presets import PresetStore
+from etherlighting_evolved.routes.context import scene_envelope
 from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import SimulatedTransport
 
@@ -30,12 +31,12 @@ def active_state(engine, transport):
         "zones": [id(zone) for zone in engine.zones],
         "dirty": engine._dirty.is_set(),
         "halt": (id(engine._output_halt), engine._output_halt.is_set()),
-        "sfp_changed": engine._sfp_changed.is_set(),
-        "sfp_revisions": dict(engine._sfp_revisions),
-        "sfp_acknowledged": dict(engine._sfp_acknowledged),
-        "sfp_release": set(engine._sfp_release_ports),
+        "sfp_changed": engine.sfp_indicators.changed.is_set(),
+        "sfp_revisions": dict(engine.sfp_indicators.revisions),
+        "sfp_acknowledged": dict(engine.sfp_indicators.acknowledged),
+        "sfp_release": set(engine.sfp_indicators.release_ports),
         "origin": engine._animation_origin,
-        "animation_time": engine._animation_time,
+        "animation_time": engine.budget.animation_time,
         "commands": transport.command_count,
         "leds": deepcopy(transport.leds),
     }

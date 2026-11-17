@@ -1,4 +1,10 @@
-"""Export Live Traffic frames for the browser/backend contract."""
+"""Export Live Traffic frames for the browser and desktop preview contracts.
+
+Usage: python tools/live_traffic_fixtures.py <checkout> <folder>
+
+Writes live-traffic-frames.json, rendered by the engine in <checkout>/src. Pass tests/fixtures as the folder to
+refresh the checked-in file; tools/check-fixtures.py compares it with a fresh export.
+"""
 import json
 import sys
 from pathlib import Path
@@ -27,5 +33,8 @@ for params in settings:
                                 traffic_bps={i + 1: fact["traffic"] * 1e6 for i, fact in enumerate(facts)})
         frames.append({"time": time, "facts": facts, "colors": [c.to_hex() for c in effect.render(time, context)]})
     cases.append({"config": {"id": "traffic", "params": {**effect.params_json(), **params}}, "frames": frames})
-Path(sys.argv[2]).write_text(json.dumps(cases, separators=(",", ":")) + "\n", encoding="utf-8")
+output = Path(sys.argv[2])
+output.mkdir(parents=True, exist_ok=True)
+(output / "live-traffic-frames.json").write_text(json.dumps(cases, separators=(",", ":")) + "\n", encoding="utf-8",
+                                                 newline="\n")
 print(f"Exported {len(cases)} Live Traffic sequences.")

@@ -1,6 +1,6 @@
-// Port of the logic exports of preview/port-animation.mjs: CSS color text, display smoothing, the port label ink and
-// the confirmed-frame buffer that plays live colors back at an even pace. createPortAnimator drives DOM elements and
-// belongs to the page that shows the port map.
+// Port of the logic exports of preview/port-animation.mjs that the port map uses: color parsing and the confirmed-frame
+// buffer that plays live colors back at an even pace. createPortAnimator drives DOM elements and belongs to the page
+// that shows the port map.
 using System.Globalization;
 using System.Text.Json.Nodes;
 
@@ -26,22 +26,6 @@ public static class PortAnimation
         }
         return [0, 0, 0];
     }
-
-    static double[] Blend(double[] a, double[] b, double amount) => a.Select((channel, index) => channel + (b[index] - channel) * amount).ToArray();
-
-    /// <summary>rgbCss(color): "color(srgb r g b)" with channels from 0 to 1.</summary>
-    public static string RgbCss(IReadOnlyList<double> color) =>
-        $"color(srgb {string.Join(" ", color.Select(value => Js.ToFixed(Clamp(value / 255, 0, 1), 6)))})";
-
-    /// <summary>smoothColor(previous, target, elapsed): eases the shown color toward the target over about 42 ms.</summary>
-    public static double[] SmoothColor(double[]? previous, object? target, double elapsed)
-    {
-        var channels = target is string text ? Rgb(text) : target as double[] ?? Rgb(target);
-        return previous is not null ? Blend(previous, channels, 1 - Math.Exp(-Clamp(elapsed, 0, 80) / 42)) : channels;
-    }
-
-    /// <summary>portInk(): the port label color, white on every lighting color.</summary>
-    public static string PortInk() => "#ffffff";
 }
 
 /// <summary>

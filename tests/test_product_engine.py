@@ -56,7 +56,7 @@ async def test_identify_timer_is_host_owned_and_new_request_is_protected():
     engine = await identified_engine()
     first = engine.start_identify(1)
     try:
-        timer = engine._identify_timer
+        timer = engine.identification.timer
         assert 9 < timer.when() - asyncio.get_running_loop().time() <= 10
         with pytest.raises(ValueError, match="Another port"):
             engine.start_identify(2)
@@ -68,7 +68,7 @@ async def test_identify_timer_is_host_owned_and_new_request_is_protected():
         assert engine.identify_state()["id"] == second["id"]
         engine.release()
         assert engine.identify_state() is None
-        assert engine._identify_timer is None
+        assert engine.identification.timer is None
         with pytest.raises(ValueError, match="Resume"):
             engine.start_identify(3)
     finally:
@@ -82,7 +82,7 @@ async def test_identify_disconnect_drops_temporary_intent():
     engine.start_identify(1)
     engine._lost(TransportError("test disconnect"))
     assert engine.identify_state() is None
-    assert engine._identify_timer is None
+    assert engine.identification.timer is None
     assert engine.telemetry_state()["generation"] is None
     assert engine.telemetry_state()["stale"]
     await engine.switch.close()
@@ -94,19 +94,19 @@ async def test_identify_sfp_temporarily_owns_only_target_and_returns_native():
     try:
         before = engine.snapshot()
         active = engine.start_identify(9)
-        assert set(engine.sfp_outputs()) == {9}
-        assert engine.sfp_outputs()[9].preview() == Color(255, 255, 255)
+        assert set(engine.sfp_indicators.outputs()) == {9}
+        assert engine.sfp_indicators.outputs()[9].preview() == Color(255, 255, 255)
         engine.set_sfp(9, {"mode": "color", "color": "#00ff00", "brightness": 100})
         engine.stop_identify(active["id"])
-        assert engine.sfp_outputs()[9].preview() == Color(0, 255, 0)
+        assert engine.sfp_indicators.outputs()[9].preview() == Color(0, 255, 0)
         assert engine.snapshot()["sfp"]["10"] == before["sfp"]["10"]
         engine.set_sfp(9, {"mode": "unmanaged"})
         active = engine.start_identify(9)
         engine.stop_identify(active["id"])
-        assert 9 in engine._sfp_release_ports
+        assert 9 in engine.sfp_indicators.release_ports
         await engine.wait_for_sfp(9)
-        assert 9 not in engine._sfp_release_ports
-        assert 9 not in engine.sfp_outputs()
+        assert 9 not in engine.sfp_indicators.release_ports
+        assert 9 not in engine.sfp_indicators.outputs()
     finally:
         engine.stop_identify()
         await engine.switch.close()
@@ -120,10 +120,10 @@ async def test_identifying_copper_does_not_identify_following_optical_ports():
         engine.compose()
         engine.start_identify(1)
         engine.compose()
-        assert engine.sfp_outputs()[9].preview() == Color(255, 0, 0)
+        assert engine.sfp_indicators.outputs()[9].preview() == Color(255, 0, 0)
         engine.set_override(1, "#00ff00", 100)
         engine.compose()
-        assert engine.sfp_outputs()[9].preview() == Color(0, 255, 0)
+        assert engine.sfp_indicators.outputs()[9].preview() == Color(0, 255, 0)
     finally:
         engine.stop_identify()
         await engine.switch.close()
@@ -195,7 +195,7 @@ def test_corrupt_history_is_preserved_and_reported_without_rejecting_scene(tmp_p
     assert engine.history_error
     assert json.loads(path.read_text()) == {"invalid": True}
     with pytest.raises(HistoryStoreError):
-        engine._history.list("device")
+        engine.history[0].list("device")
 
 
 def test_history_restoration_uses_scene_guard_and_no_identify_saved(config):
@@ -231,7 +231,7 @@ async def test_identify_sfp_actual_writer_acknowledges_and_releases_native_contr
         active = engine.start_identify(9)
         await asyncio.wait_for(engine.wait_for_sfp(9), 3)
         assert engine.switch.sfp_status(9)["owned"]
-        assert engine._sfp_acknowledged[9] == engine._sfp_revisions[9]
+        assert engine.sfp_indicators.acknowledged[9] == engine.sfp_indicators.revisions[9]
         assert not engine.switch.sfp_status(10)["owned"]
         engine.stop_identify(active["id"])
         await asyncio.wait_for(engine.wait_for_sfp(9), 3)
@@ -255,6 +255,6 @@ async def test_identify_rejects_output_qualification_and_uncertain_state(monkeyp
         with pytest.raises(ValueError, match="qualification"):
             engine.start_identify(1)
         assert engine.identify_state() is None
-        assert engine._identify_timer is None
+        assert engine.identification.timer is None
     finally:
         await engine.switch.close()

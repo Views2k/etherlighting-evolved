@@ -7,6 +7,8 @@ using Avalonia.Media;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -17,53 +19,53 @@ namespace EtherlightingEvolved.Native.Pages.Settings;
 /// </summary>
 public sealed class ControllerConnection : Border
 {
-    readonly Send request;
+    readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
     readonly Func<JsonObject, Task> onChanged;
-    readonly TextBlock introduction = SettingsKit.HelpText("Connect UniFi Network to show controller details for your switch.");
-    readonly Button reload = SettingsKit.Button("Refresh controller", "quiet");
+    readonly TextBlock introduction = UiKit.HelpText("Connect UniFi Network to show controller details for your switch.");
+    readonly Button reload = UiKit.Button("Refresh controller", "quiet");
     readonly StateLine state = new("Checking controller connection…", "is-disconnected");
     readonly DetailsList details = new();
-    readonly TextBlock capabilityHint = SettingsKit.HelpText();
-    readonly NoticeBox message = new(connection: true, ownMargin: false);
+    readonly TextBlock capabilityHint = UiKit.HelpText();
+    readonly Notice message = new(connection: true, ownMargin: false);
     readonly Border reconnectSection;
-    readonly CheckRow reconnectRow = SettingsKit.CheckRow("Reconnect controller automatically");
+    readonly CheckRow reconnectRow = new("Reconnect controller automatically");
     readonly CheckBox reconnect;
-    readonly TextBlock reconnectHelp = SettingsKit.HelpText("Save this controller login securely on this PC.");
-    readonly TextBlock reconnectHint = SettingsKit.HelpText();
-    readonly Button applyPreference = SettingsKit.Button("Save reconnect preference", "primary");
-    readonly NoticeBox preferenceNotice = new(connection: true);
+    readonly TextBlock reconnectHelp = UiKit.HelpText("Save this controller login securely on this PC.");
+    readonly TextBlock reconnectHint = UiKit.HelpText();
+    readonly Button applyPreference = UiKit.Button("Save reconnect preference", "primary");
+    readonly Notice preferenceNotice = new(connection: true);
     readonly StackPanel form = new() { Spacing = 18, MaxWidth = 480 };
-    readonly Button editConnection = SettingsKit.Button("Edit connection");
-    readonly TextBlock editorHint = SettingsKit.HelpText("Connection edits are not applied.");
+    readonly Button editConnection = UiKit.Button("Edit connection");
+    readonly TextBlock editorHint = UiKit.HelpText("Connection edits are not applied.");
     readonly SelectBox kind = new();
-    readonly TextBlock kindHelp = SettingsKit.Small();
+    readonly TextBlock kindHelp = UiKit.Small();
     readonly SelectBox auth = new();
-    readonly TextBlock authHelp = SettingsKit.Small();
+    readonly TextBlock authHelp = UiKit.Small();
     readonly StackPanel authField;
-    readonly TextBox address = SettingsKit.Input(2048, "https://controller:8443");
-    readonly TextBox username = SettingsKit.Input(128);
-    readonly TextBox password = SettingsKit.Input();
+    readonly TextBox address = UiKit.Input(placeholder: "https://controller:8443", maxLength: 2048);
+    readonly TextBox username = UiKit.Input(maxLength: 128);
+    readonly TextBox password = UiKit.Input();
     readonly StackPanel usernameField;
     readonly SecretField passwordRow;
-    readonly TextBox apiKey = SettingsKit.Input(4096);
+    readonly TextBox apiKey = UiKit.Input(maxLength: 4096);
     readonly SecretField apiKeyField;
-    readonly TextBlock keyHelp = SettingsKit.Small();
+    readonly TextBlock keyHelp = UiKit.Small();
     readonly SelectBox consoleId = new();
     readonly StackPanel consoleField = new() { Spacing = 7 };
-    readonly Button findConsoles = SettingsKit.Button("Find consoles", "quiet");
-    readonly TextBox verification = SettingsKit.Input(8);
+    readonly Button findConsoles = UiKit.Button("Find consoles", "quiet");
+    readonly TextBox verification = UiKit.Input(maxLength: 8);
     readonly Disclosure twoFactor;
     readonly SelectBox site = new();
     readonly StackPanel siteField;
-    readonly Button submit = SettingsKit.Button("Connect controller", "primary");
-    readonly Button disconnect = SettingsKit.Button("Disconnect controller", "quiet");
-    readonly Button cancelChange = SettingsKit.Button("Cancel connection change", "quiet");
-    readonly WrapPanel connectionActions;
+    readonly Button submit = UiKit.Button("Connect controller", "primary");
+    readonly Button disconnect = UiKit.Button("Disconnect controller", "quiet");
+    readonly Button cancelChange = UiKit.Button("Cancel connection change", "quiet");
+    readonly FlowRow connectionActions;
     readonly Border trustPanel;
     readonly TextBlock fingerprint = new() { FontSize = 12, TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Cascadia Mono, Consolas, Courier New, monospace") };
-    readonly Button trust = SettingsKit.Button("Trust this certificate and connect");
-    readonly TextBlock addressHelp = SettingsKit.HelpText();
-    readonly TextBlock credentialHelp = SettingsKit.HelpText();
+    readonly Button trust = UiKit.Button("Trust this certificate and connect");
+    readonly TextBlock addressHelp = UiKit.HelpText();
+    readonly TextBlock credentialHelp = UiKit.HelpText();
     readonly Dictionary<string, string> methodDrafts = new(StringComparer.Ordinal);
     List<(string Id, string Name, bool Blocked)> consoles = [];
     JsonObject current = [];
@@ -74,7 +76,7 @@ public sealed class ControllerConnection : Border
     bool? reconnectDraft;
     string siteContextKey = "", localAddress = "", lastKind = "self_hosted", cleanForm;
 
-    public ControllerConnection(Send request, Func<JsonObject, Task> onChanged)
+    public ControllerConnection(Func<string, string, JsonNode?, Task<JsonNode?>> request, Func<JsonObject, Task> onChanged)
     {
         this.request = request;
         this.onChanged = onChanged;
@@ -97,35 +99,35 @@ public sealed class ControllerConnection : Border
         var (reconnectFrame, reconnectBody) = SettingsKit.AutomationSection();
         reconnectSection = reconnectFrame;
         reconnectSection.IsVisible = false;
-        foreach (var item in new Control[] { reconnectRow, reconnectHelp, reconnectHint, SettingsKit.Actions(applyPreference), preferenceNotice }) reconnectBody.Children.Add(item);
+        foreach (var item in new Control[] { reconnectRow, reconnectHelp, reconnectHint, new FlowRow(10, applyPreference), preferenceNotice }) reconnectBody.Children.Add(item);
 
         editConnection.IsVisible = false;
         editorHint.IsVisible = false;
-        var kindField = SettingsKit.Field("Controller type", kind);
+        var kindField = UiKit.Field("Controller type", kind);
         kindField.Children.Add(kindHelp);
-        authField = SettingsKit.Field("Sign-in method", auth);
+        authField = UiKit.Field("Sign-in method", auth);
         authField.Children.Add(authHelp);
-        var addressField = SettingsKit.Field("Controller address", address);
-        usernameField = SettingsKit.Field("Username", username);
+        var addressField = UiKit.Field("Controller address", address);
+        usernameField = UiKit.Field("Username", username);
         passwordRow = new SecretField("Controller password", password);
         apiKeyField = new SecretField("API key", apiKey);
         apiKeyField.Children.Add(keyHelp);
         consoleField.Children.Add(new TextBlock { Text = "Console", FontSize = 13, LineHeight = 18 }.Bind(TextBlock.ForegroundProperty, "muted"));
         consoleField.Children.Add(consoleId);
         consoleField.Children.Add(findConsoles);
-        consoleField.Children.Add(SettingsKit.Small("Enter an API key, then find and choose your console."));
-        var verificationField = SettingsKit.Field("Verification code", verification, "Enter your account’s current verification code.");
+        consoleField.Children.Add(UiKit.Small("Enter an API key, then find and choose your console."));
+        var verificationField = UiKit.Field("Verification code", verification, "Enter your account’s current verification code.");
         verificationField.Margin = new Thickness(0, 14, 0, 0);
         verificationField.MaxWidth = 150;
         verificationField.HorizontalAlignment = HorizontalAlignment.Left;
         twoFactor = new Disclosure("Two-factor authentication", verificationField);
         site.SetOptions([("", "Automatic", false)], "");
-        siteField = SettingsKit.Field("UniFi site", site);
+        siteField = UiKit.Field("UniFi site", site);
         siteField.IsVisible = false;
         cancelChange.IsVisible = false;
         disconnect.IsVisible = false;
-        var formActions = SettingsKit.Actions(submit, cancelChange);
-        connectionActions = SettingsKit.Actions(editConnection, disconnect);
+        var formActions = new FlowRow(10, submit, cancelChange);
+        connectionActions = new FlowRow(10, editConnection, disconnect);
         var trustBody = new StackPanel { Spacing = 12 };
         trustBody.Children.Add(SettingsKit.P("Verify this SHA-256 fingerprint against your controller, then trust it to continue.", "muted"));
         fingerprint.Bind(TextBlock.ForegroundProperty, "muted");
@@ -237,7 +239,7 @@ public sealed class ControllerConnection : Border
             trustPanel.IsVisible = false;
             Connect();
         };
-        reload.Click += (_, _) => Perform(() => request("/api/controller"), "Checking controller status…");
+        reload.Click += (_, _) => Perform(() => request("/api/controller", "GET", null), "Checking controller status…");
         editConnection.Click += (_, _) =>
         {
             if (!active || pending is not null) return;
@@ -248,9 +250,9 @@ public sealed class ControllerConnection : Border
         };
         cancelChange.Click += (_, _) =>
         {
-            if (current.Truthy("pending_site_choice")) Perform(() => request("/api/controller/cancel", "POST"), "Canceling connection change…", "cancel");
+            if (current.Truthy("pending_site_choice")) Perform(() => request("/api/controller/cancel", "POST", null),"Canceling connection change…", "cancel");
         };
-        disconnect.Click += (_, _) => Perform(() => request("/api/controller/disconnect", "POST"), "Disconnecting controller…", "disconnect");
+        disconnect.Click += (_, _) => Perform(() => request("/api/controller/disconnect", "POST", null),"Disconnecting controller…", "disconnect");
         reconnect.IsCheckedChanged += (_, _) =>
         {
             if (programmatic) return;
@@ -259,7 +261,7 @@ public sealed class ControllerConnection : Border
             SetBusy();
         };
         applyPreference.Click += (_, _) => ApplyPreference();
-        Perform(() => request("/api/controller"), "Checking controller status…");
+        Perform(() => request("/api/controller", "GET", null), "Checking controller status…");
     }
 
     void SetText(TextBox box, string text)
@@ -454,10 +456,10 @@ public sealed class ControllerConnection : Border
         SyncTarget();
         ShowSites();
         if (!dirty) cleanForm = FormValues();
-        if (current.Truthy("error")) Status(Connections.ControllerError(Problem.From(current["error"]), "Controller data is unavailable. Check the connection and try again."), true);
+        if (current.Truthy("error")) Status(Connections.ControllerError(current["error"], "Controller data is unavailable. Check the connection and try again."), true);
         else if (current.Truthy("pending_site_choice")) PendingSiteMessage();
         if (current.Truthy("saved_login_error"))
-            preferenceNotice.Set(Connections.ControllerError(Problem.From(current["saved_login_error"]), "The saved controller login needs attention. Connect your controller again."), true);
+            preferenceNotice.Set(Connections.ControllerError(current["saved_login_error"], "The saved controller login needs attention. Connect your controller again."), true);
         else preferenceNotice.Set();
         if (SupportsVerification() && current.Str("error.code") is "two_factor_required" or "verification_failed")
         {
@@ -553,9 +555,9 @@ public sealed class ControllerConnection : Border
             catch (Exception exception)
             {
                 if (!active) return;
-                var error = Problem.From(exception);
-                var value = error.Details.Str("certificate_sha256");
-                if (error.Code is "two_factor_required" or "verification_failed")
+                var code = (exception as ApiException)?.Code;
+                var value = (exception as ApiException)?.Details.Str("certificate_sha256");
+                if (code is "two_factor_required" or "verification_failed")
                 {
                     if (SupportsVerification())
                     {
@@ -563,18 +565,18 @@ public sealed class ControllerConnection : Border
                         twoFactor.Open = true;
                         verificationRequired = true;
                         focusVerification = true;
-                        Status(Connections.ControllerError(error), true);
+                        Status(Connections.ControllerError(exception), true);
                     }
-                    else Status(Connections.ControllerError(new Problem("controller_local_account_required", [])), true);
+                    else Status(Connections.ControllerMessages["controller_local_account_required"], true);
                 }
-                else if (error.Code is "certificate_untrusted" or "certificate_changed" && kind.Value == "cloud_connector")
+                else if (code is "certificate_untrusted" or "certificate_changed" && kind.Value == "cloud_connector")
                 {
                     challenge = null;
                     certificate = null;
                     trustPanel.IsVisible = false;
                     Status("The UniFi cloud certificate could not be verified. Check this computer’s date and trusted certificates, then try again.", true);
                 }
-                else if (error.Code is "certificate_untrusted" or "certificate_changed" && Regex.IsMatch(value ?? "", "^[a-fA-F0-9]{64}$"))
+                else if (code is "certificate_untrusted" or "certificate_changed" && Regex.IsMatch(value ?? "", "^[a-fA-F0-9]{64}$"))
                 {
                     var target = FormTarget();
                     challenge = new JsonObject
@@ -583,10 +585,10 @@ public sealed class ControllerConnection : Border
                     };
                     fingerprint.Text = string.Join(" ", value!.ToUpperInvariant().Chunk(4).Select(part => new string(part)));
                     trustPanel.IsVisible = true;
-                    Status(error.Code == "certificate_changed" ? "The controller certificate changed. Verify the new fingerprint before connecting."
+                    Status(code == "certificate_changed" ? "The controller certificate changed. Verify the new fingerprint before connecting."
                         : "The controller uses a certificate that needs your approval.", true);
                 }
-                else Status(Connections.ControllerError(error), true);
+                else Status(Connections.ControllerError(exception), true);
             }
             finally
             {
@@ -623,7 +625,7 @@ public sealed class ControllerConnection : Border
         }
         if (siteRequired && site.Value.Length == 0)
         {
-            Status(Connections.ControllerError(new Problem("site_required", [])), true);
+            Status(Connections.ControllerMessages["site_required"], true);
             site.Focus();
             return;
         }
@@ -686,7 +688,7 @@ public sealed class ControllerConnection : Border
             }
             catch (Exception exception)
             {
-                if (active) Status(Connections.ControllerError(Problem.From(exception)), true);
+                if (active) Status(Connections.ControllerError(exception), true);
             }
             finally
             {
@@ -718,7 +720,7 @@ public sealed class ControllerConnection : Border
                 Show(result);
                 if (!Connections.ControllerReconnectConfirmed(result, enabled))
                 {
-                    preferenceNotice.Set(Connections.ControllerError(Problem.From(result["saved_login_error"]),
+                    preferenceNotice.Set(Connections.ControllerError(result["saved_login_error"],
                         "The setting could not be confirmed. Select Refresh controller before trying again."), true);
                     return;
                 }
@@ -732,7 +734,7 @@ public sealed class ControllerConnection : Border
             }
             catch (Exception exception)
             {
-                if (active) preferenceNotice.Set(Connections.ControllerError(Problem.From(exception), "The controller setting could not be saved. Try Save reconnect preference again."), true);
+                if (active) preferenceNotice.Set(Connections.ControllerError(exception, "The controller setting could not be saved. Try Save reconnect preference again."), true);
             }
             finally
             {
@@ -784,7 +786,7 @@ public sealed class ControllerConnection : Border
         SyncTarget();
         ShowSites();
         if (!dirty) cleanForm = FormValues();
-        if (current.Truthy("error")) Status(Connections.ControllerError(Problem.From(current["error"])), true);
+        if (current.Truthy("error")) Status(Connections.ControllerError(current["error"]), true);
         else if (current.Truthy("pending_site_choice")) PendingSiteMessage();
         else if (!current.Truthy("connected") || current.Truthy("stale") || message.IsError) Status();
         SetBusy();

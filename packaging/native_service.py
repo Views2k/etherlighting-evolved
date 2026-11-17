@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -49,7 +50,6 @@ async def serve(options: dict, token: str, *, demo: bool, browser_live: bool) ->
     config.api.host = "127.0.0.1"
     config.api.token = token
     config.api.cors_origins = []
-    config.api.static_dir = str(config.data_dir / "native-no-web")
     def preview_transport(**credentials):
         if credentials.get("host", "").strip().lower() not in DEMO_HOSTS:
             raise LoginError("preview_only", "Open the app normally to connect to a switch.", 409)
@@ -99,6 +99,10 @@ def report_failure(error: BaseException) -> None:
                     "function": frame.name[:80], "line": frame.lineno}
                    for frame in frames],
     }
+    # EE's own errors carry a fixed identifier such as "output_recovery_required".
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+        record["code"] = code
     print(json.dumps(record), file=sys.stderr, flush=True)
 
 
@@ -114,6 +118,10 @@ class DiagnosticLogHandler(logging.Handler):
             "frames": [{"module": Path(record.pathname).name[:80],
                         "function": record.funcName[:80], "line": record.lineno}],
         }
+        # EE logs with %-style templates, so the template without its arguments names no host, switch or user.
+        # Other libraries may pass messages that are already formatted.
+        if logger.startswith("etherlighting_evolved") and isinstance(record.msg, str):
+            diagnostic["template"] = record.msg[:120]
         print(json.dumps(diagnostic), file=sys.stderr, flush=True)
 
 

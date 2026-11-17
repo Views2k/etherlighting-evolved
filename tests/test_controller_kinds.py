@@ -10,9 +10,10 @@ from test_controller_credentials import RECORD
 from test_controller_reconnect import Store
 
 from etherlighting_evolved import controller_credentials as storage
-from etherlighting_evolved.controller import ControllerClient, ControllerError, ControllerManager
+from etherlighting_evolved.controller import ControllerClient, ControllerError
 from etherlighting_evolved.controller_api import ControllerIntegration, ControllerLogin
 from etherlighting_evolved.controller_credentials import ControllerLoginStore
+from etherlighting_evolved.controller_manager import ControllerManager
 from etherlighting_evolved.credentials import CredentialStoreError
 
 

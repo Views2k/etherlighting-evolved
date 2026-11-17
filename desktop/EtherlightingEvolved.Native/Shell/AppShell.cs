@@ -18,7 +18,7 @@ namespace EtherlightingEvolved.Native.Shell;
 /// <summary>
 /// The workspace frame and controller, ported from preview/app.mjs: title bar, navigation, status bar, the
 /// reconnect and pending-preview bars, toasts, and the session flow (start, accept a session, open or reset a
-/// workspace, close it).
+/// workspace). The desktop releases the switch through Handoff to UniFi or Quit, not the browser's close button.
 /// </summary>
 public sealed class AppShell : UserControl
 {
@@ -29,8 +29,8 @@ public sealed class AppShell : UserControl
     readonly Border view = new() { ClipToBounds = true };
     readonly Panel canvas = new();
     readonly TextBlock status = new() { Text = "Opening workspace", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-    readonly ConnectionState connection = new() { Text = "Connecting…" };
-    readonly ConnectionState controller = new() { Text = "Controller not connected", IsVisible = false };
+    readonly StateLine connection = StatusLine("Connecting…");
+    readonly StateLine controller = StatusLine("Controller not connected");
     readonly Border recovery = new() { IsVisible = false, Padding = new Thickness(20, 12) };
     readonly Border pending = new() { IsVisible = false, Padding = new Thickness(18, 6), BorderThickness = new Thickness(0, 0, 0, 1) };
     readonly TextBlock pendingText = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, FontSize = 13 };
@@ -42,7 +42,7 @@ public sealed class AppShell : UserControl
     int navigationVersion;
     readonly List<string> history = [];
     int historyIndex = -1;
-    bool startedOnce;
+    bool startedOnce, serviceStopped, pairingShown;
 
     public AppShell(Workspace workspace)
     {
@@ -72,6 +72,7 @@ public sealed class AppShell : UserControl
         {
             UpdatePage();
             Status("The workspace connection was interrupted.", true);
+            if (Workspace.Lan) _ = CheckPairing();
         };
         Workspace.StreamRestored += () =>
         {
@@ -94,6 +95,9 @@ public sealed class AppShell : UserControl
     // Desktop-only clients can choose the EE host. The bundled local workspace manages its own service.
     public Func<Uri, Task>? OpenWorkspaceAddress { get; init; }
 
+    /// <summary>Opens this workspace in the default browser with administration access. Set only for the service this program started on Windows.</summary>
+    public Func<Task>? OpenInBrowser { get; init; }
+
     internal async Task ChooseWorkspaceAddress()
     {
         if (OpenWorkspaceAddress is null || current is not null && !await current.CanLeave()) return;
@@ -108,18 +112,15 @@ public sealed class AppShell : UserControl
         actions.Children.Add(connect);
         connect.Click += (_, _) =>
         {
-            if (TryWorkspaceAddress(input.Text, out _)) dialog.Close("connect");
-            else error.Text = "Enter the private HTTPS workspace address or a local address.";
+            if (WorkspaceAddress.Parse(input.Text) is not null) dialog.Close("connect");
+            else error.Text = AddressHelp;
         };
         input.Focus();
-        if (await dialog.Result == "connect" && TryWorkspaceAddress(input.Text, out var address))
-            await Run(() => OpenWorkspaceAddress(address!));
+        if (await dialog.Result == "connect" && WorkspaceAddress.Parse(input.Text) is { } address)
+            await Run(() => OpenWorkspaceAddress(address));
     }
 
-    internal static bool TryWorkspaceAddress(string? text, out Uri? address) =>
-        Uri.TryCreate(text?.Trim(), UriKind.Absolute, out address) &&
-        (address.Scheme == "https" || address.Scheme == "http" && address.IsLoopback) &&
-        address.UserInfo.Length == 0 && address.AbsolutePath == "/" && address.Query.Length == 0 && address.Fragment.Length == 0;
+    public const string AddressHelp = "Enter the Tailscale private HTTPS address, the LAN address shown in LAN access on the computer running EE, such as http://192.168.1.2:4280, or a local address.";
 
     /// <summary>The window asks to hide to the notification area (traffic-light close and minimize).</summary>
     public event Action? HideRequested;
@@ -164,7 +165,7 @@ public sealed class AppShell : UserControl
         var logo = new Image { Width = 30, Height = 30, Margin = new Thickness(6, 0, 0, 0), Stretch = Stretch.Uniform };
         try
         {
-            using var stream = AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo.png"));
+            using var stream = AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/logo-256.png"));
             logo.Source = Bitmap.DecodeToWidth(stream, 60, BitmapInterpolationMode.HighQuality);
         }
         catch (Exception) { }
@@ -218,6 +219,7 @@ public sealed class AppShell : UserControl
         // Status bar
         var statusbar = new Border { MinHeight = 29, Padding = new Thickness(18, 4), BorderThickness = new Thickness(0, 1, 0, 0) };
         statusbar.Bind(Border.BackgroundProperty, "chrome").Bind(Border.BorderBrushProperty, "line");
+        controller.IsVisible = false;
         var connections = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 18, VerticalAlignment = VerticalAlignment.Center, Children = { connection, controller } };
         var statusRow = new DockPanel();
         DockPanel.SetDock(connections, Dock.Right);
@@ -260,6 +262,10 @@ public sealed class AppShell : UserControl
         return button;
     }
 
+    /// <summary>A status-bar connection label: the state line on one 12px line.</summary>
+    static StateLine StatusLine(string text) =>
+        new(text, "is-disconnected") { FontSize = 12, LineHeight = double.NaN, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center };
+
     static Control Loading(string text)
     {
         var spinner = new Spinner();
@@ -297,7 +303,9 @@ public sealed class AppShell : UserControl
 
     public void UpdateConnection()
     {
-        var (label, tone) = SwitchStatus(Workspace.Session, Workspace.Disconnected, Workspace.Busy > 0, Workspace.State.Truthy("reconnect_required"));
+        var (label, tone) = serviceStopped
+            ? ("EE service stopped", "error")
+            : SwitchStatus(Workspace.Session, Workspace.Disconnected, Workspace.Busy > 0, Workspace.State.Truthy("reconnect_required"));
         connection.Set(label, tone);
         recovery.IsVisible = Workspace.Ready && Workspace.State.Bool("reconnect_required") == true;
         controller.IsVisible = Workspace.Ready && Workspace.Session.Bool("simulated") != true;
@@ -420,6 +428,22 @@ public sealed class AppShell : UserControl
         Status("The EE service is not running", true);
     }
 
+    /// <summary>
+    /// The bundled service stopped after it started: stop reconnecting, keep an unapplied preview for the next start,
+    /// and offer to start the service again. The status bar says the service stopped for as long as this window shows;
+    /// starting the service again opens a new window.
+    /// </summary>
+    public void ShowServiceStopped(string message, Func<Task> retry)
+    {
+        serviceStopped = true;
+        Workspace.Closing = true;
+        Workspace.StopFrames();
+        Studio.SaveUiState(PageName);
+        ResetWorkspace();
+        UpdateConnection();
+        ShowServiceFailure(message, retry);
+    }
+
     /// <summary>Opens a page (port of navigate). keepDraft skips the unapplied-preview question.</summary>
     public Task Navigate(string target, bool keepDraft = false) => NavigateCore(target, keepDraft, null);
 
@@ -475,25 +499,92 @@ public sealed class AppShell : UserControl
             var effects = Workspace.Request("/api/effects");
             var session = Workspace.Request("/api/session");
             var options = Workspace.Request("/api/workspace");
+            var about = ReadAbout();
             await Task.WhenAll(effects, session, options);
             Workspace.Effects = (await effects) as JsonArray ?? [];
+            // Lighting, its dialogs and previews read the shared renderer, so a newer service's effects are known
+            // before any page opens, as in the browser workspace.
+            Core.Model.EffectRenderer.SetEffectCatalog(Workspace.Effects);
             Workspace.Session = (await session) as JsonObject ?? [];
             Workspace.Options = (await options) as JsonObject ?? new JsonObject { ["live"] = false };
+            Workspace.About = await about;
             EffectsLoaded?.Invoke();
             Workspace.ConnectFrames();
             startedOnce = true;
             if (Workspace.Session.Truthy("logged_in") || Workspace.Session.Truthy("pending_scene_choice")) await AcceptSession(Workspace.Session);
             else ShowConnection();
         }
+        catch (ApiException error) when (error.Code == "lan_pairing_required" && Workspace.Lan)
+        {
+            // A key saved for this address that the computer running EE no longer accepts gets the revoked text.
+            await Pair(Workspace.Api.DeviceKey is not null);
+        }
         catch (Exception)
         {
             var retry = UiKit.Button("Try again", "primary");
             retry.Click += async (_, _) => await Start();
-            Control actions = OpenWorkspaceAddress is null ? retry
-                : UiKit.Row(8, retry, UiKit.Button("Change workspace address", null, ChooseWorkspaceAddress));
-            ShowView(UiKit.EmptyState("Couldn’t open the workspace", "Check the workspace connection and try again.", actions));
-            Status("Connection unavailable", true);
+            ShowConnectionProblem(Workspace.Lan ? Connections.LanUnreachable(OperatingSystem.IsMacOS()) : "Check the workspace connection and try again.", retry);
         }
+
+        // A host that predates /api/about still opens; About then shows no service version.
+        async Task<JsonObject> ReadAbout()
+        {
+            try { return await Workspace.Request("/api/about") as JsonObject ?? []; }
+            catch (ApiException) { return []; }
+        }
+    }
+
+    /// <summary>
+    /// Asks for a pairing code for this LAN workspace and opens it once paired. After Cancel the window says why it
+    /// cannot open the workspace and offers pairing again.
+    /// </summary>
+    async Task Pair(bool revoked)
+    {
+        pairingShown = true;
+        bool paired;
+        try { paired = await Pages.Connect.LanPairingDialog.Show(this, revoked); }
+        finally { pairingShown = false; }
+        if (paired)
+        {
+            await Start();
+            return;
+        }
+        var again = UiKit.Button("Pair", "primary");
+        again.Click += async (_, _) => await Pair(revoked);
+        ShowConnectionProblem("Pair this computer with EE to open this workspace.", again);
+    }
+
+    /// <summary>
+    /// The stream of a LAN workspace closed. A device whose pairing was removed stops reconnecting and pairs again; any
+    /// other answer, or none, leaves the stream to reconnect on its own.
+    /// </summary>
+    async Task CheckPairing()
+    {
+        if (pairingShown) return;
+        JsonNode? info;
+        try { info = await Workspace.Api.GetAsync("/api/workspace"); }
+        catch (ApiException) { return; }
+        if (info.Bool("paired") != false || pairingShown || Workspace.Closing) return;
+        Workspace.StopFrames();
+        Studio.SaveUiState(PageName);
+        ResetWorkspace();
+        await Pair(revoked: true);
+    }
+
+    /// <summary>
+    /// The workspace could not be opened: the reason, the retry if there is one, and Change workspace address for a
+    /// window that chooses its host.
+    /// </summary>
+    public void ShowConnectionProblem(string message, Button? retry = null)
+    {
+        Control? actions = retry;
+        if (OpenWorkspaceAddress is not null)
+        {
+            var change = UiKit.Button("Change workspace address", retry is null ? "primary" : null, ChooseWorkspaceAddress);
+            actions = retry is null ? change : UiKit.Row(8, retry, change);
+        }
+        ShowView(UiKit.EmptyState("Couldn’t open the workspace", message, actions));
+        Status("Connection unavailable", true);
     }
 
     /// <summary>The effect catalog was read (setEffectCatalog).</summary>
@@ -602,58 +693,6 @@ public sealed class AppShell : UserControl
         content.Children.Add(help);
         var dialog = Overlay.Show(content, width: 760);
         content.Children.Add(UiKit.Button("Back to connection", null, () => dialog.Close()));
-    }
-
-    /// <summary>Port of closeWorkspace: releases this window's hold on the workspace.</summary>
-    public async Task CloseWorkspace()
-    {
-        Workspace.Closing = true;
-        try
-        {
-            await Workspace.Request("/api/workspace/close", "POST");
-            Workspace.StopFrames();
-            ResetWorkspace();
-            UpdateConnection();
-            connection.Set("Web session closed", "is-disconnected");
-            Status("Lighting connection released");
-            ShowView(UiKit.EmptyState("Web session closed", "Your lighting setup and saved switch login are preserved. You can now open the desktop app."));
-        }
-        catch (Exception)
-        {
-            Workspace.Closing = false;
-            Workspace.ConnectFrames();
-            throw;
-        }
-    }
-}
-
-/// <summary>A status-bar connection label with the 5px tone dot (online, waiting, error, is-disconnected).</summary>
-public sealed class ConnectionState : StackPanel
-{
-    readonly Avalonia.Controls.Shapes.Ellipse dot = new() { Width = 5, Height = 5, VerticalAlignment = VerticalAlignment.Center };
-    readonly TextBlock label = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
-
-    public ConnectionState()
-    {
-        Orientation = Orientation.Horizontal;
-        Spacing = 7;
-        Children.Add(dot);
-        Children.Add(label);
-        Set("", "is-disconnected");
-    }
-
-    public string Text { get => label.Text ?? ""; set => label.Text = value; }
-
-    public string Tone { get; private set; } = "is-disconnected";
-
-    public void Set(string text, string tone)
-    {
-        if (label.Text != text) label.Text = text;
-        if (Tone == tone && label.IsSet(TextBlock.ForegroundProperty)) return;
-        Tone = tone;
-        var token = tone switch { "online" => "green", "waiting" => "amber", "error" => "danger", _ => "muted" };
-        label.Bind(TextBlock.ForegroundProperty, token);
-        dot.Bind(Avalonia.Controls.Shapes.Shape.FillProperty, token);
     }
 }
 

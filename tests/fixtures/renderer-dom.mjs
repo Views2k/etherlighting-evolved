@@ -49,7 +49,7 @@ export function rendererDom(context, preferences = {}) {
   const host = new Element('main'); doc.body.append(host);
   let request = 0;
   const media = {matches: false, addEventListener() {}, removeEventListener() {}};
-  install('document', doc); install('location', {search: ''});
+  install('document', doc); install('location', {search: '', protocol: 'http:', hostname: '127.0.0.1', port: '4180'});
   install('matchMedia', () => media);
   install('requestAnimationFrame', () => ++request); install('cancelAnimationFrame', () => {});
   install('IntersectionObserver', class {observe() {} disconnect() {}});

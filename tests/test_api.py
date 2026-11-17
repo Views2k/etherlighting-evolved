@@ -30,6 +30,45 @@ def eventually(fn, timeout=2.0):
     return fn()
 
 
+def test_an_unreadable_fan_choice_reaches_clients_as_settings_error(client, config):
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    (config.data_dir / "fans-demo.json").write_text("{not json", "utf-8")
+    assert client.post("/api/session/login", json={"host": "demo"}).status_code == 200
+    fans = client.get("/api/fans").json()
+    assert fans["settings_error"] == ("Saved fan settings could not be read. "
+                                      "The switch controls the fans until you choose a mode.")
+    assert fans["error"] is None
+
+
+def test_login_fields_and_request_lists_have_size_limits(demo):
+    refused = demo.post("/api/session/login", json={"host": "h" * 254, "username": "fixture"})
+    assert refused.status_code == 422 and refused.json()["detail"]["code"] == "invalid_credentials"
+    assert demo.put("/api/zones", json={"zones": [{}] * 65}).status_code == 422
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    assert demo.put("/api/rules", json={"rules": rules}).status_code == 422
+    assert demo.put("/api/rules", json={"rules": rules[:256]}).status_code == 200
+    refused = demo.post("/api/rules", json=rules[256])
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "invalid"
+
+
+def test_scenes_and_profiles_with_too_many_rules_are_refused(demo):
+    rules = [{"id": f"rule-{n}", "name": f"Rule {n}", "look": {"color": "#ffffff"}} for n in range(257)]
+    current = demo.get("/api/scene").json()
+    scene = {**current["scene"], "rules": rules}
+    body = {"scene": scene, "expected_revision": current["revision"]}
+    demo.app.state.presets.save("Saved earlier", scene)
+    for response in (
+        demo.put("/api/scene", json=body),
+        demo.post("/api/presets", json={"name": "Many rules", **body}),
+        demo.post("/api/presets/Saved earlier/apply"),
+    ):
+        assert response.status_code == 400 and response.json()["detail"]["code"] == "invalid"
+    assert demo.get("/api/scene").json() == current
+    assert "Many rules" not in demo.get("/api/presets").json()
+    allowed = {**current["scene"], "rules": rules[:256]}
+    assert demo.put("/api/scene", json={"scene": allowed, "expected_revision": current["revision"]}).status_code == 200
+
+
 def test_about_says_unofficial(client):
     about = client.get("/api/about").json()
     assert about["name"] == "Etherlighting Evolved" and about["short_name"] == "EE"

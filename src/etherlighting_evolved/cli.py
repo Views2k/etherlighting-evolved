@@ -1,8 +1,10 @@
-"""Command line. `etherlighting-evolved` runs the server; `eectl` has tools for checking and testing a switch.
+"""Command line. `etherlighting-evolved` runs the API server; `eectl` has tools for checking and testing a switch.
 
-    etherlighting-evolved                 start the server, then log in from the UI
+    etherlighting-evolved                 start the API server
     etherlighting-evolved --demo          start logged in to the built-in simulator
     eectl probe 192.168.1.2 -u admin      check a switch works with EE
+    eectl probe 192.168.1.2 -u admin --accept-host-key SHA256:...
+                                          accept the changed SSH key that the previous run printed
     eectl set 192.168.1.2 -u admin 3 ff00ff
     eectl benchmark 192.168.1.2 -u admin
     eectl effects
@@ -15,6 +17,7 @@ import asyncio
 import getpass
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,11 +25,19 @@ from . import DISCLAIMER, PROJECT_NAME, TAGLINE, __version__
 from .app_lock import AppInstanceLock, AppLockError
 from .color import Color
 from .config import EXAMPLE_CONFIG, data_dir, load_config
+from .device_playback import PlaybackRecord
 from .effects import list_effects
 from .engine import to_output
-from .ownership import OutputJournal
+from .ownership import OutputJournal, device_identity
 from .switch import EtherlightSwitch
-from .transport import HostKeyStore, SimulatedTransport, SSHTransport, TransportError
+from .transport import (
+    SSH_FINGERPRINT,
+    HostKeyMismatchError,
+    HostKeyStore,
+    SimulatedTransport,
+    SSHTransport,
+    TransportError,
+)
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -45,7 +56,7 @@ def _serve(args: argparse.Namespace) -> int:
     print(f"{PROJECT_NAME} {__version__}  ·  {TAGLINE}")
     print(DISCLAIMER)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
-    print(f"\nOpen http://{shown}:{port} and log in to your switch.")
+    print(f"\nThe API documentation is at http://{shown}:{port}/docs.")
     if args.demo:
         print("Demo mode: logged in to the simulator, no switch needed.")
     print()
@@ -71,9 +82,33 @@ def _switch(args: argparse.Namespace) -> EtherlightSwitch:
     return EtherlightSwitch(transport, num_ports=args.ports, auto_detect=True)
 
 
+async def _connect_switch(switch: EtherlightSwitch, args: argparse.Namespace) -> None:
+    """Connect, replacing a changed SSH key first when --accept-host-key names the key the switch just presented.
+
+    A switch without a saved key connects and its key is saved, as in the app. The second attempt reuses the same
+    switch, so the password is not asked for again, and its key exchange checks the newly saved key.
+    """
+    try:
+        await switch.connect()
+        return
+    except HostKeyMismatchError as exc:
+        if exc.presented is None:
+            raise
+        if args.accept_host_key != exc.presented:
+            raise TransportError(f"{exc} If you reset or replaced the switch, run the command again with "
+                                 f"--accept-host-key {exc.presented}.") from exc
+        # The running app keeps this record in memory and is the only place that can clear it with the key.
+        record = PlaybackRecord(data_dir() / "switch-playback.json").data
+        if record and (record.get("state") == "unreadable" or record.get("device") == device_identity(exc.pinned)):
+            raise TransportError("Switch playback is saved for this switch. Accept the new key on the Connect page "
+                                 "in EE on this computer.") from exc
+        switch.transport.host_keys.replace(args.host, args.ssh_port, exc.pinned, exc.presented)
+    await switch.connect()
+
+
 async def _probe(args: argparse.Namespace) -> int:
     switch = _switch(args)
-    await switch.connect()
+    await _connect_switch(switch, args)
     try:
         info = await switch.probe()
         output_error = ""
@@ -141,7 +176,7 @@ async def _controlled_output(args, operation):
         switch = _switch(args)
         lease = None
         try:
-            await switch.connect()
+            await _connect_switch(switch, args)
             await _require_rgb(switch)
             if not isinstance(switch.transport, SimulatedTransport):
                 lease = OutputJournal().claim(
@@ -195,10 +230,16 @@ def _init_config(args: argparse.Namespace) -> int:
 def _forget_host(args: argparse.Namespace) -> int:
     store = HostKeyStore(data_dir() / "known_switches.json")
     if store.forget(args.host, args.ssh_port):
-        print(f"Forgot the host key for {args.host}. The next login pins the new one.")
+        print(f"Forgot the SSH key for {args.host}. The next connection saves the key the switch presents.")
     else:
-        print(f"No pinned host key for {args.host}.")
+        print(f"No saved SSH key for {args.host}.")
     return 0
+
+
+def _fingerprint(value: str) -> str:
+    if not re.fullmatch(SSH_FINGERPRINT, value):
+        raise argparse.ArgumentTypeError("enter the SHA256 fingerprint EE printed")
+    return value
 
 
 def _ssh_args(parser: argparse.ArgumentParser) -> None:
@@ -207,6 +248,8 @@ def _ssh_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-p", "--password", default=None, help="SSH password (prompted for if not given)")
     parser.add_argument("-i", "--key-file", default=os.environ.get("EE_KEY_FILE") or None, help="SSH private key")
     parser.add_argument("--ssh-port", type=bounded_int(1, 65535), default=22)
+    parser.add_argument("--accept-host-key", type=_fingerprint, metavar="FINGERPRINT",
+                        help="replace the switch's saved SSH key with this one when the switch presents it")
     parser.add_argument("--ports", type=bounded_int(1, 64), default=8,
                         help="fallback port count for identification; known switches are detected automatically")
 
@@ -220,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"{PROJECT_NAME} {__version__}")
     commands = parser.add_subparsers(dest="command")
 
-    serve = commands.add_parser("serve", help="run the server and web UI (the default)")
+    serve = commands.add_parser("serve", help="run the API server (the default)")
     serve.add_argument("-c", "--config", help="optional TOML file with advanced settings")
     serve.add_argument("--host", help="address to listen on (default 127.0.0.1)")
     serve.add_argument("--port", type=int, help="port to listen on (default 8787)")
@@ -254,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=_init_config)
 
-    forget = commands.add_parser("forget-host", help="forget a switch's pinned SSH host key")
+    forget = commands.add_parser("forget-host", help="forget a switch's saved SSH key")
     forget.add_argument("host")
     forget.add_argument("--ssh-port", type=int, default=22)
     forget.set_defaults(func=_forget_host)

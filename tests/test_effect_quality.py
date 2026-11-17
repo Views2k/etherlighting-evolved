@@ -226,14 +226,11 @@ def test_slow_fade_settings_have_small_steps_at_the_eight_port_budget(effect_id)
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("effect_id", ["breathing", "comet", "ripple"])
-@pytest.mark.parametrize("dimming", [None, "level"])
-async def test_fades_reach_port_rgb_as_rgb_amplitude(effect_id, dimming, command_clock):
+async def test_fades_reach_port_rgb_as_rgb_amplitude(effect_id, command_clock):
     transport = CaptureTransport()
     switch = EtherlightSwitch(transport, keepalive=60)
     await switch.connect()
-    options = {} if dimming is None else {"dimming": dimming}
-    engine = Engine(switch, effect=effect_id, effect_params={"color": "#0000ff"},
-                    rules=[], transition=0, **options)
+    engine = Engine(switch, effect=effect_id, effect_params={"color": "#0000ff"}, rules=[], transition=0)
     for tick in range(225):
         _, outputs = engine.compose(t=tick * 8 / 30)
         await switch.write(outputs)
@@ -244,7 +241,7 @@ async def test_fades_reach_port_rgb_as_rgb_amplitude(effect_id, dimming, command
         values = [rgb for rgb, _ in samples]
         assert max(values) - min(values) >= 230
         assert all(level == 100 for rgb, level in samples)
-    assert engine.dimming == "rgb"
+    assert engine.state()["dimming"] == "rgb"
     await switch.close()
 
 
@@ -303,6 +300,11 @@ def test_legacy_level_config_uses_rgb_fades_without_rewriting_the_file(tmp_path)
     assert load_config(path).engine.dimming == "rgb"
     assert EngineConfig().dimming == "rgb"
     assert path.read_text(encoding="utf-8") == content
+
+
+def test_unknown_dimming_config_is_refused():
+    with pytest.raises(ValueError, match="dimming"):
+        EngineConfig(dimming="hardware")
 
 
 @pytest.mark.parametrize("rate", [0.25, 0.5, 0.75, 1.0])

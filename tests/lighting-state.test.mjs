@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {applyLightingPlan,lightingOperations,lightingSnapshot,controlSource,equalSetting,sfpSettings} from '../preview/lighting-state.mjs';
+import {lightingOperations,lightingSnapshot,controlSource,equalSetting,sfpSettings} from '../preview/lighting-state.mjs';
 import {EFFECTS} from '../src/effects.mjs';
 
 const base=()=>({num_ports:8,brightness:100,mode:'running',zones:[
@@ -29,18 +29,12 @@ test('draft validation follows reported copper membership rather than a numeric 
   assert.equal(lightingOperations(state,{colors:{24:{color:'#FFFFFF'}}})[0].key,'colors');
 });
 
-test('partial Apply removes and confirms only successful operations; retry resumes at the failed operation',async()=>{
+test('a combined draft plans brightness, port colors and SFP writes in that order',()=>{
   const plan=lightingOperations(base(),{brightness:50,colors:{1:{color:'#123456',brightness:20}},sfp:{9:{effect:'pulse'}}});
-  const sent=[],confirmed=[];let fail=true;
-  const send=async(path,method,body)=>{sent.push({path,method,body});if(path==='/api/ports'&&fail)throw new Error('Connection interrupted');};
-  await assert.rejects(applyLightingPlan(plan,send,item=>confirmed.push(item.key)),/interrupted/);
-  assert.deepEqual(confirmed,['brightness']);assert.deepEqual(plan.map(item=>item.key),['colors','sfp:9']);
-  fail=false;await applyLightingPlan(plan,send,item=>confirmed.push(item.key));
-  assert.deepEqual(confirmed,['brightness','colors','sfp:9']);assert.equal(plan.length,0);
-  assert.deepEqual(sent.map(item=>item.path),['/api/brightness','/api/ports','/api/ports','/api/sfp/9']);
+  assert.deepEqual(plan.map(item=>[item.key,item.path]),[['brightness','/api/brightness'],['colors','/api/ports'],['sfp:9','/api/sfp/9']]);
 });
 
-test('new effect group preserves unrelated ports, and a failed effect stage does not repeat regrouping',async()=>{
+test('new effect group preserves unrelated ports and regroups before setting the effect',()=>{
   const state=base(),before=structuredClone(state),draft={effect:{id:'comet',ports:[5,2],params:{color:'#3366FF'},clearOverrides:true}};
   const plan=lightingOperations(state,draft),newZones=plan[0].body.zones;
   assert.deepEqual(plan.map(item=>item.key),['group','effect']);
@@ -49,12 +43,7 @@ test('new effect group preserves unrelated ports, and a failed effect stage does
   assert.deepEqual(newZones[2].ports,[2,5]);assert.equal(plan[1].body.clear_overrides,true);
   assert.equal(plan[0].body.clear_overrides,undefined);
   assert.deepEqual(state,before);assert.deepEqual(draft.effect.ports,[5,2]);
-  let first=true;const paths=[];
-  await assert.rejects(applyLightingPlan(plan,async path=>{paths.push(path);if(path.endsWith('/effect')&&first)throw new Error('Retry');}),/Retry/);
-  assert.equal(plan.length,1);first=false;
-  await applyLightingPlan(plan,async path=>paths.push(path));
-  assert.equal(paths.filter(path=>path==='/api/zones').length,1);
-  assert.equal(paths.filter(path=>path.endsWith('/effect')).length,2);
+  assert.deepEqual(plan.map(item=>item.path),['/api/zones',`/api/zones/${newZones[2].id}/effect`]);
 });
 
 test('exact groups use one effect update and generated names cannot collide with surviving groups',()=>{
@@ -69,14 +58,14 @@ test('exact groups use one effect update and generated names cannot collide with
   assert.equal(plan[1].path,'/api/zones/selection-1-2-2/effect');
 });
 
-test('mixed Ethernet/SFP draft coalesces partial SFP changes without copying one port over another',async()=>{
+test('mixed Ethernet/SFP draft coalesces partial SFP changes without copying one port over another',()=>{
   const state=base(),draft={effect:{id:'comet',ports:[1,2],params:{}},colors:{3:{color:'#DDEEFF'}},sfp:{9:{effect:'two_color',period:8},10:{color_brightness:25}}};
   const plan=lightingOperations(state,draft),sfpWrites=plan.filter(item=>item.key.startsWith('sfp:'));
   assert.equal(sfpWrites.length,2);
   assert.deepEqual(sfpWrites[0].body,{effect:'two_color',period:8});
   assert.deepEqual(sfpWrites[1].body,{color_brightness:25});
   const actual=structuredClone(state.sfp);
-  await applyLightingPlan(sfpWrites,async(path,method,body)=>{const port=actual.find(item=>path.endsWith('/'+item.port));Object.assign(port,body);});
+  for(const {path,body} of sfpWrites)Object.assign(actual.find(item=>path.endsWith('/'+item.port)),body);
   assert.equal(actual[0].color,'#FF0000');assert.equal(actual[1].color,'#0000FF');
   assert.equal(actual[0].brightness,30);assert.equal(actual[1].brightness,70);
   assert.equal(actual[0].effect,'two_color');assert.equal(actual[1].effect,'pulse');

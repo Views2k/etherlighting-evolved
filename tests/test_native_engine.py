@@ -11,7 +11,8 @@ from etherlighting_evolved.transport import SimulatedTransport, TransportError
 
 class NativeSwitch(EtherlightSwitch):
     def __init__(self, *, supported=True):
-        super().__init__(SimpleNamespace(direct_rgb=True, revoke_lighting_profile=lambda: None))
+        super().__init__(SimpleNamespace(direct_rgb=True, revoke_lighting_profile=lambda: None,
+                                         host_key_fingerprint=None, desktop_output=None))
         self.supported = supported
         self.uncertain = False
         self.fail_quiesce = False

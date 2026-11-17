@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sfpPeriodOptions, sfpNativePeriod, sfpEffectChange, sfpNativeAvailable, sfpCandidateSettings, sfpDraftPorts, sfpDurationRange} from '../preview/sfp-sync.mjs';
+import {sfpNativePeriod, sfpEffectChange, sfpNativeAvailable, sfpCandidateSettings, sfpDraftPorts, sfpDurationRange} from '../preview/sfp-sync.mjs';
 import {sfpPreviewColor} from '../preview/effect-gallery.mjs';
 
 const near = (actual, expected, tolerance = 1e-8) => {
@@ -91,11 +91,9 @@ test('Follow Ethernet previews propagate only edits to the selected source port'
 
 test('native duration choices reflect full effect cycles rather than individual fades', () => {
   for (const effect of ['pulse', 'two_color']) {
-    assert.deepEqual(sfpPeriodOptions(effect, 6).map(option => option.value), [2, 4, 6]);
     for (const period of [2, 4, 6]) assert.equal(sfpNativePeriod(effect, period), true);
     for (const period of [3, 5, 8, 12]) assert.equal(sfpNativePeriod(effect, period), false);
   }
-  assert.deepEqual(sfpPeriodOptions('color_cycle', 6).map(option => option.value), [6, 12, 18]);
   for (const period of [6, 12, 18]) assert.equal(sfpNativePeriod('color_cycle', period), true);
   for (const period of [2, 4, 8, 30]) assert.equal(sfpNativePeriod('color_cycle', period), false);
   assert.equal(sfpNativePeriod('steady', 6), false);
@@ -118,14 +116,10 @@ test('custom saved periods remain untouched until the duration slider is moved',
   assert.deepEqual(sfpDurationRange('pulse',4.1,false),{min:2,max:30,step:.1,value:4.1,savedCustom:false});
 });
 
-test('a saved custom duration remains available without being rounded or replaced', () => {
+test('previewing a saved custom duration does not round or replace it', () => {
   const settings = Object.freeze(light({period:10.5}));
-  const options = sfpPeriodOptions(settings.effect, settings.period);
-  assert.deepEqual(options.at(-1), {value:10.5, label:'Custom 10.5 s'});
-  assert.equal(options.filter(option => option.value === 10.5).length, 1);
   sfpPreviewColor(settings, settings.effect, 1.5, 80);
   assert.equal(settings.period, 10.5);
-  assert.equal(sfpPeriodOptions('pulse', 4).filter(option => option.value === 4).length, 1);
 });
 
 test('only an explicit animated-effect change replaces an unsupported saved duration', () => {

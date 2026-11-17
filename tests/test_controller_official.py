@@ -8,9 +8,10 @@ from test_controller_credentials import windows
 from test_controller_reconnect import Store
 
 from etherlighting_evolved import controller_credentials as storage
-from etherlighting_evolved.controller import ControllerError, ControllerManager
+from etherlighting_evolved.controller import ControllerError
 from etherlighting_evolved.controller_api import ControllerIntegration, ControllerLogin
 from etherlighting_evolved.controller_credentials import ControllerLoginStore
+from etherlighting_evolved.controller_manager import ControllerManager
 from etherlighting_evolved.controller_official import ConsoleClient, IntegrationClient
 from etherlighting_evolved.credentials import CredentialStoreError
 
@@ -257,7 +258,7 @@ def test_retry_after_and_local_request_budget_prevent_immediate_network_retries(
     assert not connections[1].calls
     now[0] += 121
     assert client.get("/api/self/sites")["data"] == []
-    client._requests.extend([now[0]] * 40)
+    client._limit.requests.extend([now[0]] * 40)
     with pytest.raises(ControllerError):
         client.get("/api/self/sites")
 
@@ -464,7 +465,7 @@ async def test_official_refresh_rate_limit_preserves_session_and_obeys_retry_aft
     await integration.connect(ControllerLogin(**RECORD))
     original = manager._client
     original._clock = lambda: now[0]
-    original._requests.clear()
+    original._limit.requests.clear()
     await integration.preferences(True)
     now[0] += 16
     await integration.tick()

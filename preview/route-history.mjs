@@ -1,3 +1,5 @@
+import {randomId} from './dom.mjs';
+
 const metadata = state => {
   const value=state?.eeRoute;
   return value&&typeof value.chain==='string'&&typeof value.id==='string'&&Number.isInteger(value.position)&&value.position>=0?value:null;
@@ -5,11 +7,10 @@ const metadata = state => {
 
 export function createRouteHistory(environment = window) {
   const {history,location}=environment;
-  const id=()=>globalThis.crypto.randomUUID();
   const fields=()=>history.state&&typeof history.state==='object'&&!Array.isArray(history.state)?history.state:{};
   const url=()=>location.pathname+location.search+location.hash;
   let marker=metadata(history.state);
-  if(!marker){marker={chain:id(),id:id(),position:0};history.replaceState({...fields(),eeRoute:marker},'',url());}
+  if(!marker){marker={chain:randomId(),id:randomId(),position:0};history.replaceState({...fields(),eeRoute:marker},'',url());}
   let chain=marker.chain;
   const read=()=>{
     const value=metadata(history.state),native=environment.navigation?.currentEntry;
@@ -59,15 +60,15 @@ export function createRouteHistory(environment = window) {
     commit(page,{fromHistory=false}={}){
       const hash=`#${page.toLowerCase()}`,current=read(),existing=metadata(history.state);
       if(fromHistory||location.hash===hash){
-        if(existing?.chain!==chain)chain=id();
-        const entry=existing?.chain===chain?existing:{chain,id:id(),position:0};
+        if(existing?.chain!==chain)chain=randomId();
+        const entry=existing?.chain===chain?existing:{chain,id:randomId(),position:0};
         if(location.hash!==hash||!existing||existing.chain!==chain||history.state?.page!==page)
           history.replaceState({...fields(),page,eeRoute:entry},'',hash);
       }else{
         const known=current.marker?.chain===chain;
-        if(!known)chain=id();
+        if(!known)chain=randomId();
         const position=known?current.marker.position+1:0;
-        history.pushState({page,eeRoute:{chain,id:id(),position}},'',hash);
+        history.pushState({page,eeRoute:{chain,id:randomId(),position}},'',hash);
       }
       committed=read();
     }

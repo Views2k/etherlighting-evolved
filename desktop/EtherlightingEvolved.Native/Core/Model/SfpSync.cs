@@ -98,19 +98,6 @@ public static class SfpSyncModel
 
     public static bool SfpNativePeriod(string? effect, double period) => SfpNativePeriod(effect, JsonValue.Create(period));
 
-    /// <summary>sfpPeriodOptions(effect, currentPeriod): the native periods, plus a saved custom period.</summary>
-    public static JsonArray SfpPeriodOptions(string? effect, JsonNode? currentPeriod)
-    {
-        var options = new JsonArray();
-        if (effect is not null && NativePeriods.TryGetValue(effect, out var stops))
-            foreach (var value in stops) options.Add(new JsonObject { ["value"] = value, ["label"] = $"{Js.NumberToString(value)} s" });
-        if (Js.IsFinite(currentPeriod) && Js.Num(currentPeriod) is >= 2 and <= 30 && !SfpNativePeriod(effect, currentPeriod))
-            options.Add(new JsonObject { ["value"] = Js.Clone(currentPeriod), ["label"] = $"Custom {Js.ToStr(currentPeriod)} s" });
-        return options;
-    }
-
-    public static JsonArray SfpPeriodOptions(string? effect, double currentPeriod) => SfpPeriodOptions(effect, JsonValue.Create(currentPeriod));
-
     /// <summary>sfpDurationRange(effect, period, native = true): the duration slider's range and the nearest native stop.</summary>
     public static JsonObject SfpDurationRange(string? effect, JsonNode? period, bool native = true)
     {

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-import contextlib
 import ctypes
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
+
+from .storage import atomic_write_bytes
 
 
 class CredentialStoreError(RuntimeError):
@@ -101,24 +100,12 @@ class SavedLogin:
         encrypted = _dpapi(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
         envelope = json.dumps({"version": 1, "protection": "windows-dpapi",
                                "data": base64.b64encode(encrypted).decode("ascii")}).encode("utf-8")
-        temporary = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="wb", dir=self.path.parent, prefix=".login-", suffix=".tmp",
-                                             delete=False) as file:
-                temporary = Path(file.name)
-                file.write(envelope)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary, self.path)
+            atomic_write_bytes(self.path, envelope)
         except OSError as exc:
             raise CredentialStoreError(
                 "Could not save the protected login. Sign in with Save login turned off."
             ) from exc
-        finally:
-            if temporary is not None:
-                with contextlib.suppress(OSError):
-                    temporary.unlink()
 
     def clear(self) -> None:
         try:

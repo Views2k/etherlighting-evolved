@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from .controller import ControllerError, ControllerManager
+from .controller import ControllerError
 from .controller_credentials import ControllerLoginStore
+from .controller_manager import ControllerManager
 from .credentials import CredentialStoreError
 from .port_names import PortNameStore
 
@@ -109,16 +109,18 @@ class ControllerIntegration:
 
     async def _complete(self, operation):
         task = asyncio.create_task(operation)
+        # asyncio.wait, unlike shield, does not report a failure that arrives after the caller was canceled.
         try:
-            return await asyncio.shield(task)
+            await asyncio.wait({task})
         except asyncio.CancelledError:
             # Drain the client's bounded HTTPS operation before shutdown clears its credentials.
             while not task.done():
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await asyncio.shield(task)
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait({task})
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 task.result()
             raise
+        return task.result()
 
     def _failure(self, error):
         self._failures += 1
@@ -291,30 +293,17 @@ class ControllerIntegration:
         async def status():
             return self.status()
 
-        @router.get("/controller/diagnostics")
-        async def diagnostics():
-            return self.manager.diagnostics(self.switch_host())
-
         @router.post("/controller/connect")
         async def connect(body: ControllerLogin):
-            try:
-                return await self.connect(body)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.connect(body)
 
         @router.post("/controller/consoles")
         async def discover_consoles(body: ControllerConsoleDiscovery):
-            try:
-                return await self.discover_consoles(body)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.discover_consoles(body)
 
         @router.put("/controller/preferences")
         async def preferences(body: ControllerPreferences):
-            try:
-                return await self.preferences(body.auto_reconnect)
-            except ControllerError as exc:
-                return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+            return await self.preferences(body.auto_reconnect)
 
         @router.post("/controller/disconnect")
         async def disconnect():

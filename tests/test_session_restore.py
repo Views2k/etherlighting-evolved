@@ -6,7 +6,7 @@ import pytest
 
 from etherlighting_evolved.credentials import CredentialStoreError
 from etherlighting_evolved.session import LoginError, SessionManager
-from etherlighting_evolved.transport import SimulatedTransport
+from etherlighting_evolved.transport import AuthenticationError, SimulatedTransport, TransportError
 
 FIXTURE = {"host": "switch.invalid", "port": 22, "username": "fixture", "password": "fixture-only"}
 
@@ -30,6 +30,9 @@ class LocalTransport:
         if self.gate is not None:
             await self.gate.wait()
         await self.simulator.connect()
+
+    async def run_isolated(self, command, *, channel, timeout=10.0):
+        return await self.simulator.run(command, channel=channel, timeout=timeout)
 
 
 @pytest.mark.anyio
@@ -77,6 +80,38 @@ async def test_missing_and_unavailable_saved_login_never_connect(config, monkeyp
         await sessions.restore_saved()
     assert error.value.code == "saved_login_unavailable"
     assert not sessions.info()["connecting"]
+
+
+@pytest.mark.anyio
+async def test_session_info_reports_the_saved_login_without_reading_it_again(config, monkeypatch):
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
+    reads = []
+    monkeypatch.setattr(sessions.saved, "load", lambda: reads.append(True) or FIXTURE.copy())
+    try:
+        await sessions.restore_saved()
+        for _ in range(5):
+            info = sessions.info()
+        assert len(reads) == 1
+        assert info["remembered"] == {"host": FIXTURE["host"], "port": 22, "username": FIXTURE["username"]}
+        assert FIXTURE["password"] not in json.dumps(info)
+    finally:
+        await sessions.close()
+
+
+@pytest.mark.anyio
+async def test_a_failed_close_after_a_refused_login_keeps_the_login_error(config):
+    class Refused(LocalTransport):
+        async def connect(self):
+            raise AuthenticationError("fixture authentication rejection")
+
+        async def close(self):
+            raise TransportError("fixture close failure")
+
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: Refused())
+    with pytest.raises(LoginError) as error:
+        await sessions.connect(FIXTURE["host"], FIXTURE["username"], FIXTURE["password"])
+    assert error.value.code == "auth_failed" and error.value.status == 401
+    assert sessions.info()["error"]["code"] == "auth_failed"
 
 
 @pytest.mark.anyio
@@ -141,4 +176,26 @@ async def test_live_restore_uses_real_scene_and_stable_private_workspace_scope(c
         assert sessions.workspace_id() != second["workspace_id"]
     finally:
         sessions.simulated = False
+        await sessions.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", [b"", b'{"version": 1, "identity": "other", "scene": {"brightness": 5}}'])
+async def test_unusable_device_scene_is_set_aside_and_login_offers_the_scene_choice(config, caplog, content):
+    sessions = SessionManager(config, transport_factory=lambda **kwargs: LocalTransport())
+    try:
+        pending = (await sessions.connect("switch.invalid", "fixture", "fixture-only"))["pending_scene_choice"]
+        await sessions.choose_scene(pending["connection_id"], "start_new", pending["legacy_revision"])
+        await sessions.disconnect()
+        [path] = (config.data_dir / "device-scenes").glob("*.json")
+        path.write_bytes(content)
+        info = await sessions.connect("switch.invalid", "fixture", "fixture-only")
+        assert info["pending_scene_choice"] and not info["logged_in"] and info["error"] is None
+        [moved] = path.parent.glob(path.name + ".corrupt-*")
+        assert moved.read_bytes() == content and not path.exists()
+        assert str(moved) in caplog.text
+        pending = info["pending_scene_choice"]
+        info = await sessions.choose_scene(pending["connection_id"], "start_new", pending["legacy_revision"])
+        assert info["logged_in"] and path.exists()
+    finally:
         await sessions.close()

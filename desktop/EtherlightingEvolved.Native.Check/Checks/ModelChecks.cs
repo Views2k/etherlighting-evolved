@@ -8,10 +8,6 @@ using EtherlightingEvolved.Native.Core.Model;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
-// These two names also exist in EtherlightingEvolved.Native (the port map control and the lighting record).
-using LightingState = EtherlightingEvolved.Native.Core.Model.LightingState;
-using PortMap = EtherlightingEvolved.Native.Core.Model.PortMap;
-
 public static class ModelChecks
 {
     delegate void Expect(bool ok, string? what = null);
@@ -1052,7 +1048,7 @@ public static class ModelChecks
     // ----- src/rules.mjs -----
 
     static JsonObject Anomaly(string ports = "[9]") =>
-        Js.Spread(Rules.MakeRule("anomaly"), J($"{{id:'sfp-alert',ports:{ports},look:{{color:'#FF0000',style:'solid',brightness:null,rate:1}}}}"));
+        O($"{{id:'sfp-alert',name:'Anomaly detected',conditions:[{{field:'anomaly',op:'is',value:true}}],match:'all',ports:{ports},enabled:true,look:{{color:'#FF0000',style:'solid',brightness:null,rate:1}}}}");
 
     static void RuleChecks()
     {
@@ -1086,11 +1082,6 @@ public static class ModelChecks
             e(S(Rules.MatchingRule(Arr(With(alert, "{ports:[1]}"), online), port, date), "id") == "online", "scope");
             e(S(Rules.MatchingRule(Arr(With(alert, "{enabled:false}"), online), port, date), "id") == "online", "enabled");
             e(S(Rules.MatchingRule(Arr(With(alert, "{match:'any',conditions:[{field:'link',op:'is',value:false},{field:'anomaly',op:'is',value:true}]}")), port, date), "id") == "alert", "any");
-        });
-        T("rules: rule editor labels identify scopes consistently", e =>
-        {
-            e(Rules.RulePortLabel(null) == "All copper ports", "all");
-            e(Rules.RulePortLabel(A("[9,10]")) == "Port 9, Port 10", "list");
         });
         T("rules: SFP preview uses explicit first-match rules", e =>
         {
@@ -1687,23 +1678,14 @@ public static class ModelChecks
             Sfp(state)[0]!["brightness"] = 0;
             e(N(SfpSyncModel.EditableSfpLight(state, 9), "color_brightness") == 0 && N(SfpSyncModel.EditableSfpLight(state, 9), "secondary_brightness") == 0, "zero");
         });
-        T("sfp sync: Apply prepares shared settings before enabling Together and retries only the unconfirmed sync", e =>
+        T("sfp sync: Apply prepares shared settings before enabling Together", e =>
         {
             var state = SyncScene();
             var draft = O("{sfp:{9:{color:'#123456',brightness:100,color_brightness:40}},sfp_sync:{mode:'together'}}");
             var before = new JsonArray(state.DeepClone(), draft.DeepClone());
             var plan = LightingState.LightingOperations(state, draft);
-            var sent = new List<string>();
             e(Js.Objects(plan).Select(item => S(item, "path")).SequenceEqual(["/api/sfp/9", "/api/sfp/sync"]) && Eq(plan.At("1.body"), "{mode:'together',source_port:1}"), "plan");
             e(Eq(new JsonArray(state.DeepClone(), draft.DeepClone()), before), "inputs unchanged");
-            var error = Rejection(() => LightingState.ApplyLightingPlan(plan, (path, _, _) =>
-            {
-                sent.Add(path);
-                return path == "/api/sfp/sync" ? throw new InvalidOperationException("Interrupted") : Task.CompletedTask;
-            }));
-            e(error?.Message == "Interrupted" && Js.Objects(plan).Select(item => S(item, "path")).SequenceEqual(["/api/sfp/sync"]), "partial");
-            Await(() => LightingState.ApplyLightingPlan(plan, (path, _, _) => { sent.Add(path); return Task.CompletedTask; }));
-            e(sent.SequenceEqual(["/api/sfp/9", "/api/sfp/sync", "/api/sfp/sync"]) && plan.Count == 0, "retried");
         });
         T("sfp sync: invalid sync mode, source type, range and unknown fields are rejected before any request", e =>
         {
@@ -1833,10 +1815,8 @@ public static class ModelChecks
         {
             foreach (var effect in new[] { "pulse", "two_color" })
             {
-                e(Js.Objects(SfpSyncModel.SfpPeriodOptions(effect, 6)).Select(option => N(option, "value")).SequenceEqual([2.0, 4, 6]), $"{effect} options");
                 e(new[] { 2, 4, 6 }.All(period => SfpSyncModel.SfpNativePeriod(effect, period)) && !new[] { 3, 5, 8, 12 }.Any(period => SfpSyncModel.SfpNativePeriod(effect, period)), $"{effect} periods");
             }
-            e(Js.Objects(SfpSyncModel.SfpPeriodOptions("color_cycle", 6)).Select(option => N(option, "value")).SequenceEqual([6.0, 12, 18]), "cycle options");
             e(new[] { 6, 12, 18 }.All(period => SfpSyncModel.SfpNativePeriod("color_cycle", period)) && !new[] { 2, 4, 8, 30 }.Any(period => SfpSyncModel.SfpNativePeriod("color_cycle", period)), "cycle periods");
             e(!SfpSyncModel.SfpNativePeriod("steady", 6), "steady");
         });
@@ -1858,13 +1838,11 @@ public static class ModelChecks
             e(Eq(SfpSyncModel.SfpDurationRange(S(settings, "effect"), settings["period"], true), "{min:2,max:6,step:2,value:6,savedCustom:true}") && N(settings, "period") == 10.5, "native");
             e(Eq(SfpSyncModel.SfpDurationRange("pulse", 4.1, false), "{min:2,max:30,step:.1,value:4.1,savedCustom:false}"), "legacy");
         });
-        T("sfp native: a saved custom duration remains available without being rounded or replaced", e =>
+        T("sfp native: previewing a saved custom duration does not round or replace it", e =>
         {
             var settings = Light("{period:10.5}");
-            var options = SfpSyncModel.SfpPeriodOptions(S(settings, "effect"), settings["period"]);
-            e(Eq(options[^1], "{value:10.5,label:'Custom 10.5 s'}") && Js.Objects(options).Count(option => N(option, "value") == 10.5) == 1, "custom option");
             EffectGallery.SfpPreviewColor(settings, S(settings, "effect"), 1.5, 80);
-            e(N(settings, "period") == 10.5 && Js.Objects(SfpSyncModel.SfpPeriodOptions("pulse", 4)).Count(option => N(option, "value") == 4) == 1, "unchanged");
+            e(N(settings, "period") == 10.5, "unchanged");
         });
         T("sfp native: only an explicit animated-effect change replaces an unsupported saved duration", e =>
         {
@@ -2017,26 +1995,12 @@ public static class ModelChecks
             e(Throws(() => Ops(state, "{sfp_sync:{mode:'ethernet',source_port:2}}"), "Ethernet port"), "unreported source");
             e(S(Ops(state, "{colors:{24:{color:'#FFFFFF'}}}"), "0.key") == "colors", "reported port");
         });
-        T("lighting state: partial Apply removes and confirms only successful operations; retry resumes at the failed operation", e =>
+        T("lighting state: a combined draft plans brightness, port colors and SFP writes in that order", e =>
         {
             var plan = Ops(LightingBase(), "{brightness:50,colors:{1:{color:'#123456',brightness:20}},sfp:{9:{effect:'pulse'}}}");
-            var sent = new List<string>();
-            var confirmed = new List<string?>();
-            var fail = true;
-            Task Send(string path, string method, JsonNode? body)
-            {
-                sent.Add(path);
-                if (path == "/api/ports" && fail) throw new InvalidOperationException("Connection interrupted");
-                return Task.CompletedTask;
-            }
-            var error = Rejection(() => LightingState.ApplyLightingPlan(plan, Send, item => confirmed.Add(S(item, "key"))));
-            e(error?.Message.Contains("interrupted") == true && confirmed.SequenceEqual(["brightness"]) && Keys(plan).SequenceEqual(["colors", "sfp:9"]), "failed part kept");
-            fail = false;
-            Await(() => LightingState.ApplyLightingPlan(plan, Send, item => confirmed.Add(S(item, "key"))));
-            e(confirmed.SequenceEqual(["brightness", "colors", "sfp:9"]) && plan.Count == 0, "resumed");
-            e(sent.SequenceEqual(["/api/brightness", "/api/ports", "/api/ports", "/api/sfp/9"]), "requests");
+            e(Keys(plan).SequenceEqual(["brightness", "colors", "sfp:9"]) && Js.Objects(plan).Select(item => S(item, "path")).SequenceEqual(["/api/brightness", "/api/ports", "/api/sfp/9"]), "plan order");
         });
-        T("lighting state: new effect group preserves unrelated ports, and a failed effect stage does not repeat regrouping", e =>
+        T("lighting state: new effect group preserves unrelated ports and regroups before setting the effect", e =>
         {
             var state = LightingBase();
             var before = Js.Clone(state);
@@ -2047,17 +2011,7 @@ public static class ModelChecks
             e(Eq(Get(zones, "0"), With(Get(state, "zones.0"), "{ports:[1,3,4]}")) && Eq(Get(zones, "1"), With(Get(state, "zones.1"), "{ports:[6,7,8]}")), "unrelated ports");
             e(Eq(Get(zones, "2.ports"), "[2,5]") && Js.IsTrue(plan.At("1.body.clear_overrides")) && !Js.Has(plan.At("0.body"), "clear_overrides"), "new group");
             e(Eq(state, before) && Eq(draft.At("effect.ports"), "[5,2]"), "inputs unchanged");
-            var first = true;
-            var paths = new List<string>();
-            var error = Rejection(() => LightingState.ApplyLightingPlan(plan, (path, _, _) =>
-            {
-                paths.Add(path);
-                return path.EndsWith("/effect", StringComparison.Ordinal) && first ? throw new InvalidOperationException("Retry") : Task.CompletedTask;
-            }));
-            e(error?.Message == "Retry" && plan.Count == 1, "effect stage failed");
-            first = false;
-            Await(() => LightingState.ApplyLightingPlan(plan, (path, _, _) => { paths.Add(path); return Task.CompletedTask; }));
-            e(paths.Count(path => path == "/api/zones") == 1 && paths.Count(path => path.EndsWith("/effect", StringComparison.Ordinal)) == 2, "no repeated regrouping");
+            e(Js.Objects(plan).Select(item => S(item, "path")).SequenceEqual(["/api/zones", $"/api/zones/{S(zones, "2.id")}/effect"]), "paths");
         });
         T("lighting state: exact groups use one effect update and generated names cannot collide with surviving groups", e =>
         {
@@ -2078,11 +2032,7 @@ public static class ModelChecks
             var writes = Js.ArrayOf(Js.Objects(plan).Where(item => S(item, "key")!.StartsWith("sfp:", StringComparison.Ordinal)));
             e(writes.Count == 2 && Eq(writes.At("0.body"), "{effect:'two_color',period:8}") && Eq(writes.At("1.body"), "{color_brightness:25}"), "partial writes");
             var actual = Js.Clone(state["sfp"])!.AsArray();
-            Await(() => LightingState.ApplyLightingPlan(writes, (path, _, body) =>
-            {
-                Js.Assign(Js.Objects(actual).First(item => path.EndsWith("/" + Js.ToStr(item["port"]), StringComparison.Ordinal)), body);
-                return Task.CompletedTask;
-            }));
+            foreach (var write in Js.Objects(writes)) Js.Assign(Js.Objects(actual).First(item => S(write, "path")!.EndsWith("/" + Js.ToStr(item["port"]), StringComparison.Ordinal)), write["body"]);
             e(S(actual, "0.color") == "#FF0000" && S(actual, "1.color") == "#0000FF" && N(actual, "0.brightness") == 30 && N(actual, "1.brightness") == 70
               && S(actual, "0.effect") == "two_color" && S(actual, "1.effect") == "pulse", "applied");
             e(Eq(draft.At("sfp.9"), "{effect:'two_color',period:8}"), "draft unchanged");
@@ -2584,6 +2534,18 @@ public static class ModelChecks
             var error = Rejection(() => SceneTransaction.CommitScene(O("{revision:'before'}"), scene, (path, method, body) =>
                 method == "PUT" ? throw failure : Task.FromResult<JsonNode?>(new JsonObject { ["revision"] = "other", ["scene"] = With(scene, "{brightness:20}") })));
             e(ReferenceEquals(error, failure) && SceneTransaction.AcceptedScene(failure) is null);
+        });
+        T("request errors: every refusal body becomes an ApiException with the browser's message", e =>
+        {
+            var list = EeApi.FromError(422, true, O("{detail:[{loc:['body','ports'],msg:'x',type:'missing'}]}"));
+            e(list.Message == "The change could not be confirmed. Try again." && list.Code is null && list.Status == 422 && !list.Uncertain, "validation list");
+            var mistyped = EeApi.FromError(409, true, O("{detail:{message:5,code:3}}"));
+            e(mistyped.Message == "The change could not be confirmed. Try again." && mistyped.Code is null && mistyped.Details.Int("code") == 3, "mistyped fields");
+            var text = EeApi.FromError(503, false, O("{detail:'The EE service is unavailable.'}"));
+            e(text.Message == "The EE service is unavailable." && text.Code is null && !text.Uncertain, "message text");
+            var coded = EeApi.FromError(500, true, O("{detail:{message:'Lighting was not confirmed.',code:'output_unconfirmed'}}"));
+            e(coded.Message == "Lighting was not confirmed." && coded.Code == "output_unconfirmed" && coded.Uncertain, "message and code");
+            e(EeApi.FromError(502, true, null).Message == "The change could not be confirmed. Try again.", "no body");
         });
     }
 
@@ -3286,7 +3248,7 @@ public static class ModelChecks
         });
     }
 
-    // ----- preview/port-animation.mjs logic (preview/port-animation.test.mjs) -----
+    // ----- preview/port-animation.mjs logic (tests/port-animation.test.mjs) -----
 
     static void PortAnimationChecks()
     {
@@ -3331,7 +3293,6 @@ public static class ModelChecks
                     double next = 0;
                     var arrival = 0;
                     double previous = 0;
-                    double[]? displayed = null;
                     var ok = true;
                     for (var i = 0; i < fps * 5; i++)
                     {
@@ -3343,13 +3304,11 @@ public static class ModelChecks
                             next += intervals[arrival++ % intervals.Length];
                         }
                         var sample = frames.Sample(now);
-                        var before = displayed;
-                        displayed = PortAnimation.SmoothColor(displayed, sample["1"], step);
                         ok &= sample["1"].SequenceEqual(sample["8"]) && sample["1"][0] <= frames.Latest()["1"][0];
                         if (now >= 2000)
                         {
                             var expected = step * rate;
-                            ok &= sample["1"][0] - previous >= expected * .98 && sample["1"][0] - previous <= expected * 1.02 && Math.Abs(displayed[0] - before![0] - expected) < expected * .02;
+                            ok &= sample["1"][0] - previous >= expected * .98 && sample["1"][0] - previous <= expected * 1.02;
                         }
                         previous = sample["1"][0];
                     }
@@ -3380,11 +3339,6 @@ public static class ModelChecks
             e(frames.Delay == 120 && frames.Sample(11000)["1"].SequenceEqual([0, 255, 0]), "expired");
             frames.Push(new Dictionary<int, double[]> { [1] = [255, 255, 255] }, 9999);
             e(frames.Latest()["1"].SequenceEqual([0, 255, 0]), "older frame ignored");
-        });
-        T("port animation: color text and smoothing", e =>
-        {
-            e(PortAnimation.RgbCss([255, 0, 127.5]) == "color(srgb 1.000000 0.000000 0.500000)", "rgbCss");
-            e(PortAnimation.SmoothColor(null, "#ff0000", 16).SequenceEqual([255, 0, 0]) && PortAnimation.PortInk() == "#ffffff", "first frame and ink");
         });
     }
 

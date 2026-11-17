@@ -29,6 +29,22 @@ test('structured failures retain useful code locations without exception values 
   assert.equal(JSON.stringify(f.entries()).includes(secret),false);
 });
 
+test('failure codes are kept only when they are identifiers',context=>{
+  const f=fixture(context);
+  for(const code of ['output_recovery_required','Bad-Code','x'.repeat(65),'private value',42])
+    f.log.stderr(JSON.stringify({event:'engine_failure',error_type:'ValueError',code,frames:[]})+'\n');
+  assert.deepEqual(f.entries().map(entry=>entry.code),['output_recovery_required',undefined,undefined,undefined,undefined]);
+});
+
+test('log templates are kept without control characters and capped at 120 characters',context=>{
+  const f=fixture(context);
+  for(const template of ['automatic login to %s failed: %s','line\nbreak\u0007\u009b','x'.repeat(200),['private value']])
+    f.log.stderr(JSON.stringify({event:'engine_log',level:'WARNING',logger:'etherlighting_evolved.session',template,frames:[]})+'\n');
+  assert.deepEqual(f.entries().map(entry=>entry.template),['automatic login to %s failed: %s','linebreak','x'.repeat(120),undefined]);
+  f.log.record('engine_exit',{code:1,template:'private value'});
+  assert.equal(f.entries().at(-1).template,undefined);
+});
+
 test('raw and overlong pipe output cannot leak into diagnostics or grow the input buffer',context=>{
   const f=fixture(context);
   f.log.stderr('private raw exception\n');
@@ -48,6 +64,15 @@ test('diagnostics rotate to one bounded backup and unsupported events are ignore
   assert.deepEqual(readdirSync(f.directory).sort(),['last-session.json','service-diagnostics.log','service-diagnostics.log.1']);
   for(const name of readdirSync(f.directory))assert.ok(statSync(path.join(f.directory,name)).size<=1024);
   assert.equal(f.entries().at(-1).exit_code,99);
+});
+
+test('an unconfirmed Tailscale route removal is a log line that leaves the last session alone',context=>{
+  const f=fixture(context);
+  assert.equal(f.log.record('private_route_cleanup_unconfirmed',{https_port:8444,url:'https://private.example.invalid'}),true);
+  const [entry]=f.entries();
+  assert.deepEqual(Object.keys(entry).sort(),['build','event','time']);assert.equal(entry.event,'private_route_cleanup_unconfirmed');
+  assert.deepEqual(readdirSync(f.directory),['service-diagnostics.log']);
+  assert.deepEqual(f.log.summary(),{available:true,last_session:null});
 });
 
 test('an unavailable log destination does not break lifecycle cleanup',()=>{

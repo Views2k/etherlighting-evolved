@@ -1,12 +1,23 @@
-; Inno Setup script for the Windows installer. The workspace build script supplies the packaged app path;
-; it passes the version with /DAppVersion=...
+; Inno Setup script for the Windows installer. The workspace build script supplies the packaged app path and
+; passes the application version with /DAppVersion=... The default below is kept equal to it by tools/set-version.py.
 
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #define AppVersion "0.6.0"
 #endif
 
 #ifndef AppSourceDir
   #define AppSourceDir "..\dist\EtherlightingEvolved"
+#endif
+
+; tools/ci-inno.ps1 installs 6.7.4 for CI. Any 6.7 release is accepted, so a local build with another patch release
+; does not need -AllowUnpinned for the compiler alone. A local test build may pass /DAnyCompiler to accept others.
+#if !Defined(AnyCompiler) && DecodeVer(Ver, 2) != "6.7"
+  #error Compile with Inno Setup 6.7 (CI uses 6.7.4), or build with -AllowUnpinned.
+#endif
+
+; The build script names this file so that package-verification.json records which release compiled the installer.
+#ifdef CompilerRecord
+  #expr WriteIni(CompilerRecord, "Compiler", "Release", DecodeVer(Ver, 4))
 #endif
 
 #define AppName "Etherlighting Evolved"
@@ -58,8 +69,20 @@ Name: "autostart"; Description: "Start the app when I sign in to Windows"; Flags
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [InstallDelete]
-; The Python runtime of the 0.4 desktop program. The native desktop program does not use it.
-Type: filesandordirs; Name: "{app}\_internal"
+; An upgrade replaces the whole application, so no file from an earlier version stays behind. The app keeps no
+; user data in {app}, and the uninstaller (unins000.*) is left alone. Setup has already asked a running copy to
+; quit. Canceling setup after this step leaves an incomplete app that needs a new install. Each entry runs only when
+; {app} already holds EE, so an install into a folder that also holds other programs deletes none of their files.
+; The Python runtime of the 0.4 desktop program.
+Type: filesandordirs; Name: "{app}\_internal"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\engine"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\preview"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\src"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\assets"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\runtime"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\licenses"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\tools"; Check: HoldsEE
+Type: files; Name: "{app}\*.dll"; Check: HoldsEE
 
 [Files]
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -95,6 +118,12 @@ end;
 function TasksChosen(): Boolean;
 begin
   Result := (not WizardSilent) or TasksOnCommandLine();
+end;
+
+{ Every earlier EE release has its program at this path, so a folder without it holds no EE files to replace. }
+function HoldsEE(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\{#AppExe}'));
 end;
 
 { The tasks page starts from the current Start with Windows setting. }
@@ -149,19 +178,57 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if not QuitRunningCopy() then
-    Result := 'EE is still running. Quit the desktop app from its notification area menu, or choose Settings > Close web session in the web workspace. Then reopen setup.';
+    Result := 'EE is still running. Quit the desktop app from its notification area menu, then reopen setup.';
 end;
 
 function InitializeUninstall(): Boolean;
 begin
   Result := QuitRunningCopy();
   if not Result then
-    MsgBox('EE is still running. Quit the desktop app from its notification area menu, or choose Settings > Close web session in the web workspace. Then retry uninstalling.', mbError, MB_OK);
+    MsgBox('EE is still running. Quit the desktop app from its notification area menu, then retry uninstalling.', mbError, MB_OK);
+end;
+
+{ EE removes its Tailscale Serve route each time it quits. This removes one left by an unclean stop. The tool exits
+  with the route's HTTPS port when it cannot confirm the removal, and the uninstall continues either way. }
+procedure RemovePrivateAccessRoute();
+var
+  Node, Script: String;
+  ResultCode: Integer;
+begin
+  { An uninstall for all users runs elevated and cannot reliably read this user's EE settings, so the user runs the
+    same tool by hand. }
+  if IsAdminInstallMode then
+    Exit;
+  Node := ExpandConstant('{app}\runtime\node.exe');
+  Script := ExpandConstant('{app}\tools\private-access-cleanup.mjs');
+  if (not FileExists(Node)) or (not FileExists(Script)) then
+    Exit;
+  if not Exec(Node, AddQuotes(Script), ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    ResultCode := -1;
+  if UninstallSilent or (ResultCode = 0) then
+    Exit;
+  if (ResultCode >= 1024) and (ResultCode <= 65535) then
+    MsgBox(Format('EE could not confirm that its Tailscale private address was removed. If you use Tailscale on this computer, open PowerShell and run "tailscale serve status". If port %d forwards to http://127.0.0.1, remove it with "tailscale serve --https=%d off".', [ResultCode, ResultCode]), mbInformation, MB_OK)
+  else
+    MsgBox('EE could not confirm that its Tailscale private address was removed. If you use Tailscale on this computer, open PowerShell and run "tailscale serve status" to review its routes.', mbInformation, MB_OK);
+end;
+
+{ A later install then starts with LAN access off and no paired devices. An uninstall for all users runs elevated and
+  cannot reliably reach this user's data folder, so the setting and the paired devices stay until LAN access is
+  turned off. }
+procedure RemoveLanAccessSettings();
+begin
+  if not IsAdminInstallMode then
+    DeleteFile(ExpandConstant('{localappdata}\Etherlighting Evolved\workspace\lan-access.json'));
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  { The app's own "Start with Windows" switch can add this value even if the installer didn't. }
   if CurUninstallStep = usUninstall then
+  begin
+    RemovePrivateAccessRoute();
+    RemoveLanAccessSettings();
+    { The app's own "Start with Windows" switch can add this value even if the installer didn't. }
     RegDeleteValue(HKCU, '{#RunKey}', '{#AppName}');
+  end;
 end;

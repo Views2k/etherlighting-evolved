@@ -51,7 +51,7 @@ def test_detected_layout_drives_scene_state_and_rendering(copper, optical):
     assert len(engine.compose()[0]) == copper
     assert [port["port"] for port in engine.state()["sfp"]] == list(optical)
     assert engine.state()["hardware_profile"] == {"key": "fixture"}
-    assert engine.command_budget > 0 and engine.throttle > 0
+    assert engine.budget.value > 0
     restored = engine_for_layout(copper, optical)
     restored.apply_snapshot(scene)
     assert restored.snapshot() == scene
@@ -68,24 +68,24 @@ def test_sync_uses_detected_optical_leader_and_all_qualified_ports():
     independent = engine.sfp[52]
     engine.set_sfp_sync({"mode": "together"})
     for at in (0, 1.5, 3, 4.5):
-        assert len({engine._sfp_color(port, at) for port in engine.sfp}) == 1
-    before = dict(engine._sfp_revisions)
+        assert len({engine.sfp_indicators.color(port, at) for port in engine.sfp}) == 1
+    before = dict(engine.sfp_indicators.revisions)
     engine.set_sfp(49, {"color": "green"})
-    assert all(engine._sfp_revisions[port] > before[port] for port in engine.sfp)
+    assert all(engine.sfp_indicators.revisions[port] > before[port] for port in engine.sfp)
     assert engine.sfp[52] == independent
     engine.set_sfp_sync({"mode": "ethernet", "source_port": 48})
     engine.set_override(48, "#1234ab", brightness=68)
     engine.compose(t=0)
-    assert all(engine._sfp_color(port, 0) == (Color.parse("#1234ab"), 68) for port in engine.sfp)
+    assert all(engine.sfp_indicators.color(port, 0) == (Color.parse("#1234ab"), 68) for port in engine.sfp)
 
 
 def test_shared_native_plan_includes_the_detected_group_without_legacy_ids():
     engine = engine_for_layout(24, (25, 26, 27, 28), native=True)
     engine.set_sfp(25, {"mode": "color", "color": "blue", "effect": "two_color"})
     engine.set_sfp_sync({"mode": "together"})
-    outputs = engine.sfp_outputs()
+    outputs = engine.sfp_indicators.outputs()
     assert set(outputs) == {25, 26, 27, 28}
-    assert list(engine._sfp_playback._plans) == [(25, 26, 27, 28)]
+    assert list(engine.sfp_indicators.playback._plans) == [(25, 26, 27, 28)]
     assert len(set(outputs.values())) == 1
 
 
@@ -93,7 +93,7 @@ def test_optical_only_sync_cannot_follow_a_nonexistent_ethernet_port():
     engine = engine_for_layout(0, (1, 2))
     engine.set_sfp(1, {"mode": "color", "color": "blue"})
     engine.set_sfp_sync({"mode": "together"})
-    assert set(engine.sfp_outputs()) == {1, 2}
+    assert set(engine.sfp_indicators.outputs()) == {1, 2}
     before = engine.snapshot()
     with pytest.raises(ValueError, match="available Ethernet"):
         engine.set_sfp_sync({"mode": "ethernet"})
@@ -107,7 +107,7 @@ def test_optical_only_sync_cannot_follow_a_nonexistent_ethernet_port():
 
 def test_unqualified_profile_optical_ports_never_become_output_settings():
     engine = engine_for_layout(24, ())
-    assert engine.sfp == {} and engine.sfp_outputs() == {}
+    assert engine.sfp == {} and engine.sfp_indicators.outputs() == {}
     for port in (9, 10, 25, 26):
         with pytest.raises(ValueError, match="unavailable"):
             engine.set_sfp(port, {"mode": "color"})
@@ -172,15 +172,16 @@ def test_legacy_global_effect_migrates_but_legacy_bound_ports_do_not_change_layo
 def test_malformed_nested_scene_is_rejected_atomically(field, value):
     engine = engine_for_layout()
     engine.set_sfp(25, {"mode": "color", "color": "blue"})
+    indicators = engine.sfp_indicators
     before = engine.snapshot()
-    before_revisions = deepcopy((engine.revision, engine._sfp_revisions, engine._sfp_release_ports))
+    before_revisions = (engine.revision, dict(indicators.revisions), set(indicators.release_ports))
     scene = deepcopy(before)
     scene["brightness"] = 12
     scene[field] = value
     with pytest.raises(ValueError):
         engine.apply_snapshot(scene)
     assert engine.snapshot() == before
-    assert (engine.revision, engine._sfp_revisions, engine._sfp_release_ports) == before_revisions
+    assert (engine.revision, dict(indicators.revisions), set(indicators.release_ports)) == before_revisions
 
 
 @pytest.mark.parametrize("field,value", [("copper_ports", [1, True]), ("copper_ports", [1, 1]),

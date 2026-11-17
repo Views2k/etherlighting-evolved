@@ -9,14 +9,18 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using EtherlightingEvolved.Native.Ui;
+using static EtherlightingEvolved.Native.Pages.Connections;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
 /// <summary>
 /// The switch connection view shown while no switch is signed in, a port of renderSwitchConnection
 /// (preview/connections.mjs): the SSH login form, the saved login, the handoff retry, the demo, connection help and
-/// private access. The shell passes the same options as showConnection in preview/app.mjs.
+/// private access. The shell passes the same options as showConnection in preview/app.mjs. A window that reaches the
+/// workspace through private access can only reconnect to the login saved on the computer running EE, so its form
+/// holds only Connect with saved login, Retry handoff and Change workspace address.
 /// </summary>
 public sealed class ConnectPage : Page
 {
@@ -32,21 +36,27 @@ public sealed class ConnectPage : Page
     readonly Func<Task<JsonNode?>>? restoreSaved;
     readonly Func<Task>? onDemo;
     readonly CancellationTokenSource lifecycle = new();
-    readonly Notice message = new();
-    readonly TextBox address = ConnectionUi.Input(253);
-    readonly TextBox username = ConnectionUi.Input(128);
-    readonly TextBox password = ConnectionUi.Input(password: true);
-    readonly TextBox port = ConnectionUi.Input();
+    readonly Notice message = new(connection: true);
+    readonly TextBox address = UiKit.Input(maxLength: 253);
+    readonly TextBox username = UiKit.Input(maxLength: 128);
+    readonly TextBox password = UiKit.Input();
+    readonly TextBox port = UiKit.Input();
     readonly CheckBox remember;
     readonly Button reveal;
-    readonly Button submit = ConnectionUi.Button("Connect to switch", "primary");
-    readonly Button restore = ConnectionUi.Button("Connect with saved login");
-    readonly Button forget = ConnectionUi.Button("Forget saved login", "quiet");
-    readonly Button retryHandoff = ConnectionUi.Button("Retry handoff", "primary");
+    readonly Button submit = UiKit.Button("Connect to switch", "primary");
+    readonly Button restore = UiKit.Button("Connect with saved login");
+    readonly Button forget = UiKit.Button("Forget saved login", "quiet");
+    readonly Button retryHandoff = UiKit.Button("Retry handoff", "primary");
     readonly Button? firstPanelButton;
     readonly List<Control> formElements;
     readonly PrivateAccessPanel privateAccess;
-    bool active = true, completed, dirty, forgetting, retryingHandoff, updating;
+    readonly TextBlock intro = UiKit.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
+    readonly bool remote;
+    // The button that takes focus after a connection attempt: Connect with saved login on a remote window.
+    readonly Button primary;
+    readonly HostKeyFlow hostKeys = new();
+    readonly HostKeyReview review;
+    bool active = true, completed, dirty, forgetting, retryingHandoff, updating, savingKey;
     Task? pending;
     JsonObject saved;
     JsonObject? lastSession;
@@ -59,6 +69,8 @@ public sealed class ConnectPage : Page
             onDemo = async () => await Shell.AcceptSession(await Workspace.Request("/api/session/login", "POST", new JsonObject { ["host"] = "demo" }) as JsonObject);
         var session = Workspace.Session;
         saved = session;
+        remote = Workspace.Remote;
+        primary = remote ? restore : submit;
 
         var panel = new StackPanel { Classes = { "connection-panel", "panel" } };
         var logo = ConnectionUi.Logo(52);
@@ -67,46 +79,62 @@ public sealed class ConnectPage : Page
         {
             Text = "Connect your switch", Classes = { "h1" }, FontSize = 24, LineHeight = 34.8, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 14, 0, 8),
         };
-        var intro = ConnectionUi.HelpText("Enter the switch’s SSH login to open its lighting workspace.");
         intro.Margin = default;
         panel.Children.Add(logo);
         panel.Children.Add(heading);
         panel.Children.Add(intro);
 
         port.Text = "22";
-        (var rememberLabel, remember) = ConnectionUi.CheckRow("Save login on this PC", "text", 32);
+        var rememberLabel = new CheckRow("Save login on this PC", "text", 32);
+        remember = rememberLabel.Box;
         var options = new Disclosure("Connection options");
-        var portField = ConnectionUi.Field("SSH port", port);
+        var portField = UiKit.Field("SSH port", port);
         portField.Margin = new Thickness(0, 14, 0, 0);
         portField.Width = 150;
         portField.HorizontalAlignment = HorizontalAlignment.Left;
         options.Body.Children.Add(portField);
-        var actions = new FlowRow(10, submit) { Classes = { "connection-actions" } };
-        if (restoreSaved is not null) actions.Children.Add(restore);
-        actions.Children.Add(forget);
-        actions.Children.Add(retryHandoff);
+        var actions = new FlowRow(10) { Classes = { "connection-actions" } };
         retryHandoff.IsVisible = false;
-        var (passwordField, revealButton) = ConnectionUi.PasswordField("SSH password", password);
-        reveal = revealButton;
+        var passwordField = new SecretField("SSH password", password);
+        reveal = passwordField.Reveal;
+        review = new HostKeyReview(AcceptKey, DismissKey);
         var form = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Classes = { "connection-form" } };
-        form.Children.Add(ConnectionUi.Field("Switch address", address));
-        form.Children.Add(ConnectionUi.Field("SSH username", username));
-        form.Children.Add(passwordField);
-        form.Children.Add(rememberLabel);
-        form.Children.Add(options);
+        if (remote)
+        {
+            // A remote window cannot accept a key, so it shows the remote message for a key problem instead of the
+            // review.
+            actions.Children.Add(restore);
+            actions.Children.Add(retryHandoff);
+            formElements = [restore, retryHandoff];
+            // Stays enabled while the form is busy or a handoff is blocked, so a window attached to a workspace in that
+            // state can still switch workspaces: Settings, which also has this button, is unavailable on this page.
+            // The shell waits for a pending connection before it changes the address.
+            if (Shell.OpenWorkspaceAddress is not null)
+                actions.Children.Add(UiKit.Button("Change workspace address", "quiet", Shell.ChooseWorkspaceAddress));
+        }
+        else
+        {
+            actions.Children.Add(submit);
+            actions.Children.Add(restore);
+            actions.Children.Add(forget);
+            actions.Children.Add(retryHandoff);
+            form.Children.Add(UiKit.Field("Switch address", address));
+            form.Children.Add(UiKit.Field("SSH username", username));
+            form.Children.Add(passwordField);
+            form.Children.Add(rememberLabel);
+            form.Children.Add(options);
+            form.Children.Add(review);
+            formElements = [address, username, password, reveal, remember, port, .. review.Buttons, submit, restore, forget, retryHandoff];
+        }
         form.Children.Add(actions);
         panel.Children.Add(message);
         panel.Children.Add(form);
-        formElements = [address, username, password, reveal, remember, port, submit];
-        if (restoreSaved is not null) formElements.Add(restore);
-        formElements.Add(forget);
-        formElements.Add(retryHandoff);
 
         // The demo and help buttons sit side by side below the form, as inline buttons do.
         var inline = new FlowRow(0);
         if (onDemo is not null)
         {
-            var demo = ConnectionUi.Button("Continue with demo", "quiet");
+            var demo = UiKit.Button("Continue with demo", "quiet");
             demo.Click += async (_, _) =>
             {
                 if (pending is not null || saved.Truthy("connecting") || HandoffBlocked(saved)) return;
@@ -116,7 +144,7 @@ public sealed class ConnectPage : Page
             inline.Children.Add(demo);
             firstPanelButton = demo;
         }
-        var help = ConnectionUi.Button("Connection help", "quiet");
+        var help = UiKit.Button("Connection help", "quiet");
         help.Click += (_, _) => Shell.ShowLoginHelp();
         inline.Children.Add(help);
         firstPanelButton ??= help;
@@ -126,7 +154,7 @@ public sealed class ConnectPage : Page
         panel.Children.Add(privateAccess);
         panel.Children.Add(new TextBlock
         {
-            Text = "Unofficial community project. Not affiliated with Ubiquiti.", FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
+            Text = Workspace.Disclaimer, FontSize = 12, LineHeight = 19.2, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 24, 0, 0),
         }.Bind(TextBlock.ForegroundProperty, "muted"));
 
@@ -144,6 +172,11 @@ public sealed class ConnectPage : Page
                 if (updating) return;
                 dirty = true;
                 input.Classes.Remove("invalid");
+                if (input == address || input == port)
+                {
+                    hostKeys.TargetEdited();
+                    review.Hide();
+                }
             };
             input.KeyDown += (_, e) =>
             {
@@ -157,7 +190,7 @@ public sealed class ConnectPage : Page
             if (!updating) dirty = true;
         };
         submit.Click += (_, _) => Submit();
-        restore.Click += (_, _) => Connect(restoreSaved!);
+        restore.Click += (_, _) => Connect(restoreSaved!, HostKeyRetry.Saved);
         retryHandoff.Click += (_, _) => RetryHandoff();
         forget.Click += async (_, _) => await Forget();
         lastSession = session;
@@ -210,12 +243,19 @@ public sealed class ConnectPage : Page
         retryHandoff.IsVisible = HandoffRetryable(saved);
         retryHandoff.IsEnabled = !(waiting || !HandoffRetryable(saved));
         retryHandoff.Content = retryingHandoff ? "Handing off…" : "Retry handoff";
-        submit.Content = saved.Str("handoff_state") == "pending" || retryingHandoff ? "Handing off…" : waiting && !forgetting ? "Connecting…" : "Connect to switch";
+        submit.Content = saved.Str("handoff_state") == "pending" || retryingHandoff ? "Handing off…" : waiting && !forgetting && !savingKey ? "Connecting…" : "Connect to switch";
         forget.Content = forgetting ? "Removing saved login…" : "Forget saved login";
         restore.IsVisible = restoreSaved is not null && saved.Truthy("has_saved_login");
         forget.IsVisible = saved.Truthy("has_saved_login");
+        if (remote) intro.Text = saved.Truthy("has_saved_login") ? "Reconnect to the switch saved on the computer running EE." : RemoteMessages["no_saved_login"];
         if (firstPanelButton is not null) firstPanelButton.IsEnabled = !waiting;
     }
+
+    /// <summary>The notice after the scene choice was canceled and no switch is signed in.</summary>
+    string CanceledChoice(JsonObject resolved) =>
+        !remote ? "Lighting setup canceled. You can edit this login and connect again."
+        : RemoteCanRestore(resolved) ? "Lighting setup canceled. Choose Connect with saved login to try again."
+        : resolved.Truthy("saved_login_error") ? RemoteMessages["saved_login_unavailable"] : RemoteMessages["no_saved_login"];
 
     async Task Enter(JsonObject? value)
     {
@@ -232,9 +272,9 @@ public sealed class ConnectPage : Page
         }
         if (!resolved.Truthy("logged_in"))
         {
-            if (value.Truthy("pending_scene_choice")) Status("Lighting setup canceled. You can edit this login and connect again.");
+            if (value.Truthy("pending_scene_choice")) Status(CanceledChoice(resolved));
             SetBusy();
-            submit.Focus();
+            primary.Focus();
             return;
         }
         completed = true;
@@ -270,12 +310,18 @@ public sealed class ConnectPage : Page
             finally { updating = false; }
         }
         var handoff = HandoffStatus(saved);
+        var reviewing = hostKeys.Open is { } open && HostKeyProblem.From(saved.At("error"))?.Key == open.Key;
         if (HandoffBlocked(saved) && handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
         else if (saved.Truthy("pending_scene_choice")) Status("Choose lighting to finish connecting.");
         else if (saved.Truthy("connecting")) Status("Connecting with saved login…");
-        else if (saved.Truthy("saved_login_error")) Status(Messages["saved_login_unavailable"], true);
-        else if (saved.Truthy("error")) Status(ConnectionError(saved["error"]), true);
+        else if (saved.Truthy("saved_login_error")) Status((remote ? RemoteMessages : Messages)["saved_login_unavailable"], true);
+        else if (saved.Truthy("error"))
+        {
+            if (!reviewing) Status(remote ? RemoteConnectionError(saved["error"]) : ConnectionError(saved["error"]), true);
+        }
         else if (handoff is not null) Status(handoff.Message, handoff.Error, handoff.Tone);
+        if (!remote && hostKeys.FromSession(saved, address.Text, port.Text, pending is not null, HandoffBlocked(saved))) ShowReview();
+        else if (hostKeys.Open is null) review.Hide();
         SetBusy();
         if (SceneChoice.IsOpen || (!HandoffBlocked(saved) && (saved.Truthy("logged_in") || saved.Truthy("pending_scene_choice"))))
         {
@@ -284,7 +330,7 @@ public sealed class ConnectPage : Page
         }
     }
 
-    void Connect(Func<Task<JsonNode?>> action)
+    void Connect(Func<Task<JsonNode?>> action, HostKeyRetry retry)
     {
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         Status("Connecting…");
@@ -300,16 +346,110 @@ public sealed class ConnectPage : Page
             }
             catch (Exception error)
             {
-                if (active) Status(ConnectionError(error), true);
+                if (!active) return;
+                if (!remote && HostKeyProblem.From((error as ApiException)?.Details) is { } problem)
+                {
+                    hostKeys.FromAction(problem, retry);
+                    ShowReview();
+                }
+                else Status(remote ? RemoteConnectionError(error) : ConnectionError(error), true);
             }
             finally
             {
                 pending = null;
                 SetBusy();
-                if (active && !completed) submit.Focus();
+                if (active && !completed)
+                {
+                    if (hostKeys.Open is not null) review.FocusHeading();
+                    else primary.Focus();
+                }
             }
         });
         SetBusy();
+    }
+
+    // ---- SSH key review
+
+    void ShowReview()
+    {
+        var problem = hostKeys.Open!;
+        review.Show(problem);
+        Status("The switch’s SSH key changed. Review it before connecting.", true);
+        _ = CheckKeyAccess(problem);
+    }
+
+    async Task CheckKeyAccess(HostKeyProblem problem)
+    {
+        JsonNode? access;
+        // A client that cannot read private access counts as remote: it shows the keys but cannot accept the new one.
+        try { access = await request("/api/private-access", "GET", null); }
+        catch (Exception) { access = null; }
+        if (active && ReferenceEquals(hostKeys.Open, problem)) review.SetCanAccept(CanAcceptHostKey(access, Workspace.Api.BaseUri));
+    }
+
+    void AcceptKey(HostKeyProblem problem)
+    {
+        if (!active || pending is not null || !ReferenceEquals(hostKeys.Open, problem) || review.CanAccept != true
+            || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved))
+            return;
+        var retry = hostKeys.Retry;
+        var accepted = false;
+        savingKey = true;
+        Status("Saving the SSH key…");
+        StartPending(async () =>
+        {
+            try
+            {
+                var result = await request(HostKeyProblem.Route, "POST", problem.Body());
+                if (!active) return;
+                if (result is JsonObject session) saved = session;
+                hostKeys.Close();
+                review.Hide();
+                accepted = true;
+            }
+            catch (Exception error)
+            {
+                if (!active) return;
+                hostKeys.Dismiss();
+                review.Hide();
+                Status(HostKeyError(error), true);
+            }
+            finally
+            {
+                pending = null;
+                savingKey = false;
+                SetBusy();
+                if (active)
+                {
+                    // The retry starts its own request, so it runs after this one has released the form.
+                    if (accepted) Dispatcher.UIThread.Post(() => RunRetry(retry));
+                    else submit.Focus();
+                }
+            }
+        });
+        SetBusy();
+    }
+
+    void RunRetry(HostKeyRetry retry)
+    {
+        if (!active) return;
+        if (retry == HostKeyRetry.Form) Submit();
+        else if (retry == HostKeyRetry.Saved && restoreSaved is not null) Connect(restoreSaved, HostKeyRetry.Saved);
+        else
+        {
+            Status("SSH key saved. Connect to the switch to continue.");
+            if (string.IsNullOrEmpty(password.Text)) password.Focus();
+            else submit.Focus();
+        }
+    }
+
+    void DismissKey(HostKeyProblem problem)
+    {
+        if (!active || pending is not null || !ReferenceEquals(hostKeys.Open, problem)) return;
+        hostKeys.Dismiss();
+        review.Hide();
+        Status("EE kept the saved SSH key and did not connect.");
+        submit.Focus();
     }
 
     void Submit()
@@ -322,7 +462,7 @@ public sealed class ConnectPage : Page
             (username, string.IsNullOrWhiteSpace(username.Text), "Enter the SSH username."),
             (password, string.IsNullOrEmpty(password.Text),
                 restoreSaved is not null && saved.Truthy("has_saved_login") ? "Enter the SSH password, or choose Connect with saved login." : "Enter the SSH password."),
-            (port, !IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
+            (port, !Core.Model.Js.IsInteger(portNumber) || portNumber < 1 || portNumber > 65535, "Enter an SSH port from 1 to 65535."),
         }.FirstOrDefault(entry => entry.Failed);
         if (invalid.Control is not null)
         {
@@ -336,7 +476,7 @@ public sealed class ConnectPage : Page
             ["host"] = address.Text!.Trim(), ["username"] = username.Text!.Trim(), ["password"] = password.Text, ["port"] = (int)portNumber,
             ["remember"] = remember.IsChecked == true,
         };
-        Connect(() => request("/api/session/login", "POST", payload));
+        Connect(() => request("/api/session/login", "POST", payload), HostKeyRetry.Form);
     }
 
     void RetryHandoff()
@@ -347,8 +487,8 @@ public sealed class ConnectPage : Page
         {
             try
             {
-                if (!await Confirmation.ConfirmAction(Shell.Overlay, this, "Retry handoff to UniFi?", "Stop EE lighting and return control to UniFi. Your saved setup is kept.",
-                        "Retry handoff", lifecycle.Token) || !active)
+                if (!await Shell.Overlay.Confirm("Retry handoff to UniFi?", "Stop EE lighting and return control to UniFi. Your saved setup is kept.",
+                        "Retry handoff", this, lifecycle.Token) || !active)
                     return;
                 Status("Handing lighting back to UniFi…");
                 var result = await RequestHandoff(request, () => active);
@@ -363,7 +503,7 @@ public sealed class ConnectPage : Page
             }
             catch (Exception)
             {
-                if (active) Status("Handoff status could not be displayed. Refresh the page to check its status.", true);
+                if (active) Status("Handoff status could not be displayed. Choose Retry handoff to check again, or reopen EE.", true);
             }
             finally
             {
@@ -373,7 +513,7 @@ public sealed class ConnectPage : Page
                 if (active)
                 {
                     Control target = HandoffRetryable(saved) ? retryHandoff : HandoffBlocked(saved) ? message
-                        : restoreSaved is not null && saved.Truthy("has_saved_login") ? restore : submit;
+                        : restoreSaved is not null && saved.Truthy("has_saved_login") ? restore : primary;
                     if (target == message) message.Focusable = true;
                     target.Focus();
                 }
@@ -384,8 +524,8 @@ public sealed class ConnectPage : Page
 
     async Task Forget()
     {
-        if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
-        if (!await Confirmation.ConfirmAction(Shell.Overlay, this, "Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", lifecycle.Token)) return;
+        if (remote || !active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
+        if (!await Shell.Overlay.Confirm("Forget saved login?", "Remove the saved switch login from this PC.", "Forget login", this, lifecycle.Token)) return;
         if (!active || pending is not null || saved.Truthy("connecting") || saved.Truthy("pending_scene_choice") || HandoffBlocked(saved)) return;
         forgetting = true;
         StartPending(async () =>

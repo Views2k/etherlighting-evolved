@@ -1,0 +1,56 @@
+name: Hardware report
+description: Report how EE works on a switch model or firmware version.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only the USW-Pro-XG-8-PoE has been tested on a physical switch. Reports from the other models in docs/HARDWARE.md, and from firmware versions that it does not name, help decide what EE can support.
+        Leave out passwords, API keys, Tailscale names and public IP addresses.
+  - type: input
+    id: model
+    attributes:
+      label: Switch model
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: EE version
+      description: Settings → About in the desktop app shows it.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - EE allowed lighting output and every port looked right
+        - EE allowed lighting output, but some ports or indicators were wrong
+        - EE refused lighting output
+        - EE could not connect to the switch
+    validations:
+      required: true
+  - type: textarea
+    id: tested
+    attributes:
+      label: What you checked
+      description: Which Ethernet ports and SFP indicators you watched, which effects you tried, and what they looked like.
+    validations:
+      required: true
+  - type: textarea
+    id: messages
+    attributes:
+      label: Messages
+      description: Any message EE showed, word for word.
+  - type: textarea
+    id: probe
+    attributes:
+      label: eectl probe output
+      description: If you run EE from source, the output of eectl probe for this switch. Remove the host name if you prefer.
+      render: text

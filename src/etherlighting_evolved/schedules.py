@@ -22,13 +22,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .engine import NotFound
-from .presets import PresetStore, ProfileStoreError, write_json
+from .presets import PresetStore, ProfileStoreError
 from .rules import WEEKDAYS, finite_number, parse_clock
+from .storage import NewerFormatError, check_version
+from .storage import atomic_write_json as write_json
 from .transport import TransportError
 
 log = logging.getLogger(__name__)
 
 ACTIONS = ("preset", "brightness", "release", "resume")
+FORMAT_VERSION = 1
 
 
 @dataclass
@@ -133,14 +136,23 @@ class ScheduleStore:
     def _load(self) -> None:
         try:
             try:
-                entries = json.loads(self.path.read_text("utf-8"))
+                data = json.loads(self.path.read_text("utf-8"))
             except FileNotFoundError:
-                entries = []
-            if not isinstance(entries, list):
+                data = []
+            # Releases up to 0.5.1 saved a bare list, which is format version 1.
+            if isinstance(data, dict):
+                check_version(data.get("version"), FORMAT_VERSION, "Schedules")
+                if set(data) != {"version", "schedules"}:
+                    raise ValueError("saved schedules have unknown fields")
+                data = data["schedules"]
+            if not isinstance(data, list):
                 raise ValueError("saved schedules must be a list")
-            items = [Schedule.parse(entry) for entry in entries]
+            items = [Schedule.parse(entry) for entry in data]
             if len({item.id for item in items}) != len(items):
                 raise ValueError("saved schedule IDs must be unique")
+        except NewerFormatError as exc:
+            self._load_error = ScheduleStoreError(str(exc))
+            return
         except (OSError, ValueError, TypeError):
             self._load_error = ScheduleStoreError(
                 "Saved schedules could not be read. Restore the schedule file and try again.")
@@ -156,7 +168,8 @@ class ScheduleStore:
 
     def _save(self) -> None:
         try:
-            write_json(self.path, [{k: v for k, v in s.to_dict().items() if k != "next_run"} for s in self.items])
+            write_json(self.path, {"version": FORMAT_VERSION, "schedules": [
+                {k: v for k, v in s.to_dict().items() if k != "next_run"} for s in self.items]})
         except OSError as exc:
             raise ScheduleStoreError("Schedules could not be saved. Check storage access and try again.") from exc
 
@@ -243,6 +256,10 @@ class Scheduler:
         with contextlib.suppress(ProfileStoreError, ScheduleStoreError):
             self.migrate_profiles()
 
+    @property
+    def history_available(self) -> bool:
+        return not self._journal_error
+
     def _save_journal(self) -> None:
         if self._journal_error:
             raise ScheduleStoreError("Schedule history could not be verified. "
@@ -276,24 +293,6 @@ class Scheduler:
                 # A missing legacy name must never attach to a later profile with that name.
                 changes = {"action": {**schedule.action, "profile_id": uuid.uuid4().hex}, "enabled": False}
             self.store.update(schedule.id, changes)
-
-    def tick(self, now: datetime | None = None) -> list[str]:
-        self.store.check_available()
-        self.migrate_profiles()
-        if self._journal_error:
-            raise ScheduleStoreError("Schedule history could not be verified. "
-                                     "Review the saved history before running schedules.")
-        now = now or datetime.now()
-        # Both folds of a repeated DST minute identify one occurrence. A skipped
-        # local minute is not replayed later or on startup.
-        minute = now.strftime("%Y-%m-%d %H:%M")
-        ran = []
-        for schedule in list(self.store.items):
-            key = f"{schedule.id}:{schedule.device_binding}"
-            if self.is_bound(schedule) and schedule.due(now) and self._fired.get(key) != minute:
-                self.run(schedule, now, occurrence=minute)
-                ran.append(schedule.id)
-        return ran
 
     def is_bound(self, schedule: Schedule) -> bool:
         identity = self.sessions.schedule_identity()
@@ -379,25 +378,18 @@ class Scheduler:
             if current is None or current.revision != schedule.revision:
                 return {"result": "skipped: the schedule changed before it could run"}
             engine = self.sessions.engine
-            before = dict(getattr(engine, "_sfp_revisions", {}))
+            before = engine.sfp_revisions() if engine is not None else {}
             entry = self.run(schedule, now, occurrence=occurrence, defer_confirmation=True)
             if entry is None or entry["result"] != "pending output confirmation":
                 return entry
-            expected = dict(getattr(engine, "_sfp_revisions", {}))
+            expected = engine.sfp_revisions()
             try:
                 if schedule.action["type"] == "release":
                     await engine.wait_for_output_idle()
-                elif hasattr(engine, "wait_for_sfp"):
-                    for port, revision in expected.items():
-                        if before.get(port) == revision and schedule.action["type"] != "resume":
-                            continue
-                        if engine._sfp_revisions.get(port) != revision:
-                            raise ValueError("Lighting changed during schedule confirmation.")
-                        await engine.wait_for_sfp(port)
-                        if engine._sfp_revisions.get(port) != revision:
-                            raise ValueError("Lighting changed during schedule confirmation.")
-                        if engine.mode == "running" and engine._sfp_acknowledged.get(port) != revision:
-                            raise ValueError("SFP output is still pending. Check the connected switch.")
+                else:
+                    await engine.confirm_sfp_output({
+                        port: revision for port, revision in expected.items()
+                        if before.get(port) != revision or schedule.action["type"] == "resume"})
                 if self.sessions.engine is not engine:
                     raise ValueError("The connected switch changed during schedule confirmation.")
                 entry["result"] = "ok"
@@ -416,6 +408,8 @@ class Scheduler:
             raise ScheduleStoreError("Schedule history could not be verified. "
                                      "Review the saved history before running schedules.")
         now = now or datetime.now()
+        # Both folds of a repeated DST minute identify one occurrence. A skipped
+        # local minute is not replayed later or on startup.
         minute = now.strftime("%Y-%m-%d %H:%M")
         ran = []
         for schedule in list(self.store.items):

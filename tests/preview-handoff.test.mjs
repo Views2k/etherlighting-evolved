@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {renderSettings,renderHelp} from '../preview/secondary.mjs';
-import {connectionError,handoffComplete,handoffStatus,renderSwitchConnection,showSceneChoice,requestHandoff} from '../preview/connections.mjs';
+import {connectionError,handoffComplete,handoffConfirmation,handoffStatus,renderSwitchConnection,showSceneChoice,requestHandoff} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 import {DEFAULT_THEME} from '../preview/theme-catalog.mjs';
 import {setTheme} from '../preview/theme.mjs';
@@ -62,20 +62,92 @@ function uiDom(context){
     dialog:()=>dom.findAll(dom.doc.body,node=>node.tagName==='dialog')[0]};
 }
 
-async function settings(context,{send=async()=>complete(),reconcile=complete()}={}){
+const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
+
+async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,lan=false,
+  capabilities=privateStatus,onCloseWorkspace,state={num_ports:8,ports:[],sfp:[],mode:'running',stats:{}}}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
     calls.push({path,method,body});
+    if(path==='/api/about')return about();
     if(path==='/api/session/handoff')return send();
-    if(path==='/api/session')return ++sessionReads===1?connected():reconcile;
-    if(path==='/api/state')return {num_ports:8,ports:[],sfp:[],mode:'running',stats:{}};
-    if(path==='/api/private-access')return privateStatus;
+    if(path==='/api/session')return ++sessionReads===1?first:reconcile;
+    if(path==='/api/state')return state;
+    if(path==='/api/private-access')return capabilities;
+    if(path==='/api/lan-access')return {available:true,enabled:false,ready:false,port:4280,addresses:[],error:null,pairing:null,devices:[],max_devices:16,can_configure:true,can_change_port:true,admin_required:false};
     if(path==='/api/controller')return {connected:true,configured:true,preferences_supported:true,auto_reconnect:true,saved_login_available:true};
     throw new Error(`Unexpected request ${path}`);
   };
-  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args)});
+  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote,lan,onCloseWorkspace});
   dom.after(cleanup);await flush();return {...dom,calls,sessions,cleanup};
 }
+
+const NO_HOST_LOGIN=' The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.';
+async function handoffMessage(ui){
+  ui.button('Handoff to UniFi').click();await flush();
+  const dialog=ui.dialog(),message=ui.findAll(dialog,node=>node.tagName==='p')[0].textContent;
+  ui.button('Cancel',dialog).click();await flush();return message;
+}
+
+test('Close web session needs administration access, and a tab without it says where to close the session',async context=>{
+  const CLOSE_HELP='To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.';
+  const shown=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.textContent===CLOSE_HELP).length;
+  for(const [capabilities,button,help] of [[{...privateStatus,can_close_workspace:true},true,0],
+    [{...privateStatus,can_close_workspace:false,admin_required:true},false,1],[{...privateStatus,can_close_workspace:false},false,0]]){
+    const ui=await settings(context,{capabilities,onCloseWorkspace:async()=>{}});
+    assert.equal(Boolean(ui.button('Close web session')),button,JSON.stringify(capabilities));
+    assert.equal(shown(ui),help,JSON.stringify(capabilities));
+  }
+});
+
+test('remote Settings leaves out saved-login removal and UniFi Network setup',async context=>{
+  const ui=await settings(context,{remote:true}),nav=ui.byClass(ui.host,'settings-nav')[0];
+  assert.equal(ui.button('Forget saved switch login'),undefined);
+  assert.equal(ui.button('UniFi',nav).hidden,true);assert.equal(ui.byClass(ui.host,'controller-settings')[0].hidden,true);
+  assert.equal(ui.calls.some(call=>call.path.startsWith('/api/controller')),false);
+  assert.ok(ui.button('Handoff to UniFi'));
+  assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),false);
+});
+
+test('a remote handoff warns when the host has no saved login that opens',async context=>{
+  for(const first of [{...connected(),has_saved_login:false},{...connected(),saved_login_error:'x'}]){
+    const ui=await settings(context,{remote:true,first});
+    assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),true);
+    assert.equal(ui.calls.some(call=>call.method),false);
+  }
+});
+
+test('local Settings keeps saved-login removal, UniFi Network setup and the plain handoff message',async context=>{
+  const ui=await settings(context,{first:{...connected(),has_saved_login:true,saved_login_error:'x'}});
+  assert.ok(ui.button('Forget saved switch login'));
+  assert.equal(ui.byClass(ui.host,'controller-settings')[0].hidden,false);
+  assert.equal((await handoffMessage(ui)).endsWith(NO_HOST_LOGIN),false);
+});
+
+test('Settings shows the connected switch SSH key fingerprint as text that can be selected',async context=>{
+  const fingerprint='SHA256:'+'A'.repeat(43);
+  // The UniFi Network panel has its own, empty certificate fingerprint.
+  const codes=ui=>ui.findAll(ui.host,node=>node.tagName==='code'&&node.textContent).map(node=>[node.className,node.textContent]);
+  const labels=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.textContent?.startsWith('SSH key fingerprint')).map(node=>node.textContent);
+  const ui=await settings(context,{first:{...connected(),ssh_host_key:fingerprint,ssh_host_key_type:'ssh-ed25519'}});
+  assert.deepEqual(codes(ui),[['certificate-fingerprint',fingerprint]]);assert.deepEqual(labels(ui),['SSH key fingerprint (ssh-ed25519)']);
+  for(const first of [connected(),{...connected(),ssh_host_key:'SHA256:short'},{...connected(),simulated:true,ssh_host_key:fingerprint}]){
+    const other=await settings(context,{first});
+    assert.deepEqual(codes(other),[]);assert.deepEqual(labels(other),[]);
+  }
+});
+
+test('canceling a remote scene choice points to the login saved on the host',async context=>{
+  for(const [hasSaved,text] of [[false,'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.'],
+    [true,'Lighting setup canceled. Choose Connect with saved login to try again.']]){
+    const ui=uiDom(context),choice={connection_id:'candidate',legacy_revision:'legacy',legacy_available:true};
+    const request=async path=>path==='/api/private-access'?privateStatus:{logged_in:false,pending_scene_choice:null,has_saved_login:hasSaved};
+    const cleanup=renderSwitchConnection(ui.host,{request,session:{logged_in:false,has_saved_login:true,pending_scene_choice:choice},remote:true,
+      restoreSaved:async()=>assert.fail('No reconnect'),onConnected:async()=>assert.fail('No workspace')});ui.after(cleanup);await flush();
+    ui.button('Cancel',ui.dialog()).click();await flush();
+    assert.equal(ui.byClass(ui.host,'connection-notice')[0].textContent,text);
+  }
+});
 
 test('handoff requires a scoped confirmation and Cancel sends no command',async context=>{
   const ui=await settings(context);assert.ok(ui.button('Handoff to UniFi'));assert.equal(ui.calls.some(call=>call.method),false);
@@ -87,6 +159,48 @@ test('handoff requires a scoped confirmation and Cancel sends no command',async 
   assert.match(copy,/switch helpers/);assert.match(copy,/Saved logins, profiles/);assert.match(copy,/wait until you connect again/);
   assert.equal(ui.calls.some(call=>call.method),false);ui.button('Cancel',dialog).click();await flush();
   assert.equal(ui.dialog(),undefined);assert.equal(ui.calls.some(call=>call.method),false);assert.deepEqual(ui.sessions,[]);
+});
+
+test('handoff confirmation names the fans only on a switch with fan control',async context=>{
+  const copy=async options=>{
+    const ui=await settings(context,options);ui.button('Handoff to UniFi').click();await flush();
+    const text=ui.findAll(ui.dialog(),node=>node.tagName==='p')[0].textContent;ui.button('Cancel',ui.dialog()).click();await flush();return text;
+  };
+  const fans=await copy({state:{num_ports:8,ports:[],sfp:[],mode:'running',stats:{},fans:{supported:true}}});
+  assert.match(fans,/return the fans to the switch’s own controller/);assert.match(fans,/your fan mode are kept/);
+  assert.match(fans,/switch helpers/);assert.match(fans,/Saved logins, profiles/);assert.match(fans,/wait until you connect again/);
+  assert.doesNotMatch(await copy(),/fan/);
+  assert.ok(handoffConfirmation(true,true).endsWith(' Unapplied connection changes will be discarded.'));
+});
+
+test('handoffStatus adds the fan result to a completed handoff',()=>{
+  const lighting=handoffStatus(complete()).message;
+  const returned=handoffStatus({...complete(),fan_handoff:'returned'});
+  assert.match(returned.message,/runs the fans again/);assert.equal(returned.error,false);assert.equal(returned.tone,'online');
+  assert.ok(returned.message.startsWith(`${lighting} `));
+  const unconfirmed=handoffStatus({...complete(),fan_handoff:'unconfirmed'});
+  assert.equal(unconfirmed.error,true);assert.equal(unconfirmed.tone,'');assert.match(unconfirmed.message,/choose Handoff to UniFi to retry/);
+  for(const value of [null,undefined,'not_running']){
+    assert.deepEqual(handoffStatus({...complete(),fan_handoff:value}),{message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'});
+  }
+});
+
+// The page's own status line, not the notices of its controller and private access sections.
+const settingsNotice=ui=>ui.findAll(ui.host,node=>node.tagName==='p'&&node.className.split(' ')[0]==='notice'&&!node.className.includes('connection-notice'))[0];
+
+test('Settings shows unconfirmed fans after a completed handoff as an error',async context=>{
+  const ui=await settings(context,{send:async()=>({...complete(),fan_handoff:'unconfirmed'})});
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Handoff to UniFi',ui.dialog()).click();await flush();
+  const notice=settingsNotice(ui);
+  assert.ok(notice.textContent.startsWith('Lighting returned to UniFi. EE could not confirm'));assert.ok(notice.className.split(' ').includes('error'));
+});
+
+test('Settings names returned fans after a completed handoff',async context=>{
+  const ui=await settings(context,{send:async()=>({...complete(),fan_handoff:'returned'})});
+  ui.button('Handoff to UniFi').click();await flush();ui.button('Handoff to UniFi',ui.dialog()).click();await flush();
+  const notice=settingsNotice(ui);
+  assert.equal(notice.textContent,'Lighting returned to UniFi. The switch’s own controller runs the fans again.');
+  assert.equal(notice.className.split(' ').includes('error'),false);
 });
 
 test('confirmed handoff sends one scoped request, waits for cleanup and preserves saved-data controls',async context=>{
@@ -239,13 +353,14 @@ test('Help explains the same explicit handoff and saved-login recovery actions',
   const paragraphs=ui.findAll(ui.host,node=>node.tagName==='p').map(node=>node.textContent).join('\n');
   assert.match(paragraphs,/Handoff to UniFi in Settings/);assert.match(paragraphs,/saved logins, profiles/);
   assert.match(paragraphs,/Connect with saved login/);assert.match(paragraphs,/Retry handoff/);
+  assert.match(paragraphs,/also returns the fans to the switch’s own controller/);
 });
 
 test('the app binds intentional saved-login resumption without invoking it on handoff rendering',async()=>{
   const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
   const code=source.slice(source.indexOf('function showConnection()'),source.indexOf('function showLoginHelp()'));
   const sent=[],context={workspaceReady:false,secondaryCleanup:null,view:{},session:complete(),workspaceOptions:{live:true},
-    renderSwitchConnection:(_host,options)=>{context.options=options;return ()=>{};},request:async(...args)=>sent.push(args),acceptSession(){},showLoginHelp(){},updateConnection(){},status(){},handoffStatus};
+    renderSwitchConnection:(_host,options)=>{context.options=options;return ()=>{};},request:async(...args)=>sent.push(args),acceptSession(){},showLoginHelp(){},updateConnection(){},status(){},handoffStatus,remotePage:()=>false};
   vm.createContext(context);vm.runInContext(code,context);context.showConnection();assert.deepEqual(sent,[]);
   await context.options.restoreSaved();assert.deepEqual(sent,[['/api/session/restore?resume=true','POST']]);
 });
@@ -261,4 +376,24 @@ test('Settings section navigation scrolls its pane without replacing form values
   assert.equal(ui.button('Remote',nav).getAttribute('aria-pressed'),'true');
   assert.equal(field.isConnected,true);assert.equal(field.value,'Unapplied fixture value');assert.equal(ui.calls.length,before);
   ui.cleanup();assert.equal(pane.listeners.has('scroll'),false);
+});
+
+test('About shows the service disclaimer, including its risk sentence, and keeps the short line without it',async context=>{
+  const text=ui=>ui.findAll(ui.byClass(ui.host,'settings-about')[0],node=>node.tagName==='p').map(node=>node.textContent);
+  assert.ok(text(await settings(context)).includes(aboutInfo.disclaimer));
+  const offline=await settings(context,{about:async()=>{throw new Error('The workspace could not be reached.');}});
+  assert.ok(text(offline).includes('Unofficial community project. Not affiliated with Ubiquiti.'));
+});
+
+test('the Remote section holds the Tailscale and LAN panels, and a remote page reads no LAN access status',async context=>{
+  const local=await settings(context),remote=local.byClass(local.host,'remote-settings')[0];
+  assert.deepEqual(remote.children.map(child=>child.className),['private-access-settings','lan-access-settings']);
+  assert.deepEqual(local.findAll(remote,node=>node.tagName==='h2').map(node=>node.textContent),['Tailscale private access','LAN access']);
+  assert.ok(local.calls.some(call=>call.path==='/api/lan-access'));
+  for(const [lan,lines] of [[true,['This device uses LAN access. Its connection to the computer running EE is not encrypted.','Change this setting in EE on the host computer.']],
+    [false,['Change this setting in EE on the host computer.']]]){
+    const ui=await settings(context,{remote:true,lan}),section=ui.byClass(ui.host,'lan-access-settings')[0];
+    assert.deepEqual(ui.findAll(section,node=>node.tagName==='p').map(node=>node.textContent),lines);
+    assert.equal(ui.calls.some(call=>call.path==='/api/lan-access'),false);
+  }
 });

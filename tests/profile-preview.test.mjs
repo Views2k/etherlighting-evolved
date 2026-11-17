@@ -38,6 +38,7 @@ test('saved preview includes ungrouped copper ports and reported SFP identifiers
   assert.deepEqual(profilePorts(saved,{num_ports:16}),{copper:Array.from({length:16},(_,index)=>index+1),sfp:[17,18]});
 });
 
+// profile-colors.json is written by tools/profile_parity_fixtures.py and checked by tools/check-fixtures.py.
 const parity = JSON.parse(readFileSync(new URL('./fixtures/profile-colors.json',import.meta.url),'utf8'));
 for (const fixture of parity) test(`backend profile color parity: ${fixture.name}`,()=>{
   const colors=profileColors(fixture.scene,fixture.state,0);

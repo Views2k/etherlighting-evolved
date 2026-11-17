@@ -86,15 +86,17 @@ export function resolveRuntimeConfig({
   const liveValue = env.EE_PREVIEW_LIVE;
   if (liveValue !== undefined && liveValue !== '0' && liveValue !== '1') fail('runtime_live_invalid', 'Choose live or demo mode explicitly.');
   const live = liveValue === undefined ? packaged : liveValue === '1';
+  const adminKey = env.EE_ADMIN_KEY ?? null;
+  if (adminKey !== null && !/^[0-9a-f]{64}$/.test(adminKey)) fail('runtime_admin_key_invalid', 'The local administration key is invalid.');
   const directory = env.EE_WORKSPACE_DATA_DIR === undefined
     ? packaged ? userWorkspace(env, platform, home) : path.join(root, 'outputs', 'browser-preview-data')
     : absolute(env.EE_WORKSPACE_DATA_DIR, 'Workspace data directory');
   const childEnv = {...env};
-  for (const name of ['EE_HOST', 'EE_USERNAME', 'EE_PASSWORD', 'EE_KEY_FILE', 'EE_API_TOKEN', 'EE_DATA_DIR', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP']) {
+  for (const name of ['EE_HOST', 'EE_USERNAME', 'EE_PASSWORD', 'EE_KEY_FILE', 'EE_API_TOKEN', 'EE_ADMIN_KEY', 'EE_DATA_DIR', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP']) {
     delete childEnv[name];
   }
   if (!engine) childEnv.PYTHONPATH = path.join(sourceRoot, 'src');
   childEnv.PYTHONUNBUFFERED = '1';
-  return {root, sourceRoot: engine ? null : sourceRoot, packaged, live, port: Number(portValue), directory,
+  return {root, sourceRoot: engine ? null : sourceRoot, packaged, live, port: Number(portValue), directory, adminKey,
     command, args, cwd, env: childEnv, serviceOptions: {demo: !live, browser_live: live, data_dir: directory}};
 }

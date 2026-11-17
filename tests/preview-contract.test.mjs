@@ -5,6 +5,7 @@ import { effectColor,resolvedColorParams,activityPeak } from '../src/effects.mjs
 import { hexToRgb } from '../src/color.mjs';
 import { CATALOG } from '../src/catalog.mjs';
 
+// The JSON fixtures read here are written by tools/preview_fixtures.py and checked by tools/check-fixtures.py.
 const frames = JSON.parse(await readFile(new URL('./fixtures/effect-frames.json',import.meta.url),'utf8'));
 test('deterministic browser previews match backend frames across options and port counts',() => {
   const expectedIds = CATALOG.filter(effect => !['starry_night','lightning','traffic','traffic_trails','activity_glow','poe_usage'].includes(effect.id)).map(effect => effect.id);

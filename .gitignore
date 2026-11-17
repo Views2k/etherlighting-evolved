@@ -11,8 +11,6 @@ htmlcov/
 build/
 dist/
 outputs/
-native/bin/
-native/obj/
 *.log
 
 # Local working notes and application state
@@ -25,29 +23,54 @@ ee.toml
 login.json
 controller-login.json
 private-access.json
+lan-access.json
+workspace-keys.json
 approved-device.json
 known_hosts
 known_switches.json
 desktop.json
+native.json
+preferences.json
 scene.json
 scene-demo.json
+scene-history.json
 presets.json
 schedules.json
 switch-connection-intent.json
+switch-playback.json
+lighting-library.json
+fans.json
+fans-demo.json
+last-session.json
 device-scenes/
+device-fans/
 output-ownership/
+port-names/
 
-# Generated legacy web bundle and installer artwork
-web/*
-!web/README.md
+# Firmware images and extracted vendor files
+*.bin
+*.img
+*.ubi
+*.squashfs
+firmware/
+
+# Compiled device helpers and native test builds
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.pdb
+
+# Generated installer artwork
 packaging/wizard*.bmp
 
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-
-port-names/
+.vs/
+*.user
 
 desktop/*/bin/
 desktop/*/obj/

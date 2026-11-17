@@ -1,9 +1,10 @@
+import json
 from datetime import datetime
 
 import pytest
 
 from etherlighting_evolved.presets import PresetStore
-from etherlighting_evolved.schedules import Schedule, Scheduler, ScheduleStore
+from etherlighting_evolved.schedules import Schedule, Scheduler, ScheduleStore, ScheduleStoreError
 
 WEDNESDAY_1900 = datetime(2026, 6, 3, 19, 0, 20)
 
@@ -32,6 +33,12 @@ class FakeEngine:
     def __init__(self):
         self.calls = []
 
+    def sfp_revisions(self):
+        return {}
+
+    async def confirm_sfp_output(self, expected):
+        return None
+
     def apply_snapshot(self, scene):
         self.calls.append(("scene", scene))
 
@@ -47,7 +54,8 @@ class FakeSessions:
         return "demo"
 
 
-def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
+@pytest.mark.anyio
+async def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
     presets = PresetStore(tmp_path / "presets.json")
     presets.save("Evening", {"version": 2, "zones": []})
     store = ScheduleStore(tmp_path / "schedules.json")
@@ -58,8 +66,8 @@ def test_scheduler_runs_each_schedule_once_per_minute(tmp_path):
     sessions = FakeSessions()
     scheduler = Scheduler(store, presets, sessions)
 
-    assert len(scheduler.tick(WEDNESDAY_1900)) == 1
-    assert scheduler.tick(WEDNESDAY_1900.replace(second=50)) == []
+    assert len(await scheduler.tick_confirmed(WEDNESDAY_1900)) == 1
+    assert await scheduler.tick_confirmed(WEDNESDAY_1900.replace(second=50)) == []
     assert sessions.engine.calls == [("scene", {"version": 2, "zones": []})]
     missing = next(item for item in scheduler.list() if item["name"] == "Missing")
     assert missing["profile_missing"] and not missing["enabled"]
@@ -78,7 +86,33 @@ def test_store_persists(tmp_path):
     assert ScheduleStore(tmp_path / "schedules.json").list() == []
 
 
-def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
+def test_unversioned_schedules_are_read_and_saved_with_a_version(tmp_path):
+    path = tmp_path / "schedules.json"
+    path.write_text(json.dumps([{"id": "legacy", "name": "Legacy", "at": "07:30", "action": {"type": "release"}}]),
+                    "utf-8")
+    store = ScheduleStore(path)
+    assert [item["id"] for item in store.list()] == ["legacy"]
+    store.update("legacy", {"name": "Morning"})
+    saved = json.loads(path.read_text("utf-8"))
+    assert saved["version"] == 1 and [entry["name"] for entry in saved["schedules"]] == ["Morning"]
+    assert ScheduleStore(path).get("legacy").name == "Morning"
+
+
+@pytest.mark.parametrize("operation", ["list", "add", "update", "delete"])
+def test_schedules_from_a_newer_release_are_refused_and_never_overwritten(tmp_path, operation):
+    path = tmp_path / "schedules.json"
+    content = json.dumps({"version": 2, "schedules": [], "calendars": []}).encode()
+    path.write_bytes(content)
+    store = ScheduleStore(path)
+    data = {"at": "12:00", "action": {"type": "release"}}
+    args = {"list": (), "add": (data,), "update": ("old", data), "delete": ("old",)}[operation]
+    with pytest.raises(ScheduleStoreError, match="newer version of EE"):
+        getattr(store, operation)(*args)
+    assert path.read_bytes() == content
+
+
+@pytest.mark.anyio
+async def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
     store = ScheduleStore(tmp_path / "schedules.json")
     for binding in (None, "a" * 64, "b" * 64, "demo"):
         store.add({"at": "19:00", "action": {"type": "brightness", "value": 40},
@@ -86,7 +120,7 @@ def test_unbound_other_device_and_demo_schedules_do_not_cross_devices(tmp_path):
     sessions = FakeSessions()
     sessions.schedule_identity = lambda: "a" * 64
     scheduler = Scheduler(store, PresetStore(tmp_path / "presets.json"), sessions)
-    assert len(scheduler.tick(WEDNESDAY_1900)) == 1
+    assert len(await scheduler.tick_confirmed(WEDNESDAY_1900)) == 1
     assert sessions.engine.calls == [("brightness", 40)]
     assert [row["needs_device_confirmation"] for row in scheduler.list()] == [True, False, True, True]
     assert all(row["next_run"] is None for row in scheduler.list() if row["needs_device_confirmation"])

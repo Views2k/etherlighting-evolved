@@ -50,7 +50,7 @@ def test_failed_atomic_replace_preserves_source(tmp_path, monkeypatch):
     def fail_replace(*args):
         raise OSError("Disk unavailable")
 
-    monkeypatch.setattr("etherlighting_evolved.presets.os.replace", fail_replace)
+    monkeypatch.setattr("etherlighting_evolved.storage.os.replace", fail_replace)
     with pytest.raises(OSError):
         store.rename("A", "B")
     assert path.read_bytes() == original
@@ -126,7 +126,6 @@ def test_missing_profile_store_is_empty_and_explicit_file_repair_restores_operat
     ("POST", "/api/presets/Existing/rename", {"name": "New"}),
     ("POST", "/api/presets/Existing/duplicate", {"name": "New"}),
     ("DELETE", "/api/presets/Existing", None),
-    ("POST", "/api/presets/action", {"name": "Existing", "action": "delete"}),
 ])
 def test_profile_storage_errors_reach_api_without_exposing_or_replacing_data(config, method, url, body):
     app = create_app(config, autoconnect=False)
@@ -162,24 +161,31 @@ def test_profile_routes_organize_store_without_switch_session(config):
 
 
 @pytest.mark.parametrize("name", [".", ".."])
-def test_reserved_profile_names_cannot_be_created_but_legacy_records_remain_reachable(config, name):
+def test_reserved_profile_names_cannot_be_created_and_legacy_records_can_be_renamed_or_deleted(config, name):
     app = create_app(config, autoconnect=False)
     with TestClient(app, base_url="http://localhost") as client:
         client.post("/api/session/login", json={"host": "demo"})
         snapshot = client.get("/api/scene").json()["scene"]
         snapshot["brightness"] = 24
-        write_json(app.state.presets.path, {name: snapshot})
+        write_json(app.state.presets.path, {name: snapshot, "Copy": snapshot})
         assert client.post("/api/presets", json={"name": name}).status_code == 400
-        assert app.state.presets.get(name) == snapshot
-        assert client.post("/api/presets/action", json={"name": name, "action": "apply"}).status_code == 200
-        assert client.get("/api/state").json()["brightness"] == 24
-        copied = client.post("/api/presets/action", json={"name": name, "action": "duplicate", "target": "Copy"})
-        assert copied.status_code == 200 and copied.json()["Copy"] == snapshot
-        rejected = client.post("/api/presets/action", json={"name": "Copy", "action": "rename", "target": name})
-        assert rejected.status_code == 400
-        renamed = client.post("/api/presets/action", json={"name": name, "action": "rename", "target": "Recovered"})
-        assert renamed.status_code == 200 and name not in renamed.json()
-        assert renamed.json()["Recovered"] == snapshot
-        write_json(app.state.presets.path, {name: snapshot, "Recovered": snapshot})
-        deleted = client.post("/api/presets/action", json={"name": name, "action": "delete"})
-        assert deleted.status_code == 200 and deleted.json() == {"Recovered": snapshot}
+        assert client.post("/api/presets/Copy/rename", json={"name": name}).status_code == 400
+        assert client.post("/api/presets/Copy/duplicate", json={"name": name}).status_code == 400
+        assert app.state.presets.list() == {name: snapshot, "Copy": snapshot}
+
+        def legacy_record():
+            return next(row for row in client.get("/api/profiles").json()["profiles"] if row["name"] == name)
+
+        row = legacy_record()
+        renamed = client.patch(f"/api/profiles/{row['id']}", json={
+            "action": "rename", "name": "Recovered", "expected_revision": row["revision"]})
+        assert renamed.status_code == 200
+        assert sorted(item["name"] for item in renamed.json()["profiles"]) == ["Copy", "Recovered"]
+        assert app.state.presets.list() == {"Recovered": snapshot, "Copy": snapshot}
+
+        write_json(app.state.presets.path, {name: snapshot, "Copy": snapshot})
+        row = legacy_record()
+        deleted = client.patch(f"/api/profiles/{row['id']}", json={
+            "action": "delete", "expected_revision": row["revision"]})
+        assert deleted.status_code == 200
+        assert app.state.presets.list() == {"Copy": snapshot}

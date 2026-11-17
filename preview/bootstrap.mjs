@@ -18,7 +18,6 @@ initializeTheme();
 const supportMessage=browserRecoveryMessage(globalThis);
 if(supportMessage) recovery(supportMessage,false);
 else import('./app.mjs').then(()=>{
-  import('./desktop-chrome.mjs').catch(()=>{});
   if(new URLSearchParams(location.search).has('motion-check'))
     import('./frame-probe.mjs').catch(()=>console.warn('Performance diagnostics could not load.'));
 },()=>recovery('The interface could not load. Reload this page to try again.',true));

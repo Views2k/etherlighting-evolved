@@ -17,14 +17,20 @@ def scheduler_fixture(tmp_path):
     profiles = PresetStore(tmp_path / "profiles.json")
     store = ScheduleStore(tmp_path / "schedules.json")
     calls = []
+
+    async def confirm_sfp_output(expected):
+        return None
+
     engine = SimpleNamespace(
-        set_brightness=lambda value: calls.append(value), apply_snapshot=lambda scene: calls.append(scene)
+        set_brightness=lambda value: calls.append(value), apply_snapshot=lambda scene: calls.append(scene),
+        sfp_revisions=lambda: {}, confirm_sfp_output=confirm_sfp_output,
     )
     sessions = SimpleNamespace(engine=engine, schedule_identity=lambda: "demo")
     return profiles, store, calls, sessions
 
 
-def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
+@pytest.mark.anyio
+async def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     profiles.path.write_text(json.dumps({"Evening": {"brightness": 23}}), encoding="utf-8")
     schedule = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "preset", "preset": "Evening"}})
@@ -33,7 +39,7 @@ def test_profile_migration_identity_survives_rename_and_name_reuse(tmp_path):
     profiles.rename("Evening", "Night")
     profiles.save("Evening", {"brightness": 82}, overwrite=False)
     assert store.get(schedule.id).action["profile_id"] == original["id"]
-    scheduler.tick(NOW)
+    await scheduler.tick_confirmed(NOW)
     assert calls == [{"brightness": 23}]
     assert scheduler.list()[0]["action"]["preset"] == "Night"
     assert PresetStore(profiles.path).record(name="Night")["id"] == original["id"]
@@ -60,27 +66,29 @@ def test_explicit_invalid_days_are_not_defaulted(days):
     assert len(Schedule.parse({"at": "18:00", "action": {"type": "release"}}).days) == 7
 
 
-def test_occurrence_and_history_survive_restart_and_dst_fold(tmp_path):
+@pytest.mark.anyio
+async def test_occurrence_and_history_survive_restart_and_dst_fold(tmp_path):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     item = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
     scheduler = Scheduler(store, profiles, sessions)
-    scheduler.tick(NOW)
+    assert await scheduler.tick_confirmed(NOW) == [item.id]
     again = Scheduler(ScheduleStore(store.path), profiles, sessions)
-    assert again.tick(NOW.replace(second=50, fold=1)) == []
+    assert await again.tick_confirmed(NOW.replace(second=50, fold=1)) == []
     assert calls == [23] and again.history[0]["result"] == "ok"
     again.run(again.store.get(item.id), NOW)
     assert calls == [23, 23] and again.history[0]["trigger"] == "manual"
-    assert again.tick(NOW) == []
+    assert await again.tick_confirmed(NOW) == []
 
 
-def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_path, monkeypatch):
     profiles, store, calls, sessions = scheduler_fixture(tmp_path)
     store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
     scheduler = Scheduler(store, profiles, sessions)
     original = scheduler._save_journal
     monkeypatch.setattr(scheduler, "_save_journal", lambda: (_ for _ in ()).throw(ScheduleStoreError("fixture")))
     with pytest.raises(ScheduleStoreError):
-        scheduler.tick(NOW)
+        await scheduler.tick_confirmed(NOW)
     assert calls == [] and scheduler._fired == {}
     saves = 0
 
@@ -93,9 +101,9 @@ def test_claim_failure_prevents_output_and_pending_restart_never_repeats(tmp_pat
 
     monkeypatch.setattr(scheduler, "_save_journal", fail_final)
     with pytest.raises(ScheduleStoreError):
-        scheduler.tick(NOW)
+        await scheduler.tick_confirmed(NOW)
     again = Scheduler(ScheduleStore(store.path), profiles, sessions)
-    assert again.tick(NOW.replace(second=40)) == [] and calls == [23]
+    assert await again.tick_confirmed(NOW.replace(second=40)) == [] and calls == [23]
     assert again.history[0]["result"].startswith("unconfirmed")
 
 
@@ -178,23 +186,33 @@ def test_rule_tester_uses_priority_and_manual_override_without_writes(config):
         assert engine.snapshot() == before
 
 
+def test_rule_tester_refuses_rules_that_saving_refuses(config):
+    with TestClient(create_app(config, autoconnect=False), base_url="http://localhost") as client:
+        client.post("/api/session/login", json={"host": "demo"})
+        rule = {"name": "Text ports", "ports": "12", "look": {"color": "#ffffff"}}
+        assert client.put("/api/rules", json={"rules": [rule]}).status_code == 400
+        tested = client.post("/api/rules/test", json={"port": 1, "rules": [rule]})
+        assert tested.status_code == 400 and tested.json()["detail"]["code"] == "invalid"
+
+
 @pytest.mark.anyio
 async def test_schedule_does_not_certify_pending_optical_acknowledgment(tmp_path):
     profiles, store, _, sessions = scheduler_fixture(tmp_path)
     item = store.add({"at": "18:00", "device_binding": "demo", "action": {"type": "brightness", "value": 23}})
-    sessions.engine._sfp_revisions = {9: 1}
-    sessions.engine._sfp_acknowledged = {9: 1}
-    sessions.engine.mode = "running"
+    revisions, requested = {9: 1}, []
 
     def change(_):
-        sessions.engine._sfp_revisions[9] += 1
+        revisions[9] += 1
 
-    async def pending(_):
-        return
+    async def pending(expected):
+        requested.append(expected)
+        raise TransportError("Lighting settings were saved, but SFP output is still pending.")
 
     sessions.engine.set_brightness = change
-    sessions.engine.wait_for_sfp = pending
+    sessions.engine.sfp_revisions = lambda: dict(revisions)
+    sessions.engine.confirm_sfp_output = pending
     scheduler = Scheduler(store, profiles, sessions)
     result = await scheduler.run_confirmed(item)
+    assert requested == [{9: 2}]
     assert result["result"].startswith("unconfirmed")
     assert "pending" in result["result"]

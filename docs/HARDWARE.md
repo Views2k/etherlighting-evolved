@@ -27,8 +27,8 @@ the reviewed command path; physical appearance and sustained load on additional 
 | EAV-XG-24-PoE | 1–24 | 25–28 | USWF001 / 7.5.15+17146 |
 | EAV-Fiber | — | 1–22 | USWF001 / 7.5.15+17146 |
 
-The Pro XG 8 PoE has prior owner-confirmed copper and two-indicator visual testing. The other profiles
-are firmware-qualified candidates. Stacking ports and extra internal MCU records are excluded from output.
+The Pro XG 8 PoE has been tested on hardware for its copper ports and both SFP indicators. The other
+profiles are firmware-qualified candidates that have not been tested on a physical switch. Stacking ports and extra internal MCU records are excluded from output.
 Optical-only models use indicator controls without creating a fictitious copper bank.
 
 The six Pro Max models, ECS-Aggregation, and ECS-Core remain output-blocked. The reviewed Pro Max helper
@@ -66,10 +66,45 @@ Masks use the reviewed high-24/low-32 word encoding. Release applies the status-
 draining writes; it does not claim to recover a previous controller color policy. Failed cleanup suspends
 output. Reconnect rechecks firmware, identity, topology, and ownership before resuming a retained scene.
 
-EE does not flash firmware, load modules, stop vendor services, or change network configuration. Its typed
-writer excludes reset, LED-stop, global port-zero writes, unqualified masks, and arbitrary shell input.
+EE does not flash firmware, load modules, or change network configuration. Fan control pauses the switch's
+fan daemon (`ubnt-fanctrl`) while it runs; see the next section. EE's typed writer excludes reset, LED-stop,
+global port-zero writes, unqualified masks, and arbitrary shell input.
 The transport starts unbound and rejects every lighting setter until qualification. Reprobing or closing
 revokes that binding, including already queued writes.
+
+## Programs EE runs on the switch
+
+Two features on the Pro XG 8 PoE copy a program to the switch and leave it running after EE closes. Each
+uses its own directory under `/tmp`, created with mode 700 for the SSH user, in the switch's RAM. A switch
+restart removes both.
+
+The lighting player runs from `/tmp/ee-lighting-playback-v1` when the switch login is saved and the switch
+passes the playback checks (the qualified Pro XG 8 PoE profile with native breathing and precise SFP
+output). It keeps the saved lighting and traffic-driven effects on the switch while EE is closed, and EE
+updates its scene as the lighting changes. **Handoff to UniFi** stops it from the computer that saved it.
+Accepting a changed SSH key for the switch deletes the player record of the previous key, because that player
+ran in the previous switch's memory.
+Another EE installation cannot connect to a switch while a player it did not start is running; return
+playback to UniFi from the computer that saved it, or restart the switch.
+
+Fan control runs from `/tmp/ee-fan-control-v1` while a fan mode other than Switch control is chosen. It
+requires system ID `ed76` and an `adt7475` fan controller. While it runs, it pauses `ubnt-fanctrl` with
+SIGSTOP and sets both fan outputs. A guard process resumes `ubnt-fanctrl` with SIGCONT when fan control
+stops, fails or disappears. In every mode the fans speed up as the CPU passes 85 °C (full speed at 95 °C),
+the SFP sensor passes 65 °C (75 °C) or a port chip passes 100 °C (110 °C). A failed sensor reading runs
+the fans at full speed for that step, and after six failed readings in a row fan control stops and the
+switch's own fan controller takes over. Choosing **Switch control** on the Fans page stops fan control, and
+**Handoff to UniFi** stops it as well and confirms that `ubnt-fanctrl` runs again.
+
+EE saves the fan mode for each switch on the computer that runs it, and a switch that EE has not controlled
+before starts in Switch control. While connected, EE checks fan control every 5 seconds and starts it again
+after a switch restart or a handoff. Fan control that EE on another computer started with release 0.6.0 or
+later keeps running until a mode is chosen here. The mode saved by release 0.5.1 moves to the first Pro XG 8
+PoE that EE connects to after the update. EE's fan program changed after 0.5.1, so the first check on that
+switch restarts the earlier program once with the same mode; `ubnt-fanctrl` runs the fans while it restarts.
+On every other switch, the check treats fan control that release 0.5.1 started, on this or another computer,
+as EE's own: it replaces it with the mode saved for that switch, or stops it when that mode is Switch control,
+as it is for a switch that EE has not controlled before.
 
 ## Timing and physical acceptance
 

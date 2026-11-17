@@ -4,21 +4,6 @@ export function ruleRate(style,value) {
   const limits = RULE_RATE_LIMITS[style] || {min:.05,max:1,default:.5};
   return clamp(Number.isFinite(value) ? value : limits.default,limits.min,limits.max);
 }
-export const FIELDS = [
-  {key:'link',label:'Link status',type:'bool',trueLabel:'Online',falseLabel:'Offline'},
-  {key:'anomaly',label:'Port anomaly',type:'bool',trueLabel:'Detected',falseLabel:'Clear'},
-  {key:'poe',label:'PoE class',type:'choice',choices:['off','poe','poe+','poe++','poe+++']},
-  {key:'speed',label:'Link speed',type:'number',unit:'Mbps'},
-  {key:'poe_power',label:'PoE power',type:'number',unit:'W'},
-  {key:'traffic',label:'Traffic',type:'number',unit:'Mbps'},
-  {key:'time',label:'Time of day',type:'time'},
-  {key:'weekday',label:'Day of week',type:'weekday',choices:['mon','tue','wed','thu','fri','sat','sun']},
-  {key:'uplink',label:'Uplink',type:'bool'},{key:'full_duplex',label:'Full duplex',type:'bool'},
-  {key:'lag',label:'Link aggregation',type:'bool'},
-  {key:'stp_state',label:'Spanning tree',type:'choice',choices:['forwarding','blocking','learning','listening','discarding','disabled']}
-];
-export const fieldByKey = key => FIELDS.find(f => f.key === key) || FIELDS[0];
-export const OPERATORS = {gt:'is above',ge:'is at least',lt:'is below',le:'is at most',eq:'equals',ne:'does not equal',between:'is between',is:'is',is_not:'is not',in:'is one of',not_in:'is not one of'};
 const minutes = value => {const [h,m] = String(value).split(':').map(Number); return h * 60 + m;};
 export function conditionMatches(condition,facts,date) {
   const {field,op,value} = condition; let actual = facts[field];
@@ -41,10 +26,6 @@ export function matchingSfpRule(rules,item,date = new Date()) {
   const rule = matchingRule(rules.filter(rule => rule.ports?.includes(item.port)),{id:item.port,facts},date);
   return rule && (item.mode === 'color' || rule.look.style !== 'effect') ? rule : null;
 }
-export function rulePortLabel(ports,sfpPorts = []) {
-  if (!ports?.length) return 'All copper ports';
-  return ports.map(port => sfpPorts.includes(port) ? `SFP ${port}` : `Port ${port}`).join(', ');
-}
 export function renderLook(look,underneath,t) {
   const phase = (t * ruleRate(look.style,look.rate)) % 1,color = look.color || '#FFFFFF';
   if (look.style === 'effect') return underneath;
@@ -52,14 +33,4 @@ export function renderLook(look,underneath,t) {
   if (look.style === 'flash') return phase < .2 ? color : '#000000';
   if (look.style === 'pulse') return dim(color,.15 + .85 * (.5 - .5 * Math.cos(phase * Math.PI * 2)));
   return color;
-}
-export function makeRule(type = 'link') {
-  const examples = {
-    link:{name:'Offline',conditions:[{field:'link',op:'is',value:false}],color:'#F25D68'},
-    anomaly:{name:'Anomaly detected',conditions:[{field:'anomaly',op:'is',value:true}],color:'#F2B769',style:'pulse'},
-    poe:{name:'PoE+ devices',conditions:[{field:'poe',op:'is',value:'poe+'}],color:'#A490E4'},
-    time:{name:'After hours',conditions:[{field:'time',op:'between',value:['22:00','07:00']}],color:'#C6A0E5',brightness:25}
-  }; const e = examples[type] || examples.link;
-  return {id:crypto.randomUUID().replaceAll('-','').slice(0,24),name:e.name,conditions:e.conditions,match:'all',ports:null,enabled:true,
-    look:{color:e.color,style:e.style || 'solid',brightness:e.brightness ?? null,rate:ruleRate(e.style)}};
 }

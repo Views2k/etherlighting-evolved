@@ -44,16 +44,16 @@ async def test_sfp_offline_manual_color_is_independent_of_effects_and_rules():
     sim.set_link(9, False)
     sim.set_anomaly(9, 2)
     engine.links = await engine.switch.read_links()
-    assert engine.sfp_outputs() == {}
+    assert engine.sfp_indicators.outputs() == {}
     engine.set_sfp(9, {"mode": "color", "color": "#2244cc", "brightness": 65})
     engine.set_effect("comet", clear_overrides=True)
     _, frame = engine.compose(t=1)
     expected = to_output(Color(34, 68, 204), 65)
-    assert engine.sfp_outputs() == {9: expected}
-    await engine.switch.write(frame, sfp=engine.sfp_outputs())
+    assert engine.sfp_indicators.outputs() == {9: expected}
+    await engine.switch.write(frame, sfp=engine.sfp_indicators.outputs())
     assert sim.leds[9] == (expected.color.to_hex()[1:], 100)
     assert 10 not in sim.leds
-    status = engine.sfp_state()[0]
+    status = engine.sfp_indicators.state()[0]
     assert status["link"] is False and status["anomaly"] is True
     assert engine.num_ports == 8 and engine.zone().ports == tuple(range(1, 9))
 
@@ -64,19 +64,19 @@ async def test_sfp_off_release_reenable_and_master_brightness():
     frame = [PortOutput.off()] * 8
     engine.set_sfp(10, {"mode": "color", "color": "blue", "brightness": 50})
     engine.set_brightness(40)
-    assert engine.sfp_outputs()[10] == to_output(Color(0, 0, 255), 20)
-    await engine.switch.write(frame, sfp=engine.sfp_outputs())
+    assert engine.sfp_indicators.outputs()[10] == to_output(Color(0, 0, 255), 20)
+    await engine.switch.write(frame, sfp=engine.sfp_indicators.outputs())
     engine.set_sfp(10, {"mode": "off"})
-    assert engine.sfp_outputs()[10] == PortOutput.off()
-    await engine.switch.write(frame, sfp=engine.sfp_outputs())
+    assert engine.sfp_indicators.outputs()[10] == PortOutput.off()
+    await engine.switch.write(frame, sfp=engine.sfp_indicators.outputs())
     assert sim.leds[10] == ("000000", 100)
     engine.set_sfp(10, {"mode": "unmanaged"})
     await engine.wait_for_sfp(10)
     before = sim.command_count
-    assert await engine.switch.write(frame, sfp=engine.sfp_outputs()) == 0
+    assert await engine.switch.write(frame, sfp=engine.sfp_indicators.outputs()) == 0
     assert sim.command_count == before
     engine.set_sfp(10, {"mode": "off"})
-    assert await engine.switch.write(frame, sfp=engine.sfp_outputs()) == 1
+    assert await engine.switch.write(frame, sfp=engine.sfp_indicators.outputs()) == 1
     assert engine.switch.sfp_status(10)["owned"] is True
     assert engine.sfp[10].color == Color(0, 0, 255) and engine.sfp[10].brightness == 50
 
@@ -96,7 +96,7 @@ async def test_snapshot_roundtrip_old_scene_and_atomic_validation():
     old = dict(saved)
     old.pop("sfp")
     other.apply_snapshot(old)
-    assert other.sfp_outputs() == {}
+    assert other.sfp_indicators.outputs() == {}
 
 
 @pytest.mark.anyio

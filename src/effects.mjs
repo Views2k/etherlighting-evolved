@@ -45,7 +45,7 @@ export function createEffectRenderer(colorMath = hexColorMath) {
     const fallback = [Object.hasOwn(categories,effect.category) ? categories[effect.category] : 'Other',
       'blend',defaults[0] || '#98A0AC',defaults[1] || defaults[0] || '#68717D',typeof effect.description === 'string' ? effect.description : ''];
     const [category,icon,a,b,description] = custom || fallback;
-    const name = typeof effect.name === 'string' ? effect.name.replace('Colour','Color') : effect.id;
+    const name = typeof effect.name === 'string' ? effect.name : effect.id;
     return { ...effect,name,category,icon,colors:[a,b],description,supportsPreview:Boolean(custom) };
   }
   const EFFECTS = CATALOG.map(presentEffect);

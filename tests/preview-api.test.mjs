@@ -45,3 +45,13 @@ test('reconciliation cannot mistake another configuration for the requested one'
     if(method==='PUT')throw failure;return {revision:'other',scene:{...scene,brightness:20}};
   }),error=>error===failure&&!error.acceptedScene);
 });
+test('a refused LAN pairing tells the workspace to show the pairing screen',async t=>{
+  // Node's global object is not an event target, unlike a browser window.
+  const events=[];globalThis.dispatchEvent=event=>{events.push(event.type);return true;};t.after(()=>{delete globalThis.dispatchEvent;});
+  t.mock.method(globalThis,'fetch',async()=>Response.json({detail:{code:'lan_pairing_required',message:'Pair this device first. Enter the pairing code shown on the computer running EE.'}},{status:403}));
+  await assert.rejects(request('/api/state'),error=>error.code==='lan_pairing_required'&&error.status===403);
+  assert.deepEqual(events,['ee-lan-pairing-required']);
+  t.mock.method(globalThis,'fetch',async()=>Response.json({detail:{code:'local_access_required',message:'x'}},{status:403}));
+  await assert.rejects(request('/api/state'));
+  assert.deepEqual(events,['ee-lan-pairing-required']);
+});

@@ -20,7 +20,9 @@ public sealed class Workspace : IAsyncDisposable
     long streamRevision, fullStateRevision, nextRefresh, appliedRefresh, bandwidthReceivedAt;
     readonly Dictionary<string, long> frameRevisions = [];
 
-    public Workspace(Uri baseUri) => Api = new EeApi(baseUri);
+    /// <param name="adminKey">The administration key of the gateway this program started, for that address only.</param>
+    /// <param name="deviceKey">The key this computer received when it paired with a LAN workspace at this address.</param>
+    public Workspace(Uri baseUri, string? adminKey = null, string? deviceKey = null) => Api = new EeApi(baseUri, adminKey, deviceKey);
 
     public EeApi Api { get; }
 
@@ -33,6 +35,21 @@ public sealed class Workspace : IAsyncDisposable
 
     /// <summary>/api/workspace: whether this workspace controls a real switch ("live").</summary>
     public JsonObject Options { get; set; } = new() { ["live"] = false };
+
+    /// <summary>
+    /// True when this window reaches the workspace through Tailscale or LAN access. Any address that is not on this
+    /// computer counts, whatever /api/workspace says, so a changed answer cannot bring back the switch login or UniFi
+    /// Network setup.
+    /// </summary>
+    public bool Remote => Options.Bool("remote") == true || !Api.BaseUri.IsLoopback;
+
+    /// <summary>The window reaches the workspace through LAN access, so its connection is not encrypted.</summary>
+    public bool Lan => Api.Lan;
+
+    /// <summary>/api/about: the service's version and disclaimer. Empty for a service that does not report them.</summary>
+    public JsonObject About { get; set; } = [];
+
+    public string Disclaimer => About.Str("disclaimer") is { Length: > 0 } text ? text : "Unofficial community project. Not affiliated with Ubiquiti.";
 
     /// <summary>The live stream is interrupted (the browser workspace's "disconnected").</summary>
     public bool Disconnected { get; private set; }
@@ -360,7 +377,9 @@ public sealed class Workspace : IAsyncDisposable
                 FansChanged?.Invoke();
                 break;
             case "session":
-                if (message["session"] is JsonObject session && SessionMessage is { } handler) _ = handler((JsonObject)session.DeepClone());
+                if (message["session"] is JsonObject session && SessionMessage is { } handler)
+                    _ = handler((JsonObject)session.DeepClone()).ContinueWith(task => DesktopLog.Error("session_error", task.Exception!),
+                        CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
                 break;
         }
     }
