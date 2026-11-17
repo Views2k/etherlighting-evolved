@@ -206,11 +206,21 @@ begin
     MsgBox('EE could not confirm that its Tailscale private address was removed. If you use Tailscale on this computer, open PowerShell and run "tailscale serve status" to review its routes.', mbInformation, MB_OK);
 end;
 
+{ A later install then starts with LAN access off and no paired devices. An uninstall for all users runs elevated and
+  cannot reliably reach this user's data folder, so the setting and the paired devices stay until LAN access is
+  turned off. }
+procedure RemoveLanAccessSettings();
+begin
+  if not IsAdminInstallMode then
+    DeleteFile(ExpandConstant('{localappdata}\Etherlighting Evolved\workspace\lan-access.json'));
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
     RemovePrivateAccessRoute();
+    RemoveLanAccessSettings();
     { The app's own "Start with Windows" switch can add this value even if the installer didn't. }
     RegDeleteValue(HKCU, '{#RunKey}', '{#AppName}');
   end;

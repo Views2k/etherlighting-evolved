@@ -1,4 +1,5 @@
 import {sceneFromState,reviewSceneConflict} from './scene-review.mjs';
+import {randomId} from './dom.mjs';
 import {createPortHistory,openFindPorts,openLivePortDetails} from './port-tools.mjs';
 import {openPortNames} from './port-names.mjs';
 import {openSavedLibrary,openSceneHistory} from './saved-library.mjs';
@@ -9,7 +10,8 @@ import {commitScene} from './scene-transaction.mjs';
 import {portRanges} from './port-topology.mjs';
 import {sceneFingerprint} from './secondary-model.mjs';
 import {hostScheduleDate,receiveScheduleClock} from './schedule-clock.mjs';
-import { renderSwitchConnection, showConnectionStatus, showSceneChoice, handoffStatus } from './connections.mjs';
+import { renderSwitchConnection, renderLanPairing, showConnectionStatus, showSceneChoice, handoffStatus, LAN_UNREACHABLE } from './connections.mjs';
+import {lanPage, loopbackHost} from './lan-address.mjs';
 import { workspaceStorageKey, switchConnectionStatus, controllerConnectionStatus } from './workspace-session.mjs';
 import { renderAutomation, renderProfiles, renderSettings, renderHelp } from './secondary.mjs';
 import { lightingOperations, lightingSnapshot, controlSource, sceneAutomationMatches, equalSetting, sfpSettings, fixedColorSettings, fixedColorBrightness } from './lighting-state.mjs';
@@ -40,6 +42,12 @@ let multipleSelection = false, selectionAnchor = null;
 let secondaryCleanup, currentSocket, retryTimer, inspectorSignature = '';
 let operation = Promise.resolve(), busy = 0, refreshTimer, disconnected = false, toastTimer;
 let workspaceOptions = {live:false}, workspaceReady = false, openingWorkspace = null, closingWorkspace = false;
+// lanPairing is the cleanup of the pairing screen while it shows. workspaceStarted becomes true once start() has read
+// the workspace, so the pairing event from a request it makes itself is handled by start().
+let lanPairing = null, workspaceStarted = false;
+// Any page that is not on this computer is remote, whatever /api/workspace says, so a changed answer on the network
+// cannot bring back the switch login or UniFi Network setup on an unchanged page.
+const remotePage = () => workspaceOptions.remote === true || !loopbackHost(location.hostname);
 let activeColorPopover;
 const edits = new Set();
 let draft = {}, profiles = {}, pendingPlan = null, lastApplied = null, compareApplied = false;
@@ -302,7 +310,7 @@ function focusEditor(reveal=false){
 }
 function focusLightingControls(){if(page==='Lighting'&&!document.querySelector('dialog[open]'))focusEditor();}
 function stageEffect(config){
-  draft=stageEffectDraft(draft,config,`group-${crypto.randomUUID()}`,state.ports.map(port=>port.port));
+  draft=stageEffectDraft(draft,config,`group-${randomId()}`,state.ports.map(port=>port.port));
   queueEdit('effect');
 }
 
@@ -341,7 +349,7 @@ async function navigate(target,{keepDraft=false,fromHistory=false,historyEntry}=
   }else {
     view.innerHTML = '';
     const renderer = {Automation: renderAutomation, Profiles: renderProfiles, Settings: renderSettings,Help:renderHelp}[page];
-    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,getDraftScene:previewScene,onSavePreview:savePreviewProfile,onUndoApply:undoLastApply,canUndoApply:()=>Boolean(lastApplied?.after)&&!edits.size,initialRuleId:requestedRuleId,onBeforeMutation:confirmDraft,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,remote:workspaceOptions.remote===true,onChange: async () => {await refresh(false); }});
+    secondaryCleanup = await renderer(view, {request:workspaceRequest(), state, effects,getState:()=>state,onApplyProfile:applyProfile,getDraftScene:previewScene,onSavePreview:savePreviewProfile,onUndoApply:undoLastApply,canUndoApply:()=>Boolean(lastApplied?.after)&&!edits.size,initialRuleId:requestedRuleId,onBeforeMutation:confirmDraft,onHelp:()=>navigate('Help'),onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onCloseWorkspace:closeWorkspace,remote:remotePage(),lan:lanPage(location),onChange: async () => {await refresh(false); }});
     requestedRuleId=undefined;
   }
   updateDraftBar();
@@ -962,7 +970,7 @@ async function openGroups() {
       saving=true;dialog.setAttribute('aria-busy','true');const controls=[...dialog.querySelectorAll('input,select,button')];for(const control of controls){control.dataset.groupDisabled=String(control.disabled);control.disabled=true;}
       await serialize(async()=>{
         const zones=clone(before.scene.zones||[]);for(const input of names){const zone=zones.find(z=>z.id===input.dataset.groupName);if(zone)zone.name=input.value.trim();}
-        if(fresh&&ports.length){const selectedPorts=new Set(ports);for(const zone of zones)zone.ports=zone.ports.filter(p=>!selectedPorts.has(p));zones.push({id:`group-${crypto.randomUUID()}`,name:fresh,ports,effect:clone(chosenEffect?defaultConfig(chosenEffect):currentEffect()||{id:'static',params:{}})});}
+        if(fresh&&ports.length){const selectedPorts=new Set(ports);for(const zone of zones)zone.ports=zone.ports.filter(p=>!selectedPorts.has(p));zones.push({id:`group-${randomId()}`,name:fresh,ports,effect:clone(chosenEffect?defaultConfig(chosenEffect):currentEffect()||{id:'static',params:{}})});}
         await commitScene(before,{...before.scene,zones:zones.filter(zone=>zone.ports.length)},send);if(workspace===session.workspace_id){lastApplied=null;await refresh(false);}
       });
       dialog.close();updateGroups();notify('Port groups saved');
@@ -1037,7 +1045,11 @@ function connectFrames() {
   currentSocket.addEventListener('close',()=>{
     if(closingWorkspace||streamPaused||opened!==currentSocket)return;
     liveUplinkVersion++;state={...state,uplink_bandwidth:null};
-    disconnected=true;updateConnection();updateLive();if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);retryTimer=setTimeout(connectFrames,1500);
+    disconnected=true;updateConnection();updateLive();if(page==='Settings')secondaryCleanup?.update?.(state,session,true);status('The workspace connection was interrupted.',true);
+    if(workspaceOptions.lan!==true){retryTimer=setTimeout(connectFrames,1500);return;}
+    // A LAN device whose pairing was removed stops reconnecting until it pairs again.
+    apiRequest('/api/workspace').then(info=>{if(opened!==currentSocket)return;if(info?.paired===false)showLanPairing(true);else retryTimer=setTimeout(connectFrames,1500);},
+      ()=>{if(opened===currentSocket)retryTimer=setTimeout(connectFrames,1500);});
   });
   currentSocket.addEventListener('error',()=>opened.close());
 }
@@ -1080,7 +1092,7 @@ function showConnection() {
   if(workspaceReady)resetWorkspace();
   secondaryCleanup?.();
   secondaryCleanup=renderSwitchConnection(view,{request,session,onConnected:acceptSession,onSessionChange:async(next,notice)=>{await acceptSession(next);if(notice)notify(notice.message,notice.error);},onHelp:showLoginHelp,
-    restoreSaved:()=>request('/api/session/restore?resume=true','POST'),remote:workspaceOptions.remote===true,
+    restoreSaved:()=>request('/api/session/restore?resume=true','POST'),remote:remotePage(),
     onDemo:workspaceOptions.live?undefined:async()=>acceptSession(await request('/api/session/login','POST',{host:'demo'}))});
   const handoff=handoffStatus(session);
   updateConnection();status(handoff?.message||(session.connecting?'Connecting with saved login…':'Connect your switch'),handoff?.error===true);
@@ -1147,14 +1159,25 @@ async function closeWorkspace() {
     view.innerHTML='<div class="empty-state"><h1>Web session closed</h1><p>Your lighting setup and saved switch login are preserved. You can now open the desktop app.</p></div>';
   }catch(error){closingWorkspace=false;connectFrames();throw error;}
 }
+function showLanPairing(revoked) {
+  if(lanPairing)return;
+  workspaceStarted=false;
+  const socket=currentSocket;currentSocket=null;clearTimeout(retryTimer);socket?.close();
+  if(workspaceReady)resetWorkspace();else{secondaryCleanup?.();secondaryCleanup=undefined;}
+  session={};updateConnection();status('Pair this device to open the workspace',true);
+  lanPairing=renderLanPairing(view,{request:apiRequest,revoked,onPaired:()=>{lanPairing=null;void start();}});
+}
+globalThis.addEventListener('ee-lan-pairing-required',()=>{if(workspaceStarted)showLanPairing(true);});
 async function start() {
   try{
     let initial;
     [effects,initial,workspaceOptions]=await Promise.all([request('/api/effects'),request('/api/session'),request('/api/workspace')]);setEffectCatalog(effects);
-    session=initial;connectFrames();
+    session=initial;workspaceStarted=true;connectFrames();
     if(session.logged_in||session.pending_scene_choice)await acceptSession(session);else showConnection();
   }catch(error){
-    view.innerHTML='<div class="empty-state"><h1>Couldn’t open the workspace</h1><p>The local service is unavailable. Try connecting again.</p><button class="button primary" id="retry-start">Try again</button></div>';
+    if(error?.code==='lan_pairing_required'){showLanPairing(false);return;}
+    view.innerHTML='<div class="empty-state"><h1>Couldn’t open the workspace</h1><p></p><button class="button primary" id="retry-start">Try again</button></div>';
+    view.querySelector('p').textContent=lanPage(location)?LAN_UNREACHABLE:'The local service is unavailable. Try connecting again.';
     document.querySelector('#retry-start').addEventListener('click',start);status('Connection unavailable',true);
   }
 }

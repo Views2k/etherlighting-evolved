@@ -1,6 +1,7 @@
 import {confirmAction} from './confirmation.mjs';
 import {controllerConnectionStatus} from './workspace-session.mjs';
-import {field, node} from './dom.mjs';
+import {field, node, randomId} from './dom.mjs';
+import {deviceName, LAN_DEFAULT_PORT, loopbackHost, pairingCode, privateIPv4} from './lan-address.mjs';
 
 export function showConnectionStatus(element, {label, tone}) {
   if (element.textContent !== label) element.textContent = label;
@@ -118,8 +119,8 @@ export function hostKeyError(error) {
 }
 
 // Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
-// request counts as remote.
-export function canAcceptHostKey(privateAccess) {return privateAccess?.local===true;}
+// request counts as remote. A LAN answer can be changed on the way, so the page must also be on this computer.
+export function canAcceptHostKey(privateAccess, page = location) {return privateAccess?.local===true&&loopbackHost(page.hostname);}
 
 // Which key problem the Connect page reviews, and what runs after the key is saved: 'form' submits the login form
 // again, 'saved' restores the saved login, 'none' only asks the user to connect.
@@ -331,7 +332,7 @@ function button(text, className = '') {
 function passwordField(label, control) {
   const wrapper = node('div', 'field');
   const title = node('label', '', label);
-  control.id = `connection-${control.name}-${crypto.randomUUID()}`;
+  control.id = `connection-${control.name}-${randomId()}`;
   title.htmlFor = control.id;
   const row = node('div', 'connection-secret');
   const reveal = button('Show', 'quiet');
@@ -414,9 +415,9 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   host.replaceChildren();
   if(!active)return ()=>{};
   const section=node('section','private-access automation-section'),header=node('div','connection-heading');
-  const title=node('h2','','Mobile & remote access'),refresh=button('Refresh private access','quiet');header.append(title,refresh);
+  const title=node('h2','','Tailscale private access'),refresh=button('Refresh private access','quiet');header.append(title,refresh);
   const state=node('p','connection-state waiting','Checking private access…');
-  const help=node('p','help-text','Use Tailscale to open this workspace on your phone or another device.');
+  const help=node('p','help-text','Use Tailscale to open this workspace on your phone or another device over an encrypted connection, at home or away. Tailscale is optional. LAN access in Settings works on your own network without it.');
   const scope=node('p','help-text','Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.');
   const setup=node('div','connection-setup'),setupHelp=node('p','help-text','Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.');
   const setupActions=node('div','connection-actions'),setupLink=node('a','button'),signIn=button('Sign in to Tailscale','primary');
@@ -538,6 +539,276 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   return cleanup;
 }
 
+const LAN_STATEMENT='LAN access uses plain HTTP, so traffic between your devices and this PC is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device’s access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on this PC. Use Tailscale for an encrypted connection.';
+const LAN_SCOPE='Paired devices can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on this PC.';
+const LAN_FIREWALL='Before you turn on LAN access, make sure Windows lists this network as private. If Windows then asks about Node.js JavaScript Runtime, allow it on private networks only. EE’s service runs on Node.js. EE does not check the firewall, so if a device cannot open the address, check the firewall settings on this PC.';
+const LAN_ADMIN='To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.';
+const LAN_FALLBACK='LAN access could not be confirmed. Refresh status before trying again.';
+export const LAN_PAGE_NOTE='This device uses LAN access. Its connection to the computer running EE is not encrypted.';
+export const LAN_UNREACHABLE='EE could not be reached at this address. LAN access may be off, or the computer running EE may have a new address. Check LAN access in Settings on that computer.';
+
+const lanAccessMessages = {
+  lan_access_port_in_use:'Another program uses this port. Choose another LAN port in Connection options.',
+  lan_access_listener_failed:'EE could not open its LAN port. Choose another LAN port in Connection options, then try again.',
+  lan_access_save_failed:'The LAN access setting could not be saved. Check the local data folder and try again.',
+  lan_access_turned_off:'The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again.',
+  lan_access_revoke_unsaved:'EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off.',
+  lan_access_invalid_configuration:'The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again.',
+  lan_access_port_change_requires_off:'Turn off LAN access before changing its port.',
+  lan_access_off:'Turn on LAN access before pairing a device.',
+  lan_access_device_limit:'16 devices are paired, the most EE allows. Remove one before pairing another.',
+  lan_access_failed:'LAN access could not be updated. Refresh status and try again.',
+  not_found:'That device is no longer paired.',
+  workspace_closing:'EE is closing. Reopen EE to change LAN access.',
+  admin_required:LAN_ADMIN,
+};
+
+export function lanAccessError(error) {
+  const code=typeof error==='string'?error:error?.code;
+  return typeof code==='string'&&Object.hasOwn(lanAccessMessages,code)?lanAccessMessages[code]:LAN_FALLBACK;
+}
+
+const PAIRING_ENDED = {
+  expired:'The pairing code expired. Choose Pair a device to show a new one.',
+  attempts:'The pairing code ended after 5 wrong attempts. If no one at your devices entered them, another device on your network may be trying to pair. Choose Pair a device to show a new one.',
+  failed:'The device could not be saved. Check the local data folder, then choose Pair a device to show a new code.',
+  used:'The pairing code was used.',
+};
+const lanDate=new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric'});
+const lanTime=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit'});
+const lanAddressUrl=value=>{const match=/^http:\/\/([\d.]+):\d{4,5}$/.exec(value);return match&&privateIPv4(match[1])===match[1];};
+// Only an id of 16 lowercase hexadecimal characters is put in a request path.
+const lanDevice=value=>typeof value?.id==='string'&&/^[0-9a-f]{16}$/.test(value.id)&&typeof value.name==='string';
+
+// LAN access on the computer running EE, or on a remote page (remote) the read-only lines, with the statement that this
+// page's own connection is not encrypted when it is a LAN page (lan).
+export function renderLanAccess(host, request, {signal, remote = false, lan = false} = {}) {
+  let active=!signal?.aborted,current=null,draft=null,portDraft=null,pending=null,completion=Promise.resolve();
+  let countdown=null,poll=null,knownDevices=null,announced=null,addressKey='',deviceKey='';
+  host.replaceChildren();
+  if(!active)return ()=>{};
+  const section=node('section','lan-access automation-section'),header=node('div','connection-heading');
+  header.append(node('h2','','LAN access'));
+  if(remote){
+    section.append(header,...(lan?[node('p','lan-access-warning',LAN_PAGE_NOTE)]:[]),node('p','help-text','Change this setting in EE on the host computer.'));
+    host.append(section);
+    const cleanup=()=>{active=false;};
+    cleanup.hasChanges=()=>false;cleanup.canLeave=async()=>true;
+    return cleanup;
+  }
+  const refresh=button('Refresh LAN access','quiet');header.append(refresh);
+  const state=node('p','connection-state waiting','Checking LAN access…');
+  const help=node('p','help-text','Open EE on phones and other computers on your network without Tailscale. Each device needs a pairing code from this PC.');
+  const toggle=namedInput('lan_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Allow devices on my network'));
+  const readOnly=node('p','help-text',LAN_ADMIN);readOnly.hidden=true;
+  const apply=button('Apply setting','primary'),actions=node('div','connection-actions');actions.append(apply);
+  const firewall=node('p','help-text',LAN_FIREWALL);
+  const advanced=node('details','connection-options'),port=namedInput('lan_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
+  const resetPort=button('Reset port','quiet');resetPort.hidden=true;
+  advanced.append(node('summary','','Connection options'),field('LAN port',port),resetPort,
+    node('p','help-text','Use a free port between 1024 and 65535. Turn off LAN access before changing it. Do not forward this port on your router.'));
+  const addresses=node('div','lan-addresses'),addressList=node('ul','lan-address-list');
+  addresses.append(node('p','muted','Address for other devices'),addressList);
+  const pairing=node('div','lan-pairing'),pair=button('Pair a device'),codeBlock=node('div','lan-pairing-active');
+  const codeText=node('p','lan-pairing-code'),codeHelp=node('p','help-text'),newCode=button('New code','quiet');
+  codeBlock.append(node('p','muted','Pairing code'),codeText,codeHelp,newCode);pairing.append(pair,codeBlock);
+  const devicesBlock=node('div','lan-devices'),deviceList=node('ul','lan-device-list'),noDevices=node('p','help-text','No devices are paired.');
+  const limit=node('p','help-text',lanAccessMessages.lan_access_device_limit);
+  devicesBlock.append(node('h3','','Paired devices'),deviceList,noDevices,limit);
+  const [message,status]=notice();
+  section.append(header,state,help,node('p','lan-access-warning',LAN_STATEMENT),node('p','help-text',LAN_SCOPE),label,readOnly,actions,firewall,advanced,
+    addresses,pairing,devicesBlock,message);
+  host.append(section);
+  const canConfigure=()=>current?.can_configure===true;
+  const enabled=()=>current?.enabled===true;
+  const ready=()=>enabled()&&current.ready===true;
+  const canRetry=()=>enabled()&&current.ready!==true;
+  // A turn-off that could not be saved is applied again with the setting left off.
+  const revokeUnsaved=()=>current?.error?.code==='lan_access_revoke_unsaved';
+  const devices=()=>Array.isArray(current?.devices)?current.devices.filter(lanDevice):[];
+  const deviceLimit=()=>Number.isInteger(current?.max_devices)?current.max_devices:16;
+  const activeCode=()=>typeof current?.pairing?.code==='string'&&/^\d{6}$/.test(current.pairing.code)?current.pairing.code:null;
+  const currentPort=()=>Number.isInteger(current?.port)&&current.port>=1024&&current.port<=65535?current.port:LAN_DEFAULT_PORT;
+  const canChangePort=()=>canConfigure()&&current?.can_change_port===true&&!enabled()&&current?.ready!==true;
+  const validPort=()=>{const text=portDraft??String(currentPort());return /^\d+$/.test(text)&&Number(text)>=1024&&Number(text)<=65535;};
+  const hasPortChange=()=>portDraft!==null&&Number(portDraft)!==currentPort();
+  const unchanged=(chosen,portChange)=>chosen===enabled()&&!portChange&&!(chosen&&canRetry())&&!(!chosen&&revokeUnsaved());
+  const renderCode=()=>{
+    const code=activeCode();
+    if(!code){codeText.textContent='';codeHelp.textContent='';return;}
+    const expires=Date.parse(current.pairing.expires_at),left=Number.isFinite(expires)?Math.max(0,Math.ceil((expires-Date.now())/1000)):0;
+    codeText.textContent=`${code.slice(0,3)} ${code.slice(3)}`;
+    codeHelp.textContent=`Open the address above on the other device and enter this code. It works once and expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}.`;
+  };
+  // The lists are rebuilt only when they change, so a periodic refresh keeps focus on their buttons.
+  const renderAddresses=list=>{
+    const key=JSON.stringify(list);
+    if(key===addressKey)return;
+    addressKey=key;addressList.replaceChildren();
+    for(const {url,interface:name} of list){
+      const row=node('li','lan-address'),copy=button('Copy address','quiet');
+      row.append(node('code','',`${url} (${name})`),copy);addressList.append(row);
+      copy.addEventListener('click',async()=>{
+        if(!active)return;
+        try{
+          if(!globalThis.navigator?.clipboard?.writeText)throw new Error('clipboard_unavailable');
+          await navigator.clipboard.writeText(url);if(active)status('LAN address copied.');
+        }catch{if(active)status('Select the address and copy it.');}
+      });
+    }
+  };
+  const renderDevices=list=>{
+    const key=JSON.stringify(list);
+    if(key===deviceKey)return;
+    deviceKey=key;deviceList.replaceChildren();
+    for(const device of list){
+      const row=node('li','lan-device'),details=node('div','lan-device-details'),remove=button('Remove','quiet');
+      details.append(node('strong','',device.name),node('span','help-text',`${device.client==='app'?'Desktop app':'Browser'} · Paired ${lanDate.format(new Date(device.paired_at))} from ${device.paired_from}`));
+      if(device.last_used_at)details.append(node('span','help-text',`Last used from ${device.last_address} at ${lanTime.format(new Date(device.last_used_at))}`));
+      row.append(details,remove);deviceList.append(row);
+      remove.addEventListener('click',()=>{void start('remove',device.id);});
+    }
+  };
+  const render=()=>{
+    if(!active)return;
+    const on=enabled(),chosen=draft??on,busy=Boolean(pending),configurable=canConfigure(),available=current?.available===true;
+    toggle.checked=chosen;toggle.disabled=busy||!configurable;
+    const portChange=hasPortChange();
+    apply.disabled=busy||!configurable||!validPort()||portChange&&!canChangePort()||unchanged(chosen,portChange);
+    apply.textContent=pending==='apply'?'Applying…':chosen===on&&canRetry()?'Retry LAN access':'Apply setting';
+    refresh.disabled=busy;section.setAttribute('aria-busy',String(busy));
+    label.hidden=actions.hidden=firewall.hidden=!available;
+    readOnly.hidden=!available||configurable;advanced.hidden=!configurable;
+    port.value=portDraft??String(currentPort());port.disabled=busy||!canChangePort();
+    resetPort.hidden=portDraft===null;resetPort.disabled=busy;
+    const shown=ready()&&Array.isArray(current.addresses)?current.addresses.filter(item=>lanAddressUrl(item?.url)&&typeof item.interface==='string'):[];
+    addresses.hidden=!shown.length;renderAddresses(shown);
+    const code=activeCode(),list=devices(),full=list.length>=deviceLimit();
+    pairing.hidden=!configurable||!ready();
+    pair.hidden=Boolean(code);pair.disabled=busy||full;codeBlock.hidden=!code;newCode.disabled=busy||full;renderCode();
+    devicesBlock.hidden=!configurable||!(ready()||list.length);renderDevices(list);
+    noDevices.hidden=list.length>0;limit.hidden=!full;
+    if(!current)showConnectionStatus(state,{label:busy?'Checking LAN access…':LAN_FALLBACK,tone:busy?'waiting':'is-disconnected'});
+    else if(!available)showConnectionStatus(state,{label:'LAN access is not available in the demo.',tone:'is-disconnected'});
+    else if(ready())showConnectionStatus(state,shown.length?{label:'LAN access is on',tone:'online'}
+      :{label:'LAN access is on, but this PC has no private network address. Connect it to your network, then refresh.',tone:'waiting'});
+    else if(current.error)showConnectionStatus(state,{label:lanAccessError(current.error),tone:'is-disconnected'});
+    else showConnectionStatus(state,on?{label:LAN_FALLBACK,tone:'waiting'}:{label:'LAN access is off',tone:'is-disconnected'});
+  };
+  const stopTimers=()=>{clearInterval(countdown);clearInterval(poll);countdown=poll=null;};
+  // While a code is shown, the countdown runs every second and the status is read every 2 seconds to see it used.
+  const syncTimers=()=>{
+    if(!active||!activeCode()||!canConfigure()){stopTimers();return;}
+    countdown??=setInterval(renderCode,1000);
+    poll??=setInterval(async()=>{
+      if(pending)return;
+      try{const latest=await request('/api/lan-access');if(active&&!pending)update(latest);}
+      catch(error){if(active){stopTimers();status(lanAccessError(error),true);}}
+    },2000);
+  };
+  // The reason a code ended is shown once; a code used by a device that appeared since it was shown names that device.
+  const announcePairing=()=>{
+    const ended=current.pairing?.ended;
+    if(typeof ended!=='string'||!Object.hasOwn(PAIRING_ENDED,ended))return;
+    const key=`${current.pairing.expires_at}|${ended}`;
+    if(key===announced)return;
+    announced=key;
+    const added=ended==='used'&&knownDevices?devices().find(device=>!knownDevices.has(device.id)):null;
+    status(added?`Paired ${added.name}.`:PAIRING_ENDED[ended],ended!=='used');
+  };
+  const update=value=>{
+    if(!active)return;
+    if(!value||typeof value.enabled!=='boolean'||typeof value.available!=='boolean'||typeof value.ready!=='boolean')throw new Error('invalid_lan_status');
+    current=value;if(draft===enabled())draft=null;if(portDraft!==null&&Number(portDraft)===currentPort())portDraft=null;
+    announcePairing();render();syncTimers();
+  };
+  const perform=async (operation,deviceId)=>{
+    if(!active||pending)return;
+    const saving=operation==='apply',wanted=draft??enabled(),portChange=hasPortChange(),wantedPort=Number(portDraft??currentPort()),wasEnabled=enabled();
+    const device=operation==='remove'?devices().find(item=>item.id===deviceId):null;
+    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||unchanged(wanted,portChange)))return;
+    if(['code','remove'].includes(operation)&&!canConfigure()||operation==='remove'&&!device)return;
+    pending=operation;render();status();
+    try{
+      if(saving&&!wanted&&wasEnabled&&devices().length&&!await confirmAction(host,'Turn off LAN access?',
+        'All paired devices are removed and disconnected. Each one needs a new pairing code after you turn LAN access on again.','Turn off',signal))return;
+      if(!active)return;
+      if(operation==='code')knownDevices=new Set(devices().map(item=>item.id));
+      const payload={enabled:wanted};if(portChange)payload.port=wantedPort;
+      const result=saving?await request('/api/lan-access','PUT',payload):operation==='code'?await request('/api/lan-access/code','POST')
+        :operation==='remove'?await request(`/api/lan-access/devices/${device.id}`,'DELETE'):await request('/api/lan-access');
+      if(!active)return;update(result);
+      if(result.error&&(saving||operation==='remove'))status(lanAccessError(result.error),true);
+      else if(saving&&(result.enabled!==wanted||portChange&&result.port!==wantedPort))status('The setting could not be confirmed. Refresh status before trying again.',true);
+      else if(saving)status(wanted?'LAN access enabled.':portChange&&!wasEnabled?'LAN port saved.':'LAN access disabled.');
+      else if(operation==='remove')status(`Removed ${device.name}. It needs a new pairing code to connect again.`);
+    }catch(error){
+      if(active){
+        status(lanAccessError(error),true);
+        // The page was opened before EE restarted, or without administration access: show the read-only status.
+        if(error?.code==='admin_required'){try{const latest=await request('/api/lan-access');if(active)update(latest);}catch{}}
+        if(!current)showConnectionStatus(state,{label:LAN_FALLBACK,tone:'is-disconnected'});
+      }
+    }
+    finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});}}
+  };
+  const start=(operation,deviceId)=>{if(pending)return completion;completion=perform(operation,deviceId);return completion;};
+  toggle.addEventListener('change',()=>{if(!active||pending||!canConfigure())return;draft=toggle.checked===enabled()?null:toggle.checked;status();render();});
+  port.addEventListener('input',()=>{if(!active||pending||!canChangePort())return;portDraft=port.value===String(currentPort())?null:port.value;status(validPort()?'':'Enter a whole-number port between 1024 and 65535.',!validPort());render();});
+  resetPort.addEventListener('click',()=>{if(!active||pending||!canConfigure())return;portDraft=null;status();render();(port.disabled?refresh:port).focus({preventScroll:true});});
+  apply.addEventListener('click',()=>{void start('apply');});refresh.addEventListener('click',()=>{void start('refresh');});
+  for(const control of [pair,newCode])control.addEventListener('click',()=>{void start('code');});
+  const cleanup=()=>{active=false;stopTimers();signal?.removeEventListener('abort',cleanup);};
+  signal?.addEventListener('abort',cleanup,{once:true});
+  cleanup.update=update;cleanup.hasChanges=()=>draft!==null||portDraft!==null;
+  cleanup.canLeave=async()=>{await completion;return true;};
+  render();void start('refresh');
+  return cleanup;
+}
+
+const pairingMessages = {
+  lan_pairing_failed:'The pairing code is wrong or has expired. Check the code on the computer running EE, or choose Pair a device there to show a new one.',
+  lan_pairing_save_failed:'The device could not be saved on the computer running EE. Ask for a new pairing code there and try again.',
+  invalid:'Enter the 6-digit pairing code and a name of up to 40 characters for this device.',
+};
+
+// The pairing screen on a LAN page that has no pairing, or whose pairing was removed (revoked).
+export function renderLanPairing(host, {request, revoked = false, onPaired}) {
+  let active=true,pending=false;
+  const section=node('section','connection-panel panel lan-pairing'),form=node('form','connection-form');
+  const code=namedInput('pairing_code','text','one-time-code');code.inputMode='numeric';code.maxLength=7;
+  const name=namedInput('device_name');name.placeholder='For example, Kitchen iPad';
+  const submit=button('Pair device','primary');submit.type='submit';
+  const [message,status]=notice();
+  form.append(field('Pairing code',code),field('Device name',name,'This name appears in the list of paired devices on the computer running EE.'),
+    node('p','lan-access-warning','This connection uses plain HTTP and is not encrypted. Anyone who can watch or change traffic on your network can read workspace data and this device’s access key, and can use the key to control EE. EE does not send switch or UniFi passwords over it.'),
+    node('p','help-text','EE on another device never asks for switch or UniFi passwords. If it does, do not enter them.'),submit,message);
+  section.append(node('h1','','Pair this device'),node('p','help-text',revoked
+    ?'This device is not paired. Enter a new pairing code from the computer running EE to continue.'
+    :'Enter the pairing code shown on the computer running EE. On that computer, open Settings, go to LAN access and choose Pair a device.'),form);
+  host.replaceChildren(section);
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(!active||pending)return;
+    const digits=pairingCode(code.value),label=deviceName(name.value);
+    if(!digits){status('Enter the 6-digit code.',true);code.focus();return;}
+    if(!label){status('Enter a name for this device, up to 40 characters.',true);name.focus();return;}
+    pending=true;submit.disabled=true;submit.textContent='Pairing…';status();
+    try{
+      await request('/api/lan-access/pair','POST',{code:digits,name:label,client:'browser'});
+      if(!active)return;
+      active=false;status('Paired. Opening the workspace…',false,'online');onPaired();
+    }catch(error){
+      if(active){
+        status(Object.hasOwn(pairingMessages,error?.code)?pairingMessages[error.code]:LAN_UNREACHABLE,true);
+        code.value='';code.focus();
+      }
+    }finally{if(active){pending=false;submit.disabled=false;submit.textContent='Pair device';}}
+  });
+  code.focus();
+  return ()=>{active=false;};
+}
+
 let sceneChoiceDialog = null;
 
 export function showSceneChoice(request, session, {signal} = {}) {
@@ -551,7 +822,7 @@ export function showSceneChoice(request, session, {signal} = {}) {
   let resolve;
   const promise=new Promise(done=>{resolve=done;});
   const dialog=node('dialog','dialog scene-choice-dialog');
-  const heading=node('h2','','Choose lighting for this switch');heading.id=`scene-choice-${crypto.randomUUID()}`;
+  const heading=node('h2','','Choose lighting for this switch');heading.id=`scene-choice-${randomId()}`;
   dialog.setAttribute('aria-labelledby',heading.id);
   const intro=node('p','help-text','Choose which lighting to start on this switch.');
   const choices=node('div','connection-form');
@@ -678,7 +949,7 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
   if (!remote) actions.append(forget);
   actions.append(retryHandoff);
   const review = node('div', 'connection-trust notice error host-key-review'); review.hidden = true; review.setAttribute('role', 'group');
-  const reviewHeading = node('h2', '', 'The switch’s SSH key changed'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${crypto.randomUUID()}`;
+  const reviewHeading = node('h2', '', 'The switch’s SSH key changed'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${randomId()}`;
   review.setAttribute('aria-labelledby', reviewHeading.id);
   const reviewAddress = node('p'), newKeyLabel = node('p', 'muted');
   const savedFingerprint = node('code', 'certificate-fingerprint'), newFingerprint = node('code', 'certificate-fingerprint');
@@ -908,14 +1179,14 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const reconnect = namedInput('auto_reconnect', 'checkbox');
   const reconnectLabel = node('label', 'check-row'); reconnectLabel.append(reconnect, node('span', '', 'Reconnect controller automatically'));
   const reconnectHelp = node('p', 'help-text', 'Save this controller login securely on this PC.');
-  reconnectHelp.id = `controller-reconnect-help-${crypto.randomUUID()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
+  reconnectHelp.id = `controller-reconnect-help-${randomId()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
   const reconnectHint = node('p', 'help-text');
   const applyPreference = button('Save reconnect preference', 'primary');
   const preferenceActions = node('div', 'connection-actions'); preferenceActions.append(applyPreference);
   const [preferenceNotice, preferenceStatus] = notice();
   reconnectSection.append(reconnectLabel, reconnectHelp, reconnectHint, preferenceActions, preferenceNotice);
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
-  form.id = `controller-form-${crypto.randomUUID()}`;
+  form.id = `controller-form-${randomId()}`;
   const editConnection = button('Edit connection'); editConnection.hidden = true;
   editConnection.setAttribute('aria-controls', form.id); editConnection.setAttribute('aria-expanded', 'false');
   const editorHint = node('p', 'help-text', 'Connection edits are not applied.'); editorHint.hidden = true;
@@ -932,7 +1203,7 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const apiKey = namedInput('api_key', 'password'); apiKey.maxLength = 4096;
   const apiKeyField = passwordField('API key', apiKey), keyHelp = node('small'); apiKeyField.append(keyHelp);
   const consoleId = node('select'); consoleId.name = 'console_id';
-  consoleId.id = `controller-console-${crypto.randomUUID()}`;
+  consoleId.id = `controller-console-${randomId()}`;
   const consoleField = node('div', 'field'), consoleLabel = node('label', '', 'Console'); consoleLabel.htmlFor = consoleId.id;consoleField.append(consoleLabel,consoleId);
   const findConsoles = button('Find consoles', 'quiet'), consoleHelp = node('small', '', 'Enter an API key, then find and choose your console.');
   consoleField.append(findConsoles, consoleHelp);

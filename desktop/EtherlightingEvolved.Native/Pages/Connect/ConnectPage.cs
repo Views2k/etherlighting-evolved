@@ -384,7 +384,7 @@ public sealed class ConnectPage : Page
         // A client that cannot read private access counts as remote: it shows the keys but cannot accept the new one.
         try { access = await request("/api/private-access", "GET", null); }
         catch (Exception) { access = null; }
-        if (active && ReferenceEquals(hostKeys.Open, problem)) review.SetCanAccept(CanAcceptHostKey(access));
+        if (active && ReferenceEquals(hostKeys.Open, problem)) review.SetCanAccept(CanAcceptHostKey(access, Workspace.Api.BaseUri));
     }
 
     void AcceptKey(HostKeyProblem problem)

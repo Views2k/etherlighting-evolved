@@ -73,6 +73,7 @@ foreach ($rid in $Runtime) {
   <key>CFBundleIconFile</key><string>ee.icns</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>Etherlighting Evolved connects to the computer running EE on your network when you use LAN access.</string>
 </dict>
 </plist>
 "@

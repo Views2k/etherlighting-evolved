@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {connectionError, controllerError, controllerReconnectControls, controllerReconnectConfirmed, remoteCanRestore, remoteConnectionError, showSceneChoice, renderSwitchConnection,
-  hostKeyProblem, hostKeyError, canAcceptHostKey, createHostKeyFlow, sshHostKey} from '../preview/connections.mjs';
+  hostKeyProblem, hostKeyError, canAcceptHostKey, createHostKeyFlow, sshHostKey, renderLanAccess, renderLanPairing, lanAccessError, LAN_PAGE_NOTE} from '../preview/connections.mjs';
 import {rendererDom} from './fixtures/renderer-dom.mjs';
 
 test('a request refused by private access names the computer running EE', () => {
@@ -167,6 +167,7 @@ function connectionDom(context){
     element.toggleAttribute=(name,present)=>{if(present)element.setAttribute(name,'');else element.attributes.delete(name);};
     element.removeAttribute=name=>{element.attributes.delete(name);};
     element.reportValidity=()=>true;
+    Object.defineProperty(element,'firstElementChild',{get:()=>element.children[0]});
     element.querySelector=selector=>selector===':scope > button'?element.children.find(child=>child.tagName==='button'):null;
     if(tag==='form')Object.defineProperty(element,'elements',{get:()=>dom.findAll(element,node=>['input','button','select'].includes(node.tagName))});
     return element;
@@ -428,8 +429,12 @@ test('host key errors and replacement failures have their own messages',()=>{
   assert.equal(hostKeyError({code:'local_access_required'}),'A new key can be accepted only in EE on the computer that runs it.');
   for(const error of [{code:'toString'},new Error('timeout'),undefined])
     assert.equal(hostKeyError(error),'The SSH key could not be saved. Connect again to review the key.');
-  for(const value of [LOCAL_ACCESS,READ_ONLY_LOCAL_ACCESS])assert.equal(canAcceptHostKey(value),true);
-  for(const value of [GATEWAY_ACCESS,{can_close_workspace:true},{local:false},{local:'true'},{},null])assert.equal(canAcceptHostKey(value),false);
+  const page={hostname:'127.0.0.1'};
+  for(const value of [LOCAL_ACCESS,READ_ONLY_LOCAL_ACCESS])assert.equal(canAcceptHostKey(value,page),true);
+  for(const value of [GATEWAY_ACCESS,{can_close_workspace:true},{local:false},{local:'true'},{},null])assert.equal(canAcceptHostKey(value,page),false);
+  // A LAN answer can be changed on the way, so only a page on this computer accepts a key.
+  for(const hostname of ['192.168.1.2','ee.example.ts.net'])assert.equal(canAcceptHostKey(LOCAL_ACCESS,{hostname}),false,hostname);
+  assert.equal(canAcceptHostKey(LOCAL_ACCESS,{hostname:'localhost'}),true);
 });
 
 test('a login to a new switch sends the password at once and opens no key review',async context=>{
@@ -626,4 +631,166 @@ test('the host key flow opens reviews by their source and remembers a dismissed 
   assert.equal(flow.fromSession(unsaved,{host:SWITCH,port:22},{pending:false,blocked:true}),false);
   assert.equal(flow.fromSession(unsaved,{host:SWITCH,port:22},idle),true);assert.equal(flow.retry,'none');
   assert.equal(flow.fromSession({...unsaved,logged_in:true},form,idle),false);assert.equal(flow.open,null);
+});
+
+const LAN_STATEMENT='LAN access uses plain HTTP, so traffic between your devices and this PC is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device’s access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on this PC. Use Tailscale for an encrypted connection.';
+const LAN_ADMIN='To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.';
+const LAN_OFF={available:true,enabled:false,ready:false,port:4280,addresses:[],error:null,pairing:null,devices:[],max_devices:16,can_configure:true,can_change_port:true,admin_required:false};
+const LAN_ON={...LAN_OFF,enabled:true,ready:true,can_change_port:false,addresses:[{url:'http://192.168.1.2:4280',interface:'Ethernet'}]};
+const KITCHEN={id:'3f9c0a1b2c3d4e5f',name:'Kitchen iPad',client:'browser',paired_at:'2026-11-16T20:10:12.000Z',paired_from:'10.0.0.1',last_used_at:null,last_address:null};
+function lanPanel(dom,answer,options){
+  const sent=[];
+  const cleanup=renderLanAccess(dom.host,async(...args)=>{sent.push(args);return structuredClone(await answer(...args));},options);dom.after(cleanup);
+  const texts=()=>dom.findAll(dom.host,node=>['p','span','strong','code'].includes(node.tagName)&&!hiddenIn(node)).map(node=>node.textContent);
+  const hiddenIn=node=>{for(let item=node;item;item=item.parentNode)if(item.hidden)return true;return false;};
+  return {sent,cleanup,texts,shown:node=>!hiddenIn(node),
+    toggle:()=>dom.findAll(dom.host,node=>node.name==='lan_access')[0],
+    button:label=>dom.findAll(dom.host,node=>node.tagName==='button'&&node.textContent===label)[0],
+    state:()=>dom.byClass(dom.host,'connection-state')[0].textContent,notice:()=>dom.byClass(dom.host,'connection-notice')[0].textContent};
+}
+
+test('the LAN panel always shows the unencrypted statement',async context=>{
+  for(const answer of [()=>new Promise(()=>{}),()=>LAN_OFF,()=>LAN_ON,()=>({available:false,enabled:false,ready:false,can_configure:false,admin_required:false}),
+    ()=>({...LAN_ON,pairing:null,devices:null,can_configure:false,admin_required:true})]){
+    const dom=connectionDom(context),ui=lanPanel(dom,answer);await flush();
+    const statement=dom.byClass(dom.host,'lan-access-warning')[0];
+    assert.equal(statement.textContent,LAN_STATEMENT);assert.equal(ui.shown(statement),true);
+    assert.equal(dom.findAll(dom.host,node=>node.tagName==='h2')[0].textContent,'LAN access');
+  }
+});
+
+test('LAN access stays off until Apply, saves a port change while off, and reports the result',async context=>{
+  const dom=connectionDom(context);let current=LAN_OFF;
+  const ui=lanPanel(dom,(path,method,body)=>{
+    if(method==='PUT')current=body.enabled?LAN_ON:{...LAN_OFF,port:body.port??4280};
+    return current;
+  });
+  await flush();
+  assert.equal(ui.state(),'LAN access is off');assert.equal(ui.button('Apply setting').disabled,true);
+  assert.equal(ui.texts().includes('Before you turn on LAN access, make sure Windows lists this network as private. If Windows then asks about Node.js JavaScript Runtime, allow it on private networks only. EE’s service runs on Node.js. EE does not check the firewall, so if a device cannot open the address, check the firewall settings on this PC.'),true);
+  const port=dom.findAll(dom.host,node=>node.name==='lan_port')[0];
+  port.value='80';port.listeners.get('input')();
+  assert.equal(ui.notice(),'Enter a whole-number port between 1024 and 65535.');assert.equal(ui.button('Apply setting').disabled,true);
+  port.value='4281';port.listeners.get('input')();ui.button('Apply setting').click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access','PUT',{enabled:false,port:4281}]);assert.equal(ui.notice(),'LAN port saved.');
+  ui.toggle().checked=true;ui.toggle().listeners.get('change')();assert.equal(ui.cleanup.hasChanges(),true);
+  ui.button('Apply setting').click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access','PUT',{enabled:true}]);
+  assert.equal(ui.notice(),'LAN access enabled.');assert.equal(ui.state(),'LAN access is on');
+  assert.equal(ui.texts().includes('http://192.168.1.2:4280 (Ethernet)'),true);assert.equal(ui.shown(ui.button('Copy address')),true);
+  assert.equal(ui.cleanup.hasChanges(),false);
+});
+
+test('a saved setting that did not open is retried, and an address-less PC says so',async context=>{
+  const dom=connectionDom(context);
+  const ui=lanPanel(dom,(_path,method)=>method==='PUT'?{...LAN_ON,addresses:[]}:{...LAN_OFF,enabled:true,can_change_port:false,error:{code:'lan_access_port_in_use',message:'x'}});
+  await flush();
+  assert.equal(ui.state(),'Another program uses this port. Choose another LAN port in Connection options.');
+  ui.button('Retry LAN access').click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access','PUT',{enabled:true}]);
+  assert.equal(ui.state(),'LAN access is on, but this PC has no private network address. Connect it to your network, then refresh.');
+});
+
+test('with administration access the LAN panel shows the code, its expiry and the paired devices',async context=>{
+  context.mock.timers.enable({apis:['Date','setInterval'],now:Date.parse('2026-11-16T20:10:28.000Z')});
+  const dom=connectionDom(context);
+  const used={...KITCHEN,last_used_at:'2026-11-16T20:14:03.000Z',last_address:'10.0.0.1'},office={...KITCHEN,id:'0123456789abcdef',name:'Office PC',client:'app'};
+  let current={...LAN_ON,devices:[used]};
+  const ui=lanPanel(dom,(path,method)=>{
+    if(path==='/api/lan-access/code')current={...current,pairing:{code:'482913',expires_at:'2026-11-16T20:15:00.000Z',attempts_left:5,ended:null}};
+    if(method==='DELETE')current={...current,devices:current.devices.filter(device=>device.id!==KITCHEN.id)};
+    return current;
+  });
+  await flush();
+  const date=new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric'}).format(new Date(KITCHEN.paired_at));
+  const time=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit'}).format(new Date(used.last_used_at));
+  assert.ok(ui.texts().includes('Kitchen iPad'));assert.ok(ui.texts().includes(`Browser · Paired ${date} from 10.0.0.1`));
+  assert.ok(ui.texts().includes(`Last used from 10.0.0.1 at ${time}`));
+  ui.button('Pair a device').click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access/code','POST']);
+  assert.equal(dom.byClass(dom.host,'lan-pairing-code')[0].textContent,'482 913');
+  assert.ok(ui.texts().includes('Open the address above on the other device and enter this code. It works once and expires in 4:32.'));
+  assert.equal(ui.shown(ui.button('New code')),true);assert.equal(ui.shown(ui.button('Pair a device')),false);
+  context.mock.timers.tick(1000);
+  assert.ok(ui.texts().includes('Open the address above on the other device and enter this code. It works once and expires in 4:31.'));
+  current={...current,devices:[used,office],pairing:{...current.pairing,code:null,ended:'used'}};
+  const reads=ui.sent.length;context.mock.timers.tick(1000);await flush();
+  assert.deepEqual(ui.sent.slice(reads),[['/api/lan-access']]);
+  assert.equal(ui.notice(),'Paired Office PC.');assert.ok(ui.texts().includes('Desktop app · Paired '+date+' from 10.0.0.1'));
+  context.mock.timers.tick(4000);await flush();assert.equal(ui.sent.length,reads+1);
+  dom.findAll(dom.host,node=>node.tagName==='button'&&node.textContent==='Remove')[0].click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access/devices/3f9c0a1b2c3d4e5f','DELETE']);
+  assert.equal(ui.notice(),'Removed Kitchen iPad. It needs a new pairing code to connect again.');
+  assert.equal(ui.texts().includes('Kitchen iPad'),false);
+});
+
+test('each ended pairing code shows its reason',async context=>{
+  for(const [ended,text] of [['expired','The pairing code expired. Choose Pair a device to show a new one.'],
+    ['attempts','The pairing code ended after 5 wrong attempts. If no one at your devices entered them, another device on your network may be trying to pair. Choose Pair a device to show a new one.'],
+    ['failed','The device could not be saved. Check the local data folder, then choose Pair a device to show a new code.'],['used','The pairing code was used.']]){
+    const dom=connectionDom(context),ui=lanPanel(dom,()=>({...LAN_ON,pairing:{code:null,expires_at:'2026-11-16T20:15:00.000Z',attempts_left:ended==='attempts'?0:5,ended}}));
+    await flush();assert.equal(ui.notice(),text,ended);
+  }
+  const full=connectionDom(context),ui=lanPanel(full,()=>({...LAN_ON,devices:Array.from({length:16},(_,index)=>({...KITCHEN,id:index.toString(16).padStart(16,'0')}))}));
+  await flush();
+  assert.ok(ui.texts().includes('16 devices are paired, the most EE allows. Remove one before pairing another.'));assert.equal(ui.button('Pair a device').disabled,true);
+});
+
+test('turning LAN access off with devices paired asks first',async context=>{
+  const dom=connectionDom(context);
+  const ui=lanPanel(dom,(_path,method)=>method==='PUT'?LAN_OFF:{...LAN_ON,devices:[KITCHEN]});
+  await flush();
+  ui.toggle().checked=false;ui.toggle().listeners.get('change')();
+  ui.button('Apply setting').click();await flush();
+  assert.equal(dom.findAll(dom.doc.body,node=>node.tagName==='h2'&&node.textContent==='Turn off LAN access?').length,1);
+  assert.ok(dom.findAll(dom.doc.body,node=>node.textContent==='All paired devices are removed and disconnected. Each one needs a new pairing code after you turn LAN access on again.').length);
+  dom.button('Cancel').click();await flush();
+  assert.equal(ui.sent.some(call=>call[1]==='PUT'),false);assert.equal(ui.cleanup.hasChanges(),true);
+  ui.button('Apply setting').click();await flush();dom.button('Turn off').click();await flush();
+  assert.deepEqual(ui.sent.at(-1),['/api/lan-access','PUT',{enabled:false}]);assert.equal(ui.notice(),'LAN access disabled.');
+});
+
+test('LAN access is read-only without administration access and on remote pages',async context=>{
+  const dom=connectionDom(context),ui=lanPanel(dom,()=>({...LAN_ON,pairing:null,devices:null,can_configure:false,admin_required:true}));
+  await flush();
+  assert.ok(ui.texts().includes(LAN_ADMIN));assert.equal(ui.toggle().disabled,true);assert.equal(ui.button('Apply setting').disabled,true);
+  assert.equal(ui.shown(ui.button('Pair a device')),false);assert.equal(ui.texts().includes('Paired devices'),false);
+  ui.button('Refresh LAN access').click();await flush();assert.deepEqual(ui.sent,[['/api/lan-access'],['/api/lan-access']]);
+  assert.equal(lanAccessError({code:'admin_required'}),LAN_ADMIN);
+  for(const [lan,lines] of [[true,[LAN_PAGE_NOTE,'Change this setting in EE on the host computer.']],[false,['Change this setting in EE on the host computer.']]]){
+    const remote=connectionDom(context),page=lanPanel(remote,()=>assert.fail('A remote page reads no LAN access status.'),{remote:true,lan});
+    await flush();
+    assert.deepEqual(page.texts(),lines);assert.deepEqual(page.sent,[]);assert.equal(page.cleanup.hasChanges(),false);
+  }
+  assert.equal(LAN_PAGE_NOTE,'This device uses LAN access. Its connection to the computer running EE is not encrypted.');
+});
+
+test('the pairing screen sends the code and name, shows the warning, and reports a refusal',async context=>{
+  const dom=connectionDom(context),sent=[];let paired=0,refuse=true;
+  renderLanPairing(dom.host,{request:async(...args)=>{
+    sent.push(args);
+    if(refuse)throw Object.assign(new Error('x'),{code:'lan_pairing_failed'});
+    return {paired:true};
+  },onPaired:()=>{paired++;}});
+  const form=dom.findAll(dom.host,node=>node.tagName==='form')[0],field=name=>dom.findAll(form,node=>node.name===name)[0];
+  const texts=()=>dom.findAll(dom.host,node=>node.tagName==='p').map(node=>node.textContent);
+  assert.equal(dom.findAll(dom.host,node=>node.tagName==='h1')[0].textContent,'Pair this device');
+  assert.ok(texts().includes('Enter the pairing code shown on the computer running EE. On that computer, open Settings, go to LAN access and choose Pair a device.'));
+  assert.ok(texts().includes('EE on another device never asks for switch or UniFi passwords. If it does, do not enter them.'));
+  assert.ok(texts().includes('This connection uses plain HTTP and is not encrypted. Anyone who can watch or change traffic on your network can read workspace data and this device’s access key, and can use the key to control EE. EE does not send switch or UniFi passwords over it.'));
+  assert.deepEqual([field('pairing_code').inputMode,field('pairing_code').autocomplete,field('pairing_code').maxLength],['numeric','one-time-code',7]);
+  assert.equal(field('device_name').placeholder,'For example, Kitchen iPad');
+  const submit=()=>form.listeners.get('submit')({preventDefault(){}});
+  field('pairing_code').value='48291';await submit();
+  assert.deepEqual(sent,[]);assert.equal(dom.byClass(dom.host,'connection-notice')[0].textContent,'Enter the 6-digit code.');
+  field('pairing_code').value='482 913';field('device_name').value='  ';await submit();
+  assert.equal(dom.byClass(dom.host,'connection-notice')[0].textContent,'Enter a name for this device, up to 40 characters.');
+  field('device_name').value=' Kitchen iPad ';await submit();
+  assert.deepEqual(sent,[['/api/lan-access/pair','POST',{code:'482913',name:'Kitchen iPad',client:'browser'}]]);
+  assert.equal(dom.byClass(dom.host,'connection-notice')[0].textContent,'The pairing code is wrong or has expired. Check the code on the computer running EE, or choose Pair a device there to show a new one.');
+  assert.equal(paired,0);
+  refuse=false;field('pairing_code').value='482-913';await submit();
+  assert.equal(paired,1);assert.equal(dom.byClass(dom.host,'connection-notice')[0].textContent,'Paired. Opening the workspace…');
+  const revoked=connectionDom(context);renderLanPairing(revoked.host,{request:async()=>({}),revoked:true,onPaired(){}});
+  assert.ok(revoked.findAll(revoked.host,node=>node.tagName==='p').some(node=>node.textContent==='This device is not paired. Enter a new pairing code from the computer running EE to continue.'));
 });

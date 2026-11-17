@@ -9,15 +9,22 @@ const KEY='a'.repeat(64),keyed={'x-ee-admin-key':KEY};
 const managerStatus={available:true,enabled:true,ready:true,url:'https://fixture.fixture-tailnet.ts.net:8444',error:null,
   setup_action:'approve',action_url:'https://login.tailscale.com/a/fixture',audience:'owner',https_port:8444,can_change_port:true};
 
-function fixture({live=true,route={route:'removed',https_port:8444},admin=createAdminAccess({key:KEY,port:4180})}={}){
+// The LAN access manager's answer with administration access, as status() builds it.
+const lanStatus=({admin,closing})=>({available:true,enabled:true,ready:true,port:4280,addresses:[{url:'http://192.168.1.2:4280',interface:'Ethernet'}],
+  error:null,pairing:admin?{code:'482913',expires_at:'2026-11-16T20:15:00.000Z',attempts_left:5,ended:null}:null,devices:admin?[]:null,max_devices:16,
+  can_configure:admin&&!closing,can_change_port:false,admin_required:!admin});
+
+function fixture({live=true,route={route:'removed',https_port:8444},admin=createAdminAccess({key:KEY,port:4180}),lanFailure}={}){
   let finishClose,failClose,active,closes=0;
-  const calls=[],retries=[],configured=[],exits=[],events=[];
+  const calls=[],retries=[],configured=[],exits=[],events=[],lan=[];
   const child={exitCode:null,stdin:{writableEnded:false,end:line=>calls.push(`engine ${line.trim()}`)}};
+  const lanStep=name=>async(...args)=>{lan.push([name,...args]);if(lanFailure)throw lanFailure;};
   const workspace=createWorkspaceServer({root:'.',port:4180,live,backendPort:1,token:'fixture',child,
     diagnostics:{record:event=>events.push(event),summary:()=>({})},
     privateAccess:{status:()=>({...managerStatus}),initialize:async()=>calls.push('refresh'),login:async()=>calls.push('login'),
       close:async()=>calls.push('private closed'),shutdown:async()=>{calls.push('private shutdown');return route;},
       configure:async(...args)=>{configured.push(JSON.stringify(args));calls.push('configure');}},
+    lanAccess:{status:lanStatus,configure:lanStep('configure'),issueCode:lanStep('code'),revoke:lanStep('revoke'),close:async()=>lan.push(['close'])},
     admin,
     closeWorkspace:()=>{closes++;return new Promise((resolve,reject)=>{finishClose=resolve;failClose=reject;});},
     keepAvailable:options=>{active=options.active;return {observe:()=>retries.push('observe'),stop:()=>retries.push('stop')};},
@@ -30,7 +37,7 @@ function fixture({live=true,route={route:'removed',https_port:8444},admin=create
     const req={url,method,headers:{host:'127.0.0.1:4180',...headers},async *[Symbol.asyncIterator](){if(body)yield await body;}};
     await handler(req,response);return response;
   }
-  return {request,calls,retries,configured,exits,events,child,workspace,closes:()=>closes,active:()=>active(),
+  return {request,calls,retries,configured,exits,events,lan,child,workspace,closes:()=>closes,active:()=>active(),
     finish:()=>finishClose(),fail:()=>failClose(new Error('unconfirmed'))};
 }
 const detail=response=>JSON.parse(response.body).detail;
@@ -215,7 +222,7 @@ test('a browser trades a code for the cookies once, and only on a navigation wit
   assert.equal(opened.status,303);assert.equal(opened.body,undefined);
   assert.equal(opened.headers.Location,'/');assert.equal(opened.headers['Cache-Control'],'no-store');assert.equal(opened.headers['Referrer-Policy'],'no-referrer');
   const cookies=opened.headers['Set-Cookie'];
-  assert.equal(cookies.length,2);assert.match(cookies[0],/^ee_admin_4180=[0-9a-f]{64}; Path=\/api\/private-access; HttpOnly; SameSite=Strict$/);
+  assert.equal(cookies.length,3);assert.match(cookies[0],/^ee_admin_4180=[0-9a-f]{64}; Path=\/api\/private-access; HttpOnly; SameSite=Strict$/);
   const again=await f.request(`/?admin_code=${code}`,'GET',undefined,{});
   assert.equal(again.status,303);assert.equal(again.headers['Set-Cookie'],undefined);
   const browser={cookie:cookies[0].split(';')[0]};
@@ -231,7 +238,7 @@ test('a source run prints an administration link that works once, even a day lat
   assert.match(printed,/^Administration link \(works once\): http:\/\/127\.0\.0\.1:4180\/\?admin_code=[0-9a-f]{64}$/);
   time+=86400000;
   const url=new URL(printed.slice(printed.indexOf('http://'))),opened=await f.request(url.pathname+url.search,'GET',undefined,{});
-  assert.equal(opened.status,303);assert.equal(opened.headers['Set-Cookie'].length,2);
+  assert.equal(opened.status,303);assert.equal(opened.headers['Set-Cookie'].length,3);
   assert.equal((await f.request(url.pathname+url.search,'GET',undefined,{})).headers['Set-Cookie'],undefined);
 });
 
@@ -244,7 +251,7 @@ test('a repeated code redeems nothing, and each code still works on its own afte
   const f=fixture(),first=await linkCode(f),second=await linkCode(f);
   const both=await f.request(`/?admin_code=${first}&admin_code=${second}`,'GET',undefined,{});
   assert.equal(both.status,303);assert.equal(both.headers['Set-Cookie'],undefined);
-  for(const code of [first,second])assert.equal((await f.request(`/?admin_code=${code}`,'GET',undefined,{})).headers['Set-Cookie'].length,2);
+  for(const code of [first,second])assert.equal((await f.request(`/?admin_code=${code}`,'GET',undefined,{})).headers['Set-Cookie'].length,3);
   assert.equal((await f.request('/?admin_code=bad','GET',undefined,{})).headers['Set-Cookie'],undefined);
 });
 
@@ -262,4 +269,45 @@ test('the gateway removes the administration key from its environment before it 
   const source=await readFile(new URL('../preview/server.mjs',import.meta.url),'utf8');
   const removed=source.indexOf('delete process.env.EE_ADMIN_KEY');
   assert.ok(removed>0);assert.ok(removed<source.indexOf('spawn('));
+});
+
+test('ending private access when the workspace closes also closes the LAN listener',async()=>{
+  for(const live of [true,false]){
+    const f=fixture({live});await f.workspace.closePrivate();
+    assert.deepEqual(f.lan,[['close']]);assert.deepEqual(f.calls,[live?'private shutdown':'private closed']);
+  }
+  const signal=fixture();signal.workspace.stop();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(signal.lan,[['close']]);
+});
+
+test('LAN access changes pass to the manager and are refused while EE closes',async()=>{
+  const f=fixture();
+  assert.equal((await f.request('/api/lan-access','PUT','{"enabled":true,"port":4281}')).status,200);
+  assert.equal((await f.request('/api/lan-access/code','POST')).status,200);
+  const removed=await f.request('/api/lan-access/devices/3f9c0a1b2c3d4e5f','DELETE');
+  assert.equal(removed.status,200);assert.equal(removed.headers['X-Content-Type-Options'],'nosniff');
+  assert.equal(JSON.parse(removed.body).pairing.code,'482913');
+  assert.deepEqual(f.lan,[['configure',true,{port:4281}],['code'],['revoke','3f9c0a1b2c3d4e5f']]);
+  for(const body of ['{"enabled":"yes"}','{"enabled":true,"port":80}','{"enabled":true,"port":4280.5}','{"enabled":true,"extra":1}','[]','x'])
+    assert.deepEqual(detail(await f.request('/api/lan-access','PUT',body)),{code:'invalid',message:'Choose a valid LAN access setting and a port between 1024 and 65535.'});
+  assert.equal((await f.request('/api/lan-access','PUT','{"enabled":true,"padding":"'+'a'.repeat(1024)+'"}')).status,413);
+  for(const [url,method] of [['/api/lan-access','POST'],['/api/lan-access/code','GET'],['/api/lan-access/devices/3f9c0a1b2c3d4e5f','GET']]){
+    const refused=await f.request(url,method);assert.equal(refused.status,405,`${method} ${url}`);assert.equal(refused.body,undefined);
+  }
+  const closing=f.request('/api/workspace/close','POST');
+  const refused=await f.request('/api/lan-access','PUT','{"enabled":false}');
+  assert.equal(refused.status,503);assert.deepEqual(detail(refused),{code:'workspace_closing',message:'EE is closing. Reopen EE to change LAN access.'});
+  assert.equal(JSON.parse((await f.request('/api/lan-access','GET')).body).can_configure,false);
+  assert.equal(f.lan.length,3);f.finish();await closing;
+});
+
+test('LAN access refusals from the manager keep their status, and other failures report the status',async()=>{
+  const limit=fixture({lanFailure:Object.assign(new Error('16 devices are paired, the most EE allows. Remove one before pairing another.'),{code:'lan_access_device_limit',status:409})});
+  const refused=await limit.request('/api/lan-access/code','POST');
+  assert.equal(refused.status,409);assert.equal(detail(refused).code,'lan_access_device_limit');
+  const failed=await fixture({lanFailure:new Error('unexpected')}).request('/api/lan-access','PUT','{"enabled":true}');
+  assert.equal(failed.status,409);
+  assert.deepEqual(detail(failed),{code:'lan_access_failed',message:'LAN access could not be updated. Refresh status and try again.'});
+  assert.equal(JSON.parse(failed.body).status.enabled,true);
 });

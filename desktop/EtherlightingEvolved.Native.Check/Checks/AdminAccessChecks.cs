@@ -91,7 +91,7 @@ internal static class AdminAccessChecks
         }
     }
 
-    /// <summary>The Mobile and remote access panel in a window connected to a local gateway it did not start.</summary>
+    /// <summary>The Tailscale private access panel in a window connected to a local gateway it did not start.</summary>
     public static void Panel(Action<bool, string> check)
     {
         var locked = new JsonObject { ["available"] = true, ["enabled"] = true, ["ready"] = true, ["https_port"] = 8444, ["can_configure"] = false, ["admin_required"] = true };
@@ -170,10 +170,10 @@ internal static class AdminAccessChecks
         using (var opened = await Send(HttpMethod.Get, link.PathAndQuery))
         {
             var cookies = Cookies(opened);
-            check(opened.StatusCode == HttpStatusCode.SeeOther && opened.Headers.Location?.OriginalString == "/" && cookies.Length == 2
+            check(opened.StatusCode == HttpStatusCode.SeeOther && opened.Headers.Location?.OriginalString == "/" && cookies.Length == 3
                   && cookies.All(cookie => cookie.StartsWith($"ee_admin_{port}=", StringComparison.Ordinal) && cookie.Contains("HttpOnly") && cookie.Contains("SameSite=Strict"))
-                  && cookies.Any(cookie => cookie.Contains("Path=/api/private-access;")) && cookies.Any(cookie => cookie.Contains("Path=/api/workspace/close;")),
-                "a browser link sets the two path-limited cookies and returns to the workspace");
+                  && new[] { "/api/private-access", "/api/lan-access", "/api/workspace/close" }.All(path => cookies.Any(cookie => cookie.Contains($"Path={path};"))),
+                "a browser link sets the three path-limited cookies and returns to the workspace");
             using (var again = await Send(HttpMethod.Get, link.PathAndQuery))
                 check(again.StatusCode == HttpStatusCode.SeeOther && Cookies(again).Length == 0, "a browser link works once");
             var cookie = cookies.FirstOrDefault()?.Split(';')[0] ?? "";
@@ -185,7 +185,7 @@ internal static class AdminAccessChecks
         using (var withOrigin = await Send(HttpMethod.Get, fresh.PathAndQuery, ("Origin", $"http://127.0.0.1:{port}")))
             check(Cookies(withOrigin).Length == 0, "a request with an Origin header does not use a browser link");
         using (var navigation = await Send(HttpMethod.Get, fresh.PathAndQuery))
-            check(Cookies(navigation).Length == 2, "the same link still works for a browser navigation afterward");
+            check(Cookies(navigation).Length == 3, "the same link still works for a browser navigation afterward");
     }
 
     static (PrivateAccessPanel Panel, Window Window) Show(Func<string, string, JsonNode?> answer)

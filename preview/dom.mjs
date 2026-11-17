@@ -24,3 +24,9 @@ export function select(options, value) {
   element.value = value ?? options[0]?.[0] ?? '';
   return element;
 }
+
+// 32 lowercase hexadecimal characters. Browsers offer getRandomValues on plain HTTP pages too, such as a LAN access
+// address, where the UUID function is missing.
+export function randomId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}

@@ -1,6 +1,6 @@
 import {randomBytes,timingSafeEqual} from 'node:crypto';
 
-// Tailscale settings and closing the workspace need a per-launch secret. The desktop app that started the gateway
+// Tailscale and LAN access settings and closing the workspace need a per-launch secret. The desktop app that started the gateway
 // sends the key in a header. A browser gets the key's stand-in, a cookie, by redeeming a single-use code that the
 // desktop app requested or that a source run printed.
 export const ADMIN_HEADER='x-ee-admin-key';
@@ -8,13 +8,14 @@ export const ADMIN_CODE_PARAM='admin_code';
 export const LINK_TTL_MS=120000,MAX_ADMIN_CODES=8;
 export const ADMIN_MESSAGES=Object.freeze({
   privateAccess:'To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.',
+  lanAccess:'To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.',
   close:'To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.',
   link:'This request needs the administration key of the EE app that started this workspace.',
   closing:'EE is closing. Open EE again to use the browser workspace.',
 });
-// The cookie is sent only with requests under the two administration paths. Browsers do not separate cookies by
+// The cookie is sent only with requests under the three administration paths. Browsers do not separate cookies by
 // port, so another server on 127.0.0.1 still receives it for requests under those paths.
-const COOKIE_PATHS=['/api/private-access','/api/workspace/close'];
+const COOKIE_PATHS=['/api/private-access','/api/lan-access','/api/workspace/close'];
 const SECRET=/^[0-9a-f]{64}$/;
 
 function equal(value,expected){

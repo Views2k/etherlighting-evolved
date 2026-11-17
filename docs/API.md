@@ -186,6 +186,11 @@ These requests are local-only:
 | `POST /api/controller/disconnect` | UniFi Network setup: disconnects the controller |
 | `PUT /api/controller/preferences` | UniFi Network setup: saves or removes the controller login |
 | `PUT /api/fps` | Output tuning outside the scene; no client sends it |
+| `GET /api/lan-access` | LAN access status, pairing code and paired devices on the computer running EE |
+| `PUT /api/lan-access` | LAN access settings |
+| `POST /api/lan-access/code` | Shows a new pairing code on the computer running EE |
+| `DELETE /api/lan-access/devices/{device_id}` | Removes a paired LAN device |
+| `POST /api/lan-access/pair` | Answered by the LAN gateway before route checks; never forwarded |
 | `PUT /api/output` | Output tuning outside the scene; no client sends it |
 | `PUT /api/private-access` | Tailscale settings |
 | `POST /api/private-access/login` | Starts Tailscale sign-in on the host computer |
@@ -342,6 +347,241 @@ when EE next starts. A removal that cannot be confirmed does not make the close 
 | 409 | `{"detail": "The service has not confirmed shutdown. Wait and try again."}` |
 
 A refused request changes nothing, so lighting and private access keep working.
+
+## LAN access
+
+LAN access lets devices on the owner's network open the workspace at the address of the computer running EE, over
+plain HTTP and without Tailscale. It is off until the owner turns it on, it runs only in live mode, and each device
+pairs with a single-use code shown on the computer running EE. Paired devices get the same route limits as devices on
+Tailscale: the LAN gateway compares each request with `preview/remote-routes.mjs` exactly as the private gateway does.
+Tailscale private access and LAN access can both be on; they use separate listeners and separate device lists.
+
+### The unencrypted connection
+
+Traffic between a paired device and the computer running EE is not encrypted. Anyone who can watch or change traffic
+on the network can read what crosses it: lighting, fan and handoff commands and scene changes (REST and WebSocket);
+workspace data, including the session status (the switch address, SSH port and SSH username, never passwords), the
+switch model and port status, port names, the UniFi Network address and site names, device names and telemetry from
+UniFi Network when it is connected, profiles, schedules, rules, saved effect settings, fan status and the Tailscale
+private address when private access is on; the device's key, in its cookie, with every request; and the pairing code,
+once. With a copied key they can do anything a paired device can until that device is removed or LAN access is turned
+off, and they can change what a device shows.
+
+LAN access never carries switch passwords and saved logins (`POST /api/session/login`, `/api/session/forget`,
+`/api/session/logout` and the host-key routes are local-only, and `GET /api/session` returns no passwords), UniFi
+Network passwords and API keys (the controller setup routes are local-only), the administration key or cookie, or
+saved key hashes. The desktop client also refuses to send `POST /api/session/login`, `POST /api/controller/connect`,
+`POST /api/controller/consoles` and `PUT /api/controller/preferences` to a LAN address, with
+`403 local_access_required`, before anything is sent. Use Tailscale for an encrypted connection.
+
+### Listener
+
+The LAN gateway listens on `0.0.0.0:<port>`, IPv4 only, with port 4280 unless the owner chose another from 1024 to
+65535. The port is fixed: when it is busy, LAN access reports `lan_access_port_in_use` instead of trying another, so
+the addresses saved on devices keep working. The gateway keeps a connection only when it arrived at one of this
+computer's current private IPv4 interface addresses (10/8, 172.16/12 or 192.168/16) from a private IPv4 address;
+anything else, including Tailscale's 100.64/10 addresses, loopback, link-local, public and IPv6 addresses, is closed
+before any HTTP is read. Any private source address is accepted, so devices on other networks that the router routes
+to this computer can pair. The gateway accepts at most 64 connections, at most 16 from one address, and request
+headers of at most 8 KB.
+
+Each request is then checked:
+
+1. `Host` must be exactly `<address the connection arrived on>:<port>`, and that address must still be one of this
+   computer's private addresses. A DNS name, another port or a public address is refused, so a page on a name that
+   resolves to this computer cannot use a device's cookie or guess codes.
+2. `Host`, `Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Mode` and `Cookie` may appear only once, without control characters,
+   and at most 1024 characters long (4096 for `Cookie`). Any `Authorization`, `Forwarded` or `X-Forwarded-*` header is
+   refused.
+3. `Origin`, when present, must be `http://<Host>`, and changes and WebSocket upgrades must send it. `Sec-Fetch-Site`
+   other than `same-origin` or `none` is refused except for a `GET` navigation to a workspace page.
+4. The `ee_lan_<port>` cookie identifies a paired device. Without one, only workspace pages (`GET` and `HEAD` outside
+   `/api`), `GET /api/workspace` and `POST /api/lan-access/pair` are answered.
+
+Every refusal in steps 1 to 3 is:
+
+```json
+{ "detail": { "code": "lan_access_denied", "message": "Open EE at the address shown in LAN access on the computer running EE." } }
+```
+
+A path that cannot be classified gets `lan_access_denied` with "This request cannot be opened through LAN access.",
+and any other request from a device that is not paired gets:
+
+```json
+{ "detail": { "code": "lan_pairing_required", "message": "Pair this device first. Enter the pairing code shown on the computer running EE." } }
+```
+
+A paired device's requests then follow the route entries: `GET /api/private-access` gets the same read-only Tailscale
+status the private gateway gives, without `local`, and every request without a remote entry gets
+`403 local_access_required`. A WebSocket upgrade is accepted only at exactly `/api/ws` and only for a paired device;
+the gateway checks each socket again every 15 seconds and at once when a device is removed, including a socket whose
+upgrade the engine has not answered yet. A request body over
+1 MiB gets `413 too_large`. The gateway forwards neither `Cookie` nor `X-EE-Admin-Key`, always sends an `Origin`
+upstream, so `/?admin_code=` is never redeemed through it, and removes `Set-Cookie` from upstream answers.
+
+Do not forward the LAN port on a router. A router that forwards a public port and rewrites the source address would
+pass the connection check; the `Host` check and pairing still apply.
+
+### Pairing and the device cookie
+
+`POST /api/lan-access/code` on the computer running EE shows a code of 6 digits. Only one code is active; a new code
+replaces the old one. A code works once and ends after 5 minutes, after 5 wrong attempts, when it is used, or when
+LAN access turns off or EE stops. Codes are kept in memory only and never appear in a status without administration
+access. Attempts are checked one at a time.
+
+The device sends the code on the LAN gateway. The body is at most 1 KB:
+
+```json
+{ "code": "482 913", "name": "Kitchen iPad", "client": "browser" }
+```
+
+Spaces and hyphens in `code` are ignored. `name` is trimmed and must have 1 to 40 characters without control, format
+or line and paragraph separator characters; duplicate names are allowed. `client` is `browser` (the default) or
+`app` and only labels the device in the list. A body that fails these checks gets `400 invalid` and costs no attempt.
+A wrong or missing code gets `403 lan_pairing_failed`. A matching code is used up at once; if the device cannot be
+saved, the answer is `500 lan_pairing_save_failed` and the owner shows a new code. Success:
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Set-Cookie: ee_lan_4280=<64 lowercase hex>; Path=/api; Max-Age=31536000; HttpOnly; SameSite=Strict
+
+{ "paired": true, "device": { "id": "3f9c0a1b2c3d4e5f", "name": "Kitchen iPad", "client": "browser", "paired_at": "2026-11-16T20:10:12.000Z" } }
+```
+
+The key is never in the body, and the cookie has no `Secure` attribute because the connection is plain HTTP. The
+desktop client reads the key from `Set-Cookie` and sends `Cookie: ee_lan_<port>=<key>` itself, also on the WebSocket
+upgrade. Every `ee_lan_<port>` entry in the `Cookie` header is compared with every saved key hash, so a decoy cookie
+cannot hide the device's own. Browsers send cookies to every port of the same host: `Path=/api` limits the cookie to
+API requests, but another service at the same address on a different port receives it for paths under `/api`, as the
+administration cookie on 127.0.0.1 does.
+
+A device that pairs again gets a new entry. At most 16 devices can be paired. A device's pairing does not depend on
+its own address. When the address of the computer running EE changes, each device opens the new address and pairs
+again.
+
+On the LAN gateway, `GET /api/workspace` answers whether this device is paired:
+
+```json
+{ "live": true, "remote": true, "lan": true, "paired": false }
+```
+
+The local gateway's answer has no `lan` field, and the private gateway's answer is unchanged.
+
+### Routes on the local gateway
+
+| Request | Access | Body |
+|---|---|---|
+| `GET /api/lan-access` | Anyone local; administration access gets the full form | none |
+| `PUT /api/lan-access` | Administration | `{"enabled": true, "port": 4280}`; `port` (1024–65535) is optional; no other keys; at most 1 KB |
+| `POST /api/lan-access/code` | Administration | none |
+| `DELETE /api/lan-access/devices/{device_id}` | Administration; `device_id` is 16 lowercase hexadecimal characters | none |
+
+Each answers 200 with the status below. Administration access is the key header or the `ee_admin_<port>` cookie from
+an administration link, which also sets that cookie with `Path=/api/lan-access`. Without it, a change gets
+`403 admin_required` before the body is read:
+
+```json
+{ "detail": { "code": "admin_required", "message": "To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started." } }
+```
+
+Another method on these paths gets 405 with an empty body, and any other URL that starts with `/api/lan-access`,
+including `/api/lan-access/pair`, gets `404 not_found` ("This LAN access request does not exist.") and never
+reaches the engine. In demo mode every request answers `{"available": false, "enabled": false, "ready": false,
+"can_configure": false, "admin_required": <no access>}`. These routes are local-only on both remote gateways.
+
+Turning LAN access on opens the listener first and saves the setting only once it is open. Turning it off closes the
+listener and every connection, ends the code, removes every paired device and saves the off setting; `PUT` with
+`"enabled": false` writes it even when LAN access is already off. The port changes only while LAN access is off.
+Removing a device refuses its requests at once, closes its WebSockets before the answer is sent, and then saves the
+list. When EE closes, the listener stops and the setting stays, so the next start opens it again; a saved setting
+that cannot open its port is reported in `error`, and `PUT {"enabled": true}` retries it.
+
+### Status
+
+With administration access:
+
+```json
+{
+  "available": true, "enabled": true, "ready": true, "port": 4280,
+  "addresses": [ { "url": "http://192.168.1.2:4280", "interface": "Ethernet" } ],
+  "error": null,
+  "pairing": { "code": "482913", "expires_at": "2026-11-16T20:15:00.000Z", "attempts_left": 5, "ended": null },
+  "devices": [ { "id": "3f9c0a1b2c3d4e5f", "name": "Kitchen iPad", "client": "browser",
+                 "paired_at": "2026-11-16T20:10:12.000Z", "paired_from": "10.0.0.1",
+                 "last_used_at": "2026-11-16T20:14:03.000Z", "last_address": "10.0.0.1" } ],
+  "max_devices": 16, "can_configure": true, "can_change_port": false, "admin_required": false
+}
+```
+
+`addresses` lists each private IPv4 address of this computer's network interfaces, 192.168/16 first, then 10/8, then
+172.16/12, with the interface name, as read at that moment; it is empty while LAN access is not ready. Hyper-V, WSL,
+Docker and VPN adapters are listed too. `pairing` is null until a code is shown after LAN access turns on; after a
+code ends, `code` is null and `ended` is `used`, `expired`, `attempts` or `failed`. `last_used_at` and `last_address`
+are kept in memory only and are null until the device makes a request after EE starts. Without administration access,
+`pairing` and `devices` are null, `can_configure` and `can_change_port` are false and `admin_required` is true. While
+EE is closing, `can_configure` is false and changes get `503 workspace_closing` ("EE is closing. Reopen EE to change
+LAN access.").
+
+A failure during an operation is reported in `error` with a 200 answer:
+
+| Code | Message |
+|---|---|
+| `lan_access_port_in_use` | Another program uses this port. Choose another LAN port in Connection options. |
+| `lan_access_listener_failed` | EE could not open its LAN port. Choose another LAN port in Connection options, then try again. |
+| `lan_access_save_failed` | The LAN access setting could not be saved. Check the local data folder and try again. |
+| `lan_access_turned_off` | The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again. |
+| `lan_access_revoke_unsaved` | EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off. |
+| `lan_access_invalid_configuration` | The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again. |
+| `lan_access_port_change_requires_off` | Turn off LAN access before changing its port. |
+
+When turning LAN access off or removing a device cannot be saved, EE turns LAN access off in memory and deletes its
+settings file, which reads as off with no devices, so a restart cannot bring the devices back (`lan_access_turned_off`).
+If the file cannot be deleted either, the status says so (`lan_access_revoke_unsaved`).
+
+Requests refused with their own status:
+
+| Status | Code | Message |
+|---|---|---|
+| 400 | `invalid` | `PUT`: "Choose a valid LAN access setting and a port between 1024 and 65535." Pairing: "Enter the 6-digit pairing code and a name of up to 40 characters for this device." |
+| 403 | `lan_access_denied` | "Open EE at the address shown in LAN access on the computer running EE." or "This request cannot be opened through LAN access." |
+| 403 | `lan_pairing_required` | "Pair this device first. Enter the pairing code shown on the computer running EE." |
+| 403 | `lan_pairing_failed` | "The pairing code is wrong or has expired. Check the code on the computer running EE, or choose Pair a device there to show a new one." |
+| 404 | `not_found` | "That device is no longer paired." or "This LAN access request does not exist." |
+| 409 | `lan_access_off` | "Turn on LAN access before pairing a device." |
+| 409 | `lan_access_device_limit` | "16 devices are paired, the most EE allows. Remove one before pairing another." |
+| 409 | `lan_access_failed` | "LAN access could not be updated. Refresh status and try again." The answer also carries `status`. |
+| 413 | `too_large` | "The request is too large." A setting or pairing body over 1 KB, or any body over 1 MiB. |
+| 500 | `lan_pairing_save_failed` | "The device could not be saved on the computer running EE. Ask for a new pairing code there and try again." |
+
+### Saved settings
+
+The setting and the paired devices are kept together in `lan-access.json` in the workspace data folder, next to
+`private-access.json`, so turning LAN access off and removing every device is one write:
+
+```json
+{ "version": 1, "enabled": true, "port": 4280,
+  "devices": [ { "id": "3f9c0a1b2c3d4e5f", "name": "Kitchen iPad", "client": "browser",
+                 "key_sha256": "<64 lowercase hex>", "paired_at": "2026-11-16T20:10:12.000Z", "paired_from": "10.0.0.1" } ] }
+```
+
+The file holds only the SHA-256 of each key. It must be a regular file of at most 16 KB, not a link, and on macOS and
+Linux owned by the user with no group or other permissions. A file that does not match this layout exactly is
+reported as `lan_access_invalid_configuration` and keeps LAN access off; the next successful `PUT` writes a new file
+with no devices. A missing file means off with no devices. A per-user uninstall deletes the file.
+
+### Windows Defender Firewall
+
+The installer adds and removes no firewall rule, and EE does not check the firewall. The first time EE's `node.exe`
+listens on the network, Windows shows a Windows Security Alert for Node.js JavaScript Runtime; the owner allows it on
+private networks only. The rule belongs to the program path, so any script that this `node.exe` runs can accept
+connections on the allowed networks, and the rule stays after LAN access is turned off and after uninstalling. A rule
+for private networks does not apply while Windows lists the current network as public. The
+[desktop guide](../desktop/README.md#connect-over-your-network-without-tailscale) covers allowing, undoing Cancel and
+removing the rule.
 
 ## Session
 

@@ -12,7 +12,7 @@ using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
 /// <summary>
-/// Mobile and remote access through Tailscale, a port of renderPrivateAccess (preview/connections.mjs). It reads
+/// Tailscale private access, a port of renderPrivateAccess (preview/connections.mjs). It reads
 /// /api/private-access, offers setup, sign-in, the access audience and port, and shows the private address once
 /// it is ready. Used on the connection view and in Settings.
 /// </summary>
@@ -52,14 +52,14 @@ public sealed class PrivateAccessPanel : UserControl
     {
         this.request = request;
         active = !signal.IsCancellationRequested;
-        var title = ConnectionUi.Heading("Mobile & remote access");
+        var title = ConnectionUi.Heading("Tailscale private access");
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 18, Classes = { "connection-heading" } };
         title.VerticalAlignment = VerticalAlignment.Top;
         refresh.VerticalAlignment = VerticalAlignment.Top;
         Grid.SetColumn(refresh, 1);
         header.Children.Add(title);
         header.Children.Add(refresh);
-        var help = UiKit.HelpText("Use Tailscale to open this workspace on your phone or another device.");
+        var help = UiKit.HelpText("Use Tailscale to open this workspace on your phone or another device over an encrypted connection, at home or away. Tailscale is optional. LAN access in Settings works on your own network without it.");
         var scope = UiKit.HelpText("Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.");
         setup.Children.Add(setupHelp);
         setup.Children.Add(new FlowRow(10, setupLink, signIn) { Classes = { "connection-actions" } });

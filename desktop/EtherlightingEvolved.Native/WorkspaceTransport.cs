@@ -16,6 +16,12 @@ internal static class WorkspaceTransport
     internal static SocketsHttpHandler CreateHandler(Uri workspace, DecompressionMethods decompression = DecompressionMethods.None)
     {
         var handler = new SocketsHttpHandler { UseProxy = false, AutomaticDecompression = decompression };
+        // A LAN workspace gets its device key only from EeApi, and no redirect can take the key to another address.
+        if (Core.WorkspaceAddress.IsLan(workspace))
+        {
+            handler.UseCookies = false;
+            handler.AllowAutoRedirect = false;
+        }
         if (!UsesPeerLookup(workspace, OperatingSystem.IsLinux())) return handler;
         handler.ConnectCallback = async (context, token) =>
         {
@@ -104,7 +110,8 @@ internal static class WorkspaceTransport
         socket.Options.SetRequestHeader("Origin", workspace.GetLeftPart(UriPartial.Authority));
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         var address = new UriBuilder(workspace) { Scheme = workspace.Scheme == "https" ? "wss" : "ws", Path = "/api/ws" }.Uri;
-        return UsesPeerLookup(workspace, OperatingSystem.IsLinux())
+        // A LAN stream carries the device key, so it uses the request handler, which has no proxy and no redirects.
+        return UsesPeerLookup(workspace, OperatingSystem.IsLinux()) || Core.WorkspaceAddress.IsLan(workspace)
             ? socket.ConnectAsync(address, http, token)
             : socket.ConnectAsync(address, token);
     }

@@ -9,7 +9,7 @@ using EtherlightingEvolved.Native.Ui;
 
 namespace EtherlightingEvolved.Native.Check.Checks;
 
-/// <summary>The Mobile and remote access panel on a computer without Tailscale, where private access stays optional.</summary>
+/// <summary>The Tailscale private access panel on a computer without Tailscale, where private access stays optional.</summary>
 internal static class PrivateAccessPanelChecks
 {
     public static void Run(Action<bool, string> check)

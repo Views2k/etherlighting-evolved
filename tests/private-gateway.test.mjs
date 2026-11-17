@@ -327,3 +327,18 @@ test('only listed socket paths upgrade',{timeout:5000},async context=>{
   for(const path of ['/api/ws?token=x','/api/ws/','/api/other'])assert.equal((await upgrade(port,{},path)).status,403,path);
   assert.deepEqual(checked,['/api/ws']);
 });
+
+test('a device on Tailscale cannot pair or change LAN access',async context=>{
+  const {port,received}=await recordingGateway(context);
+  for(const [method,path] of [['POST','/api/lan-access/pair'],['GET','/api/lan-access'],['PUT','/api/lan-access'],['POST','/api/lan-access/code'],
+    ['DELETE','/api/lan-access/devices/3f9c0a1b2c3d4e5f']])refusedLocally(await get(port,path,{method,body:['POST','PUT'].includes(method)?'{"code":"482913","name":"Phone"}':undefined}));
+  assert.deepEqual(received,[]);
+});
+
+test('bodies over 1 MiB stop at the private gateway',async context=>{
+  const {port,received}=await recordingGateway(context);
+  const refused=await get(port,'/api/rules',{method:'PUT',headers:{'content-length':String(1048577)},body:Buffer.alloc(1048577,'a')});
+  assert.equal(refused.status,413);assert.deepEqual(JSON.parse(refused.text),{detail:{code:'too_large',message:'The request is too large.'}});
+  assert.deepEqual(received,[]);
+  assert.equal((await get(port,'/api/rules',{method:'PUT',body:'[]'})).status,200);
+});

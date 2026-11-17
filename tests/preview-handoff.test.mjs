@@ -64,7 +64,7 @@ function uiDom(context){
 
 const aboutInfo={name:'Etherlighting Evolved',version:'0.5.1',disclaimer:'Unofficial community project. Not affiliated with, endorsed by or supported by Ubiquiti Inc. It drives undocumented interfaces on the switch over SSH; use at your own risk.'};
 
-async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,
+async function settings(context,{send=async()=>complete(),reconcile=complete(),about=async()=>aboutInfo,first=connected(),remote=false,lan=false,
   capabilities=privateStatus,onCloseWorkspace,state={num_ports:8,ports:[],sfp:[],mode:'running',stats:{}}}={}){
   const dom=uiDom(context),calls=[],sessions=[];let sessionReads=0;
   const request=async(path,method,body)=>{
@@ -74,10 +74,11 @@ async function settings(context,{send=async()=>complete(),reconcile=complete(),a
     if(path==='/api/session')return ++sessionReads===1?first:reconcile;
     if(path==='/api/state')return state;
     if(path==='/api/private-access')return capabilities;
+    if(path==='/api/lan-access')return {available:true,enabled:false,ready:false,port:4280,addresses:[],error:null,pairing:null,devices:[],max_devices:16,can_configure:true,can_change_port:true,admin_required:false};
     if(path==='/api/controller')return {connected:true,configured:true,preferences_supported:true,auto_reconnect:true,saved_login_available:true};
     throw new Error(`Unexpected request ${path}`);
   };
-  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote,onCloseWorkspace});
+  const cleanup=await renderSettings(dom.host,{request,onSessionChange:async(...args)=>sessions.push(args),remote,lan,onCloseWorkspace});
   dom.after(cleanup);await flush();return {...dom,calls,sessions,cleanup};
 }
 
@@ -359,7 +360,7 @@ test('the app binds intentional saved-login resumption without invoking it on ha
   const source=await readFile(new URL('../preview/app.mjs',import.meta.url),'utf8');
   const code=source.slice(source.indexOf('function showConnection()'),source.indexOf('function showLoginHelp()'));
   const sent=[],context={workspaceReady:false,secondaryCleanup:null,view:{},session:complete(),workspaceOptions:{live:true},
-    renderSwitchConnection:(_host,options)=>{context.options=options;return ()=>{};},request:async(...args)=>sent.push(args),acceptSession(){},showLoginHelp(){},updateConnection(){},status(){},handoffStatus};
+    renderSwitchConnection:(_host,options)=>{context.options=options;return ()=>{};},request:async(...args)=>sent.push(args),acceptSession(){},showLoginHelp(){},updateConnection(){},status(){},handoffStatus,remotePage:()=>false};
   vm.createContext(context);vm.runInContext(code,context);context.showConnection();assert.deepEqual(sent,[]);
   await context.options.restoreSaved();assert.deepEqual(sent,[['/api/session/restore?resume=true','POST']]);
 });
@@ -382,4 +383,17 @@ test('About shows the service disclaimer, including its risk sentence, and keeps
   assert.ok(text(await settings(context)).includes(aboutInfo.disclaimer));
   const offline=await settings(context,{about:async()=>{throw new Error('The workspace could not be reached.');}});
   assert.ok(text(offline).includes('Unofficial community project. Not affiliated with Ubiquiti.'));
+});
+
+test('the Remote section holds the Tailscale and LAN panels, and a remote page reads no LAN access status',async context=>{
+  const local=await settings(context),remote=local.byClass(local.host,'remote-settings')[0];
+  assert.deepEqual(remote.children.map(child=>child.className),['private-access-settings','lan-access-settings']);
+  assert.deepEqual(local.findAll(remote,node=>node.tagName==='h2').map(node=>node.textContent),['Tailscale private access','LAN access']);
+  assert.ok(local.calls.some(call=>call.path==='/api/lan-access'));
+  for(const [lan,lines] of [[true,['This device uses LAN access. Its connection to the computer running EE is not encrypted.','Change this setting in EE on the host computer.']],
+    [false,['Change this setting in EE on the host computer.']]]){
+    const ui=await settings(context,{remote:true,lan}),section=ui.byClass(ui.host,'lan-access-settings')[0];
+    assert.deepEqual(ui.findAll(section,node=>node.tagName==='p').map(node=>node.textContent),lines);
+    assert.equal(ui.calls.some(call=>call.path==='/api/lan-access'),false);
+  }
 });
