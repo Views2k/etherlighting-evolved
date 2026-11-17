@@ -11,6 +11,7 @@ using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
+using EtherlightingEvolved.Native.Core.Model;
 using EtherlightingEvolved.Native.Pages;
 using EtherlightingEvolved.Native.Pages.Connect;
 using EtherlightingEvolved.Native.Shell;
@@ -184,7 +185,73 @@ internal static class LanAccessChecks
         using (var local = new EeApi(new Uri($"http://127.0.0.1:{stub.Port}/"), deviceKey: Key))
         {
             await local.GetAsync("/api/state");
-            check(!CarriesCookie(stub.Heads[^1]), "a client of a local address never sends a device cookie");
+            var request = stub.Heads[^1];
+            using var socket = new ClientWebSocket();
+            await local.ConnectStreamAsync(socket, CancellationToken.None);
+            check(!CarriesCookie(request) && stub.Heads[^1].StartsWith("GET /api/ws ", StringComparison.Ordinal) && !CarriesCookie(stub.Heads[^1]),
+                "a client of a local address never sends a device cookie, on a request or on the stream");
+        }
+
+        // The LAN address over HTTPS. Nothing listens on the closed loopback port that stands in for it, so each request
+        // is read just before it is sent and then fails to connect.
+        var closed = new TcpListener(IPAddress.Loopback, 0);
+        closed.Start();
+        var closedPort = ((IPEndPoint)closed.LocalEndpoint).Port;
+        closed.Stop();
+        using (var outgoing = new OutgoingRequests())
+        using (var https = new EeApi(new Uri("https://192.168.1.2:4280/"), deviceKey: Key))
+        {
+            ThroughLoopback(https, closedPort);
+            try { await https.GetAsync("/api/state"); }
+            catch (ApiException) { }
+            // The stream does not use the request handler for an HTTPS address, so a refused loopback proxy keeps it off the network.
+            using (var socket = new ClientWebSocket())
+            {
+                socket.Options.Proxy = new WebProxy($"http://127.0.0.1:{closedPort}");
+                try { await https.ConnectStreamAsync(socket, CancellationToken.None); }
+                catch (WebSocketException) { }
+            }
+            var sent = outgoing.Sent.Where(item => item.Uri.Host == "192.168.1.2").ToList();
+            check(sent.Select(item => item.Uri.AbsolutePath).SequenceEqual(["/api/state", "/api/ws"]) && !sent.Any(item => item.Cookie),
+                "a client of an HTTPS address never sends a device cookie, on a request or on the stream");
+        }
+    }
+
+    /// <summary>
+    /// The requests this process sends, read from the runtime's HTTP diagnostics just before each is sent. TLS hides an
+    /// HTTPS request on the wire, so the HTTPS check reads its headers here.
+    /// </summary>
+    sealed class OutgoingRequests : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
+    {
+        readonly List<IDisposable> subscriptions = [];
+        readonly List<(Uri Uri, bool Cookie)> sent = [];
+
+        public OutgoingRequests()
+        {
+            lock (subscriptions) subscriptions.Add(DiagnosticListener.AllListeners.Subscribe(this));
+        }
+
+        public List<(Uri Uri, bool Cookie)> Sent { get { lock (sent) return [.. sent]; } }
+
+        public void OnNext(DiagnosticListener listener)
+        {
+            if (listener.Name == "HttpHandlerDiagnosticListener") lock (subscriptions) subscriptions.Add(listener.Subscribe(this));
+        }
+
+        public void OnNext(KeyValuePair<string, object?> item)
+        {
+            // The event's payload type is internal; its Request property is the documented way to read the request.
+            if (item.Key == "System.Net.Http.Request" && item.Value?.GetType().GetProperty("Request")?.GetValue(item.Value) is HttpRequestMessage { RequestUri: { } uri } request)
+                lock (sent) sent.Add((uri, request.Headers.Contains("Cookie")));
+        }
+
+        public void OnCompleted() { }
+
+        public void OnError(Exception error) { }
+
+        public void Dispose()
+        {
+            lock (subscriptions) foreach (var subscription in subscriptions) subscription.Dispose();
         }
     }
 
@@ -345,13 +412,20 @@ internal static class LanAccessChecks
             {
                 System.IO.File.Delete(DeviceKeys.File);
                 await using var stub = new Stub();
-                // refuse: codes are wrong; accept: pairing works and the workspace then cannot be read; revoked: nothing is paired.
+                // refuse: codes are wrong; accept: pairing works and the workspace then cannot be read; revoked: nothing is
+                // paired; open: the workspace opens; removed: the workspace reports that this computer is no longer paired.
+                // The stub closes each stream right after accepting it, as the gateway does for a removed device.
                 var phase = "refuse";
+                var catalog = EffectCatalog.Catalog.ToJsonString();
                 stub.Answer = (head, _) => (Stub.Line(head), phase) switch
                 {
                     ("POST /api/lan-access/pair", "refuse") => Stub.Json(403, """{"detail":{"code":"lan_pairing_failed","message":"x"}}"""),
                     ("POST /api/lan-access/pair", _) => Stub.Json(200, """{"paired":true}""", $"Set-Cookie: ee_lan_4280={Key}; Path=/api; Max-Age=31536000; HttpOnly; SameSite=Strict\r\n"),
                     (_, "accept") => Stub.Json(503, """{"detail":"The EE service is unavailable."}"""),
+                    ("GET /api/effects", "open") => Stub.Json(200, catalog),
+                    ("GET /api/workspace", "open") => Stub.Json(200, """{"live":true,"remote":true,"lan":true,"paired":true}"""),
+                    ("GET /api/workspace", "removed") => Stub.Json(200, """{"live":true,"remote":true,"lan":true,"paired":false}"""),
+                    (_, "open") => Stub.Json(200, "{}"),
                     _ => Stub.Json(403, """{"detail":{"code":"lan_pairing_required","message":"Pair this device first. Enter the pairing code shown on the computer running EE."}}"""),
                 };
 
@@ -406,6 +480,33 @@ internal static class LanAccessChecks
                         check(Texts(shell).Contains("Pair this computer with EE to open this workspace.") && Find(shell, "Pair") is not null
                               && Find(shell, "Change workspace address") is not null && DeviceKeys.Get(LanAddress) == Key,
                             "Cancel offers pairing again and Change workspace address, and keeps the saved key");
+                    }
+                    finally { Shut(shell, window); }
+                }
+
+                // The workspace opened, and then the computer running EE removed this computer while its stream was open.
+                phase = "open";
+                await using (var workspace = new Workspace(LanAddress, deviceKey: DeviceKeys.Get(LanAddress)))
+                {
+                    ThroughLoopback(workspace.Api, stub.Port);
+                    var (shell, window) = Open(workspace);
+                    try
+                    {
+                        await shell.Start();
+                        await Until(() => stub.Count("GET /api/ws") > 0);
+                        check(!shell.Overlay.HasDialog && stub.Count("GET /api/ws") > 0, "a paired LAN window opens the workspace and its stream");
+                        phase = "removed";
+                        await Until(() => shell.Overlay.HasDialog);
+                        var streams = stub.Count("GET /api/ws");
+                        check(Texts(shell.Overlay).Contains(LanPairingDialog.RevokedIntro) && DeviceKeys.Get(LanAddress) == Key,
+                            "a LAN window whose stream closes after its pairing was removed asks for a new pairing code and keeps the saved key");
+                        // The stream otherwise reconnects 1.5 seconds after it closes.
+                        await Task.Delay(TimeSpan.FromSeconds(2));
+                        check(stub.Count("GET /api/ws") == streams, "a LAN window whose pairing was removed stops reconnecting its stream");
+                        Press(shell.Overlay, "Cancel");
+                        await Until(() => Texts(shell).Contains("Pair this computer with EE to open this workspace."));
+                        check(Texts(shell).Contains("Pair this computer with EE to open this workspace.") && DeviceKeys.Get(LanAddress) == Key,
+                            "Cancel after a removed pairing offers pairing again and keeps the saved key");
                     }
                     finally { Shut(shell, window); }
                 }
