@@ -71,17 +71,18 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [InstallDelete]
 ; An upgrade replaces the whole application, so no file from an earlier version stays behind. The app keeps no
 ; user data in {app}, and the uninstaller (unins000.*) is left alone. Setup has already asked a running copy to
-; quit. Cancelling setup after this step leaves an incomplete app that needs a new install.
+; quit. Canceling setup after this step leaves an incomplete app that needs a new install. Each entry runs only when
+; {app} already holds EE, so an install into a folder that also holds other programs deletes none of their files.
 ; The Python runtime of the 0.4 desktop program.
-Type: filesandordirs; Name: "{app}\_internal"
-Type: filesandordirs; Name: "{app}\engine"
-Type: filesandordirs; Name: "{app}\preview"
-Type: filesandordirs; Name: "{app}\src"
-Type: filesandordirs; Name: "{app}\assets"
-Type: filesandordirs; Name: "{app}\runtime"
-Type: filesandordirs; Name: "{app}\licenses"
-Type: filesandordirs; Name: "{app}\tools"
-Type: files; Name: "{app}\*.dll"
+Type: filesandordirs; Name: "{app}\_internal"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\engine"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\preview"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\src"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\assets"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\runtime"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\licenses"; Check: HoldsEE
+Type: filesandordirs; Name: "{app}\tools"; Check: HoldsEE
+Type: files; Name: "{app}\*.dll"; Check: HoldsEE
 
 [Files]
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -117,6 +118,12 @@ end;
 function TasksChosen(): Boolean;
 begin
   Result := (not WizardSilent) or TasksOnCommandLine();
+end;
+
+{ Every earlier EE release has its program at this path, so a folder without it holds no EE files to replace. }
+function HoldsEE(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\{#AppExe}'));
 end;
 
 { The tasks page starts from the current Start with Windows setting. }
