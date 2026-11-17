@@ -1,11 +1,12 @@
-import {createHash, randomUUID} from 'node:crypto';
-import {lstat, open, readFile, rename, unlink} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {lstat, readFile, unlink} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {canonicalTailnetAddress, matchesApprovedNode, MAX_APPROVED_DEVICES, parseApprovedDevices} from '../preview/approved-device.mjs';
 import {isEntryScript} from '../preview/entry-script.mjs';
+import {writeOwnedFile} from '../preview/settings-file.mjs';
 import {createTailscaleRunner} from '../preview/tailscale-cli.mjs';
 
 class ApprovalError extends Error {}
@@ -113,7 +114,7 @@ async function lockApprovals(directory) {
   }
 }
 
-async function saveDevices(directory, file, hostStableID, devices) {
+async function saveDevices(file, hostStableID, devices) {
   if (!devices.length) {
     await unlink(file);
     return;
@@ -122,13 +123,7 @@ async function saveDevices(directory, file, hostStableID, devices) {
   if (!parseApprovedDevices(record, hostStableID)) fail('The device identity or addresses conflict with a saved approval.');
   const contents = JSON.stringify(record) + '\n';
   if (Buffer.byteLength(contents) > 4096) fail('The saved device list is full. Revoke an unused approval and try again.');
-  const temporary = path.join(directory, '.ee-approval-' + randomUUID() + '.tmp');
-  const out = await open(temporary, 'wx', 0o600);
-  try {
-    try { await out.writeFile(contents); await out.sync(); }
-    finally { await out.close(); }
-    await rename(temporary, file);
-  } catch (error) { await unlink(temporary); throw error; }
+  await writeOwnedFile(file, contents);
 }
 
 export async function manageApproval(action, directory, request, run = runTailscale) {
@@ -159,7 +154,7 @@ export async function manageApproval(action, directory, request, run = runTailsc
     if (action === 'revoke') {
       if (index < 0) return 'This device has no saved approval.';
       devices.splice(index, 1);
-      await saveDevices(directory, file, hostStableID, devices);
+      await saveDevices(file, hostStableID, devices);
       return 'Device approval removed.';
     }
     if (index >= 0) {
@@ -169,7 +164,7 @@ export async function manageApproval(action, directory, request, run = runTailsc
       return 'This device is already approved.';
     }
     if (devices.length >= MAX_APPROVED_DEVICES) fail('The saved device list is full. Revoke an unused approval and try again.');
-    await saveDevices(directory, file, hostStableID, [...devices, approval.device]);
+    await saveDevices(file, hostStableID, [...devices, approval.device]);
     return 'Device approved for this EE workspace.';
   } finally { if (release) await release(); }
 }

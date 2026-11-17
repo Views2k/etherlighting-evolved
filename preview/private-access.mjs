@@ -1,15 +1,15 @@
-import {createHash,randomBytes} from 'node:crypto';
-import {lstat,mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {lstat,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createTailnetAccess,ACCESS_AUDIENCES} from './tailnet-access.mjs';
 import {createApprovedDeviceVerifier} from './approved-device.mjs';
+import {validPort,writeOwnedFile} from './settings-file.mjs';
 import {runInstalledTailscale,tailscaleActionUrl} from './tailscale-cli.mjs';
 export {runInstalledTailscale} from './tailscale-cli.mjs';
 
 export const PRIVATE_HTTPS_PORT=8444;
 export const PRIVATE_LISTENER_PORT=4184;
 const targetFor=port=>`http://127.0.0.1:${port}`;
-const validPort=port=>Number.isSafeInteger(port)&&port>=1024&&port<=65535;
 const MESSAGES={
   tailscale_not_installed:'Install Tailscale on this computer, sign in, then refresh status.',
   tailscale_permission_required:'Tailscale needs permission to manage private access. Open EE as an administrator and try again.',
@@ -147,14 +147,8 @@ export function createPrivateAccessManager({configPath,runTailscale=runInstalled
     loaded=true;
   }
   async function save(value){
-    const temporary=`${configPath}.${randomBytes(8).toString('hex')}.tmp`;
-    try{
-      await mkdir(path.dirname(configPath),{recursive:true});
-      const file=await open(temporary,'wx',0o600);
-      try{await file.writeFile(JSON.stringify(value)+'\n');await file.sync();}finally{await file.close();}
-      await rename(temporary,configPath);saved=value;state.enabled=value.enabled;
-    }catch{fail('private_access_save_failed');}
-    finally{await unlink(temporary).catch(()=>{});}
+    try{await writeOwnedFile(configPath,JSON.stringify(value)+'\n');}catch{fail('private_access_save_failed');}
+    saved=value;state.enabled=value.enabled;
   }
   async function identityStatus(){
     let text;

@@ -1,6 +1,5 @@
-import {constants} from 'node:fs';
-import {lstat,open} from 'node:fs/promises';
 import {isIP} from 'node:net';
+import {readOwnedFile} from './settings-file.mjs';
 
 const MAX_RECORD_BYTES=4096;
 const MAX_WHOIS_BYTES=65536;
@@ -58,24 +57,6 @@ export function matchesApprovedNode(node,expectedStableID,sourceIp){
   const suffix=isIP(address)===4?'/32':'/128';
   return Array.isArray(node.Addresses)&&node.Addresses.some(prefix=>typeof prefix==='string'
     &&prefix.endsWith(suffix)&&canonicalTailnetAddress(prefix.slice(0,-suffix.length))===address);
-}
-
-// The text of a settings file that only this user can have written: a regular file, not a link, from 1 to maxBytes
-// bytes, unchanged between the check and the read, and on Unix owned by this user with no group or other permissions.
-// Null when it is not; a file that cannot be read throws, so ENOENT tells a missing file apart.
-export async function readOwnedFile(configPath,maxBytes){
-  const entry=await lstat(configPath);
-  if(!entry.isFile()||entry.size===0||entry.size>maxBytes)return null;
-  const flags=constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0);
-  const file=await open(configPath,flags);
-  try{
-    const info=await file.stat();
-    if(!info.isFile()||info.ino!==entry.ino||info.dev!==entry.dev||info.size===0||info.size>maxBytes)return null;
-    if(process.platform!=='win32'&&(info.uid!==process.getuid()||(info.mode&0o077)!==0))return null;
-    const buffer=Buffer.alloc(maxBytes+1);
-    const {bytesRead}=await file.read(buffer,0,buffer.length,0);
-    return bytesRead===info.size?buffer.toString('utf8',0,bytesRead):null;
-  }finally{await file.close();}
 }
 
 async function approvedPeer(configPath,hostStableID,sourceIp){

@@ -1,9 +1,10 @@
 import {createHash,randomBytes,randomInt,timingSafeEqual} from 'node:crypto';
-import {mkdir,open,rename,unlink} from 'node:fs/promises';
+import {unlink} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {MAX_APPROVED_DEVICES,readOwnedFile} from './approved-device.mjs';
+import {MAX_APPROVED_DEVICES} from './approved-device.mjs';
 import {deviceName,LAN_DEFAULT_PORT,pairingCode,privateIPv4} from './lan-address.mjs';
+import {readOwnedFile,validPort,writeOwnedFile} from './settings-file.mjs';
 import {sameOriginRequest,singleHeaders} from './tailnet-access.mjs';
 
 // LAN access is plain HTTP to this PC's private IPv4 addresses. Each device pairs with a code shown on this PC and
@@ -48,7 +49,6 @@ const HEADER_LIMITS=new Map([...['host','origin','sec-fetch-site','sec-fetch-mod
 
 const sha256=value=>createHash('sha256').update(value).digest('hex');
 const iso=time=>new Date(time).toISOString();
-const validPort=port=>Number.isSafeInteger(port)&&port>=1024&&port<=65535;
 const exactKeys=(value,keys)=>value!==null&&typeof value==='object'&&!Array.isArray(value)
   &&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 const isoTime=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)
@@ -149,13 +149,7 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
     setError(newer?'lan_access_newer_configuration':'lan_access_invalid_configuration');
   }
   async function save(next){
-    const temporary=`${configPath}.${randomBytes(8).toString('hex')}.tmp`;
-    try{
-      await mkdir(path.dirname(configPath),{recursive:true});
-      const file=await open(temporary,'wx',0o600);
-      try{await file.writeFile(JSON.stringify({version:1,...next})+'\n');await file.sync();}finally{await file.close();}
-      await rename(temporary,configPath);
-    }finally{await unlink(temporary).catch(()=>{});}
+    await writeOwnedFile(configPath,JSON.stringify({version:1,...next})+'\n');
     record=next;revocationUnsaved=false;
   }
   async function openListener(port){
