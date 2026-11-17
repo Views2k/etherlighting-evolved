@@ -164,6 +164,9 @@ public static class Connections
         ["site_required"] = "Choose the UniFi site that contains your switch.",
         ["switch_not_found"] = "The connected switch was not found in this site. Check the selected site.",
         ["local_access_required"] = "This action is available only on the computer running EE.",
+        ["output_unconfirmed"] = "EE could not confirm the switch lighting. Check that the switch is reachable, then connect again.",
+        ["invalid_settings"] = "EE could not apply its lighting settings to this switch. Connect again; if this continues, check the advanced settings in ee.toml.",
+        ["scene_save_failed"] = "The lighting setup could not be saved. Check the EE data folder and try again.",
     };
 
     /// <summary>
@@ -192,10 +195,12 @@ public static class Connections
     public static bool RemoteCanRestore(JsonNode? session) => session.Truthy("has_saved_login") && !session.Truthy("saved_login_error");
 
     /// <summary>
-    /// Codes whose message comes from the service. For invalid_saved_scene it says which saved lighting failed (damaged
-    /// behind switch playback, or saved by a newer EE) and how to recover, and it names no host or user.
+    /// Codes whose message comes from the service, which says what failed and how to recover and names no host or
+    /// user: which saved lighting failed (damaged behind switch playback, or saved by a newer EE), which switch
+    /// playback holds the connection and where to release it, and whether the saved SSH keys are unreadable or from a
+    /// newer EE.
     /// </summary>
-    static readonly HashSet<string> ServiceMessages = new(StringComparer.Ordinal) { "invalid_saved_scene" };
+    static readonly HashSet<string> ServiceMessages = new(StringComparer.Ordinal) { "invalid_saved_scene", "switch_playback_reserved", "host_key_save_failed" };
 
     /// <summary>The message for a failed connection (connectionError).</summary>
     public static string ConnectionError(string? code, bool timedOut = false, string fallback = DefaultError, string? serviceMessage = null) =>

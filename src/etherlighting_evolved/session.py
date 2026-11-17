@@ -35,6 +35,7 @@ from .transport import (
     AuthenticationError,
     HostKeyMismatchError,
     HostKeyStore,
+    HostKeyStoreError,
     SimulatedTransport,
     SSHTransport,
     Transport,
@@ -55,7 +56,7 @@ HOST_KEY_SAVE_FAILED = "The saved SSH keys could not be read or updated. Check t
 # (_host_key_failure).
 LOGIN_FAILURES = {
     "connect": ((AuthenticationError, "auth_failed", 401), (UnreachableError, "unreachable", 502),
-                (TransportError, "ssh_error", 502)),
+                (HostKeyStoreError, "host_key_save_failed", 500), (TransportError, "ssh_error", 502)),
     "profile": ((ValueError, "compatibility_verification_required", 422),),
     "settings": (((ValueError, TypeError), "invalid_settings", 400),),
     "scene": (((ValueError, TypeError, KeyError), "invalid_saved_scene", 422),),

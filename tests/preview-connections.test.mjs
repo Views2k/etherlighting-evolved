@@ -42,6 +42,20 @@ test('an unusable saved scene shows the service message that names its recovery'
   assert.equal(connectionError({code:'invalid_saved_scene'}), 'The connection could not be confirmed. Check the details and try again.');
 });
 
+test('reserved playback and unusable saved SSH keys show the service message', () => {
+  for (const [code, message] of [['switch_playback_reserved', 'Return switch playback to UniFi from the PC that saved it.'],
+    ['host_key_save_failed', 'SSH host keys were saved by a newer version of EE. Update EE to use them.']]) {
+    assert.equal(connectionError(Object.assign(new Error(message), {code})), message, code);
+    assert.equal(connectionError({code}), 'The connection could not be confirmed. Check the details and try again.', code);
+  }
+});
+
+test('lighting that could not be confirmed, applied or saved has its own message', () => {
+  assert.equal(connectionError({code:'output_unconfirmed',message:'private-host'}), 'EE could not confirm the switch lighting. Check that the switch is reachable, then connect again.');
+  assert.equal(connectionError({code:'invalid_settings'}), 'EE could not apply its lighting settings to this switch. Connect again; if this continues, check the advanced settings in ee.toml.');
+  assert.equal(connectionError({code:'scene_save_failed'}), 'The lighting setup could not be saved. Check the EE data folder and try again.');
+});
+
 test('unqualified models offer a compatibility action without retrying credentials', () => {
   assert.match(connectionError({code:'compatibility_verification_required'}),/compatibility verification/);
   assert.doesNotMatch(connectionError({code:'compatibility_verification_required'}),/password|try again/i);

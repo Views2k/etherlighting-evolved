@@ -41,10 +41,18 @@ const messages = {
   site_required: 'Choose the UniFi site that contains your switch.',
   switch_not_found: 'The connected switch was not found in this site. Check the selected site.',
   local_access_required: 'This action is available only on the computer running EE.',
-  // The service's own text says which saved lighting failed (damaged behind switch playback, or saved by a newer
-  // EE) and how to recover, and it names no host or user.
-  invalid_saved_scene: error => typeof error.message === 'string' ? error.message : null,
+  output_unconfirmed: 'EE could not confirm the switch lighting. Check that the switch is reachable, then connect again.',
+  invalid_settings: 'EE could not apply its lighting settings to this switch. Connect again; if this continues, check the advanced settings in ee.toml.',
+  scene_save_failed: 'The lighting setup could not be saved. Check the EE data folder and try again.',
+  // For these codes the service's own text says what failed and how to recover, and it names no host or user: which
+  // saved lighting failed (damaged behind switch playback, or saved by a newer EE), which switch playback holds the
+  // connection and where to release it, and whether the saved SSH keys are unreadable or from a newer EE.
+  invalid_saved_scene: serviceMessage,
+  switch_playback_reserved: serviceMessage,
+  host_key_save_failed: serviceMessage,
 };
+
+function serviceMessage(error) {return typeof error.message === 'string' ? error.message : null;}
 
 export function connectionError(error, fallback = 'The connection could not be confirmed. Check the details and try again.') {
   const entry = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;

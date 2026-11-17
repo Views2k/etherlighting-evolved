@@ -67,12 +67,17 @@ class HostKeyMismatchError(TransportError):
         self.pinned = pinned
 
 
+class HostKeyStoreError(TransportError):
+    """The saved SSH host keys could not be read or saved, or a newer EE saved them. The message names no host."""
+
+
 KEY_TYPE = re.compile(r"[A-Za-z0-9@._+-]{1,64}")
 # A fingerprint as `ssh-keygen -l` prints it. The API and eectl both take one back to accept a changed key, so both
 # use this pattern; it is anchored for Pydantic, which searches rather than matches.
 SSH_FINGERPRINT = r"^SHA256:[A-Za-z0-9+/]{43}$"
 # Addresses whose changed key is kept for review. A client that probes many addresses cannot grow it further.
 PRESENTED_LIMIT = 32
+UNREADABLE_HOST_KEYS = "The saved SSH host keys in known_switches.json could not be read. Check the EE data folder."
 
 
 def _key_type(key) -> str | None:
@@ -106,17 +111,17 @@ class HostKeyStore:
         except FileNotFoundError:
             return {}
         except (OSError, json.JSONDecodeError) as exc:
-            raise TransportError("Could not read the saved SSH host keys") from exc
+            raise HostKeyStoreError(UNREADABLE_HOST_KEYS) from exc
         if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                              for k, v in data.items()):
-            raise TransportError("The saved SSH host keys have an invalid format")
+            raise HostKeyStoreError(UNREADABLE_HOST_KEYS)
         # Releases up to 0.5.1 saved no version, which is format version 1. The version is a string, beside the
         # "host:port" keys, because those releases accept only string values in this file.
         version = data.pop("version", str(HOST_KEY_FORMAT_VERSION))
         try:
             check_version(int(version) if version.isdecimal() else None, HOST_KEY_FORMAT_VERSION, "SSH host keys")
         except (NewerFormatError, ValueError) as exc:
-            raise TransportError(str(exc)) from exc
+            raise HostKeyStoreError(str(exc)) from exc
         return data
 
     def _save(self, data: dict[str, str]) -> None:
@@ -529,7 +534,8 @@ class SSHTransport(Transport):
                 raise self._changed_key(fingerprint, key_type, exc.pinned, f"The saved SSH key for {self.host}:"
                                         f"{self.port} changed while EE was connecting. Connect again.") from exc
             except OSError as exc:
-                raise TransportError(f"The SSH key of {self.host}:{self.port} could not be saved.") from exc
+                raise HostKeyStoreError("The switch's SSH key could not be saved in known_switches.json. Check the EE "
+                                        "data folder and try again.") from exc
             if saved_now:
                 log.info("saved the %s SSH key %s of %s:%s at the first connection", key_type or "unknown",
                          fingerprint, self.host, self.port)

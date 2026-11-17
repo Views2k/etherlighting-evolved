@@ -22,6 +22,7 @@ from etherlighting_evolved.transport import (
     PRESENTED_LIMIT,
     HostKeyMismatchError,
     HostKeyStore,
+    HostKeyStoreError,
     SimulatedTransport,
     SSHTransport,
     TransportError,
@@ -174,9 +175,8 @@ async def test_unreadable_store_fails_before_any_network_io(tmp_path, monkeypatc
     path = tmp_path / "known_switches.json"
     path.write_text("not-json", "utf-8")
     monkeypatch.setattr(asyncssh, "connect", lambda **kwargs: pytest.fail("the switch must not be contacted"))
-    with pytest.raises(TransportError) as error:
+    with pytest.raises(HostKeyStoreError):
         await SSHTransport(HOST, host_keys=HostKeyStore(path), username="fixture", password="fixture").connect()
-    assert not isinstance(error.value, HostKeyMismatchError)
 
 
 class FakeKey:
@@ -265,9 +265,9 @@ async def test_first_key_that_cannot_be_saved_ends_the_connection(tmp_path, monk
     monkeypatch.setattr(HostKeyStore, "_save", fail)
     monkeypatch.setattr(asyncssh, "connect", handshake(FakeKey(FP_A), connection=connection))
     transport = SSHTransport(HOST, host_keys=store, username="fixture", password="fixture")
-    with pytest.raises(TransportError, match="could not be saved") as error:
+    with pytest.raises(HostKeyStoreError, match="could not be saved") as error:
         await transport.connect()
-    assert not isinstance(error.value, HostKeyMismatchError)
+    assert HOST not in str(error.value)
     assert connection.closed and not transport.connected and transport.host_key_fingerprint is None
 
 
@@ -598,6 +598,20 @@ def test_unreadable_saved_keys_are_reported_without_a_write(client, app):
     response = client.post(REPLACE, json=REPLACE_BODY)
     assert response.status_code == 500 and response.json()["detail"]["code"] == "host_key_save_failed"
     assert store.path.read_text("utf-8") == "not-json"
+
+
+@pytest.mark.parametrize(("content", "message"), [
+    ('{"version": "2"}', "SSH host keys were saved by a newer version of EE. Update EE to use them."),
+    ("not-json", "The saved SSH host keys in known_switches.json could not be read. Check the EE data folder."),
+])
+def test_login_with_unusable_saved_keys_names_them_and_keeps_the_file(client, app, content, message):
+    store = app.state.sessions.host_keys
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(content, "utf-8")
+    response = client.post("/api/session/login", json=LOGIN)
+    assert response.status_code == 500
+    assert response.json()["detail"] == {"code": "host_key_save_failed", "message": message}
+    assert store.path.read_text("utf-8") == content
 
 
 def test_saved_login_restore_saves_the_key_of_a_new_switch(config, keys, saved_login):

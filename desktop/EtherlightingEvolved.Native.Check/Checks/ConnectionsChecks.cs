@@ -29,6 +29,19 @@ internal static class ConnectionsChecks
               && Connections.ConnectionError(JsonNode.Parse("""{"code":"invalid_saved_scene"}""")) == Connections.DefaultError,
             "an unusable saved scene shows the service message that names its recovery, as the browser does");
 
+        const string reserved = "Return switch playback to UniFi from the PC that saved it.";
+        const string newerKeys = "SSH host keys were saved by a newer version of EE. Update EE to use them.";
+        check(Connections.ConnectionError(new ApiException(reserved, "switch_playback_reserved", 409, false, null)) == reserved
+              && Connections.ConnectionError(JsonNode.Parse($$"""{"code":"host_key_save_failed","message":"{{newerKeys}}"}""")) == newerKeys
+              && Connections.ConnectionError(JsonNode.Parse("""{"code":"switch_playback_reserved"}""")) == Connections.DefaultError
+              && Connections.ConnectionError(new ApiException("private-host", "output_unconfirmed", 409, false, null))
+                  == "EE could not confirm the switch lighting. Check that the switch is reachable, then connect again."
+              && Connections.ConnectionError(JsonNode.Parse("""{"code":"invalid_settings"}"""))
+                  == "EE could not apply its lighting settings to this switch. Connect again; if this continues, check the advanced settings in ee.toml."
+              && Connections.ConnectionError(JsonNode.Parse("""{"code":"scene_save_failed"}"""))
+                  == "The lighting setup could not be saved. Check the EE data folder and try again.",
+            "reserved playback and unusable saved SSH keys show the service message, and lighting that could not be confirmed, applied or saved has its own message, as in the browser");
+
         var discovery = JsonNode.Parse("""{"code":"controller_error","operation":"sites","upstream_status":502}""");
         check(Connections.ControllerError(discovery) == "UniFi Network could not complete site discovery (HTTP 502). Try connecting again."
               && Connections.ControllerError(new ApiException("", "timeout", 504, false, null)) == "UniFi Network did not respond in time. Check the controller and try again."
