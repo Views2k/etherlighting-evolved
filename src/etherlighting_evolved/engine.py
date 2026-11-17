@@ -158,7 +158,7 @@ class Engine:
         self._reconnect_blocked = False
         self._loop_failed = False
         self._recovering = False
-        self.budget = CommandBudget(switch, num_ports=self.num_ports, fps=fps, max_commands=max_commands,
+        self.budget = CommandBudget(switch, port_count=lambda: self.num_ports, fps=fps, max_commands=max_commands,
                                     on_reduced=self._budget_reduced)
         self._animation_origin = self.budget.animation_time
         self.cpu_idle: float | None = None

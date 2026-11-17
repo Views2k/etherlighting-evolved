@@ -64,7 +64,7 @@ def test_ramp_respects_requested_ceiling(cadence, ceiling):
 @pytest.mark.parametrize("ports,fps,expected", [(1, 25, 25), (8, 10, 80), (8, 25, 200), (64, 25, 200)])
 def test_target_depends_on_frame_rate_and_ports_without_exceeding_two_hundred(cadence, ports, fps, expected):
     engine, clock, telemetry = cadence
-    engine.budget.num_ports = ports
+    engine.num_ports = ports
     engine.set_fps(fps)
     for _ in range(45):
         healthy_sample(engine, clock, telemetry)

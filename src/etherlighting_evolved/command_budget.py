@@ -20,11 +20,12 @@ class CommandBudget:
     CALM_IDLE = 0.75
     TELEMETRY_AGE = 3.0
 
-    def __init__(self, switch: EtherlightSwitch, *, num_ports: int, fps: float, max_commands: float,
+    def __init__(self, switch: EtherlightSwitch, *, port_count: Callable[[], int], fps: float, max_commands: float,
                  on_reduced: Callable[[], None]) -> None:
-        """`on_reduced` runs whenever the budget drops, so the frame being written can stop at the old rate."""
+        """`port_count` returns the engine's copper port count, which the rate ceiling and the animation clock scale
+        with. `on_reduced` runs whenever the budget drops, so the frame being written can stop at the old rate."""
         self.switch = switch
-        self.num_ports = num_ports
+        self._port_count = port_count
         self.fps = fps
         self.max_commands = max_commands
         self._on_reduced = on_reduced
@@ -47,13 +48,13 @@ class CommandBudget:
 
     def ceiling(self) -> float:
         transport_limit = self.MAX_COMMANDS if self.switch.transport.direct_rgb else self.INITIAL_COMMANDS
-        active_ports = self.num_ports or len(self.switch.sfp_ports) or 1
+        active_ports = self._port_count() or len(self.switch.sfp_ports) or 1
         return min(self.max_commands, transport_limit, active_ports * self.fps)
 
     def animation_clock(self) -> float:
         """Keep motion sampled consistently when the command budget or CPU load slows full frames."""
         tick = timing.monotonic()
-        full_frame_rate = min(self.fps, self.value / max(1, self.num_ports))
+        full_frame_rate = min(self.fps, self.value / max(1, self._port_count()))
         if self.last_write_seconds > 0:
             full_frame_rate = min(full_frame_rate, 1 / self.last_write_seconds)
         scale = min(1.0, full_frame_rate / 3.75)
