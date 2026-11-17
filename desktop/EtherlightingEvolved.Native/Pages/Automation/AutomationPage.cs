@@ -19,7 +19,7 @@ internal sealed partial class AutomationPage : ManagementPage
 {
     [ModuleInitializer] internal static void Register() => PageRegistry.Register("Automation", shell => new AutomationPage(shell));
     static readonly (string Value, string Label)[] RuleStyles = [("solid", "Solid color"), ("pulse", "Gentle pulse"), ("blink", "Blink"), ("flash", "Flash"), ("effect", "Use port effect")];
-    /// <summary>secondary.mjs operatorNames, which the rule tester shares (src/rules.mjs words in and not_in differently).</summary>
+    /// <summary>secondary.mjs operatorNames, which the rule tester shares.</summary>
     static readonly Dictionary<string, string> OperatorNames = new(StringComparer.Ordinal)
     {
         ["is"] = "is", ["is_not"] = "is not", ["in"] = "is any of", ["not_in"] = "is none of", ["gt"] = "is above", ["ge"] = "is at least",

@@ -16,11 +16,6 @@ from ..color import BLACK, Color
 from .base import Effect, Param, RenderContext, hash01
 
 
-def triangle(x: float) -> float:
-    """0 at 0, 1 at 0.5, back to 0 at 1, repeating."""
-    return 1.0 - abs(2.0 * (x % 1.0) - 1.0)
-
-
 def breath(phase: float) -> float:
     """One smooth rise and fall, with zero slope at both ends."""
     return 0.5 - 0.5 * math.cos(2 * math.pi * phase)

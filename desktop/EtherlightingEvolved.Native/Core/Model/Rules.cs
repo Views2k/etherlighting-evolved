@@ -1,4 +1,4 @@
-// Port of src/rules.mjs: automation rule fields, condition matching, rule priority and rule looks.
+// Port of src/rules.mjs: automation rule rates, condition matching, rule priority and rule looks.
 // A date is the clock the conditions read (local time for new Date(), or the EE host's time from ScheduleClock.HostDate).
 // A null date stands for an invalid date: time and weekday conditions never match it.
 using System.Text.Json.Nodes;
@@ -27,29 +27,6 @@ public static class Rules
     }
 
     public static double RuleRate(JsonNode? style, JsonNode? value) => RuleRate(Js.Str(style) ?? (style is null ? null : Js.ToStr(style)), Js.Num(value));
-
-    /// <summary>FIELDS: the facts a condition can test.</summary>
-    public static readonly JsonArray Fields = (JsonArray)JsonNode.Parse("""
-        [{"key":"link","label":"Link status","type":"bool","trueLabel":"Online","falseLabel":"Offline"},
-         {"key":"anomaly","label":"Port anomaly","type":"bool","trueLabel":"Detected","falseLabel":"Clear"},
-         {"key":"poe","label":"PoE class","type":"choice","choices":["off","poe","poe+","poe++","poe+++"]},
-         {"key":"speed","label":"Link speed","type":"number","unit":"Mbps"},
-         {"key":"poe_power","label":"PoE power","type":"number","unit":"W"},
-         {"key":"traffic","label":"Traffic","type":"number","unit":"Mbps"},
-         {"key":"time","label":"Time of day","type":"time"},
-         {"key":"weekday","label":"Day of week","type":"weekday","choices":["mon","tue","wed","thu","fri","sat","sun"]},
-         {"key":"uplink","label":"Uplink","type":"bool"},{"key":"full_duplex","label":"Full duplex","type":"bool"},
-         {"key":"lag","label":"Link aggregation","type":"bool"},
-         {"key":"stp_state","label":"Spanning tree","type":"choice","choices":["forwarding","blocking","learning","listening","discarding","disabled"]}]
-        """)!;
-
-    /// <summary>OPERATORS: condition operator labels in display order.</summary>
-    public static readonly IReadOnlyList<KeyValuePair<string, string>> Operators =
-    [
-        new("gt", "is above"), new("ge", "is at least"), new("lt", "is below"), new("le", "is at most"), new("eq", "equals"),
-        new("ne", "does not equal"), new("between", "is between"), new("is", "is"), new("is_not", "is not"), new("in", "is one of"),
-        new("not_in", "is not one of"),
-    ];
 
     static readonly string[] Weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
@@ -167,13 +144,6 @@ public static class Rules
         return Js.StrictEquals(mode, "color") || !Js.StrictEquals(Js.Get(rule["look"], "style"), "effect") ? rule : null;
     }
 
-    /// <summary>rulePortLabel(ports, sfpPorts): "All copper ports" or a list such as "Port 1, SFP 9".</summary>
-    public static string RulePortLabel(JsonNode? ports, JsonNode? sfpPorts = null)
-    {
-        if (Js.Length(ports) == 0) return "All copper ports";
-        return string.Join(", ", Js.Items(ports).Select(port => Js.Includes(sfpPorts, port) ? $"SFP {Js.ToStr(port)}" : $"Port {Js.ToStr(port)}"));
-    }
-
     /// <summary>renderLook(look, underneath, t): the rule's color at time t; the effect style shows what is underneath.</summary>
     public static object? RenderLook(JsonNode? look, object? underneath, double t)
     {
@@ -185,31 +155,5 @@ public static class Rules
         if (style == "flash") return phase < .2 ? color : "#000000";
         if (style == "pulse") return ColorMath.Dim(Effects.ColorText(color), .15 + .85 * (.5 - .5 * Math.Cos(phase * Math.PI * 2)));
         return color;
-    }
-
-    /// <summary>makeRule(type = 'link'): a new rule from one of the example templates.</summary>
-    public static JsonObject MakeRule(string type = "link")
-    {
-        var (name, conditions, color, style, brightness) = type switch
-        {
-            "anomaly" => ("Anomaly detected", """[{"field":"anomaly","op":"is","value":true}]""", "#F2B769", "pulse", (double?)null),
-            "poe" => ("PoE+ devices", """[{"field":"poe","op":"is","value":"poe+"}]""", "#A490E4", null, null),
-            "time" => ("After hours", """[{"field":"time","op":"between","value":["22:00","07:00"]}]""", "#C6A0E5", null, 25),
-            _ => ("Offline", """[{"field":"link","op":"is","value":false}]""", "#F25D68", null, null),
-        };
-        return new JsonObject
-        {
-            ["id"] = Guid.NewGuid().ToString("N")[..24],
-            ["name"] = name,
-            ["conditions"] = JsonNode.Parse(conditions),
-            ["match"] = "all",
-            ["ports"] = null,
-            ["enabled"] = true,
-            ["look"] = new JsonObject
-            {
-                ["color"] = color, ["style"] = style ?? "solid", ["brightness"] = brightness is { } level ? JsonValue.Create(level) : null,
-                ["rate"] = RuleRate(style),
-            },
-        };
     }
 }

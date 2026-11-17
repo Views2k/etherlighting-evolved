@@ -1048,7 +1048,7 @@ public static class ModelChecks
     // ----- src/rules.mjs -----
 
     static JsonObject Anomaly(string ports = "[9]") =>
-        Js.Spread(Rules.MakeRule("anomaly"), J($"{{id:'sfp-alert',ports:{ports},look:{{color:'#FF0000',style:'solid',brightness:null,rate:1}}}}"));
+        O($"{{id:'sfp-alert',name:'Anomaly detected',conditions:[{{field:'anomaly',op:'is',value:true}}],match:'all',ports:{ports},enabled:true,look:{{color:'#FF0000',style:'solid',brightness:null,rate:1}}}}");
 
     static void RuleChecks()
     {
@@ -1082,11 +1082,6 @@ public static class ModelChecks
             e(S(Rules.MatchingRule(Arr(With(alert, "{ports:[1]}"), online), port, date), "id") == "online", "scope");
             e(S(Rules.MatchingRule(Arr(With(alert, "{enabled:false}"), online), port, date), "id") == "online", "enabled");
             e(S(Rules.MatchingRule(Arr(With(alert, "{match:'any',conditions:[{field:'link',op:'is',value:false},{field:'anomaly',op:'is',value:true}]}")), port, date), "id") == "alert", "any");
-        });
-        T("rules: rule editor labels identify scopes consistently", e =>
-        {
-            e(Rules.RulePortLabel(null) == "All copper ports", "all");
-            e(Rules.RulePortLabel(A("[9,10]")) == "Port 9, Port 10", "list");
         });
         T("rules: SFP preview uses explicit first-match rules", e =>
         {
