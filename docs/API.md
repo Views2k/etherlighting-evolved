@@ -414,7 +414,8 @@ and any other request from a device that is not paired gets:
 A paired device's requests then follow the route entries: `GET /api/private-access` gets the same read-only Tailscale
 status the private gateway gives, without `local`, and every request without a remote entry gets
 `403 local_access_required`. A WebSocket upgrade is accepted only at exactly `/api/ws` and only for a paired device;
-the gateway checks each open socket again every 15 seconds and at once when a device is removed. A request body over
+the gateway checks each socket again every 15 seconds and at once when a device is removed, including a socket whose
+upgrade the engine has not answered yet. A request body over
 1 MiB gets `413 too_large`. The gateway forwards neither `Cookie` nor `X-EE-Admin-Key`, always sends an `Origin`
 upstream, so `/?admin_code=` is never redeemed through it, and removes `Set-Cookie` from upstream answers.
 

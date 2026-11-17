@@ -109,7 +109,8 @@ function pairingBody(text){
 
 /**
  * LAN access settings, pairing codes and paired devices. startListener(gate, port) opens the LAN listener with the gate
- * returned here, stopListener() closes it and every connection, and recheck() checks every open device WebSocket again.
+ * returned here, stopListener() closes it and every connection, and recheck() checks every device WebSocket again,
+ * including one still waiting for EE to accept it.
  * Every change runs one at a time; a removal or turning LAN access off takes effect in memory before it is saved.
  */
 export function createLanAccessManager({configPath,startListener,stopListener,recheck,interfaces=os.networkInterfaces,now=Date.now,

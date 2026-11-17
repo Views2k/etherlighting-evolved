@@ -18,7 +18,8 @@ const PRIVATE_STATUS={available:true,enabled:true,ready:true,url:'https://ee.exa
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
 const filled=route=>route.replace(/\{[a-z_]+\}/g,'1');
 
-async function fixture(t){
+// answerUpgrade(accept) decides when the upstream answers a WebSocket upgrade; by default it answers at once.
+async function fixture(t,{answerUpgrade=accept=>accept()}={}){
   const received=[],upstreamSockets=new Set();
   const upstream=http.createServer((req,res)=>{
     received.push({method:req.method,url:req.url,headers:req.headers});
@@ -27,7 +28,7 @@ async function fixture(t){
   upstream.on('upgrade',(req,socket)=>{
     received.push({method:'WS',url:req.url,headers:req.headers});upstreamSockets.add(socket);
     socket.on('error',()=>{});socket.on('close',()=>upstreamSockets.delete(socket));
-    socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');socket.pipe(socket);
+    answerUpgrade(()=>{socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');socket.pipe(socket);});
   });
   const targetPort=await listen(upstream);
   const gateway=createPrivateGateway({targetPort,listenPort:0,status:()=>({...PRIVATE_STATUS}),maxConnections:64,maxConnectionsPerAddress:16});
@@ -170,6 +171,19 @@ test('removing a device closes its WebSocket before the removal is confirmed',{t
   assert.equal((await echo)[0].toString(),'still connected');
   stays.socket.destroy();
   assert.equal((await f.send('/api/state',{headers:{cookie:removed.cookie}})).status,403);
+});
+
+test('a device removed while EE has not yet answered its WebSocket upgrade does not get the socket',{timeout:5000},async t=>{
+  let arrived;
+  const waiting=new Promise(resolve=>{arrived=resolve;});
+  const f=await fixture(t,{answerUpgrade:arrived}),{cookie,id}=await f.pairDevice();
+  // The handler is attached now: the gateway may close the socket while the removal is still being saved.
+  const refused=assert.rejects(f.upgrade({cookie}));
+  const accept=await waiting;
+  await f.lan.revoke(id);
+  // EE answers only after the removal is confirmed, so the 101 would reach the device only if the removal missed the socket.
+  accept();
+  await refused;
 });
 
 test('turning LAN access off closes every connection',{timeout:5000},async t=>{

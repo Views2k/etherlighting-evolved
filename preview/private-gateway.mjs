@@ -86,7 +86,7 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
       try{return await access.authorize(request,{websocket});}
       catch{return null;}
     }
-    // Revocation also closes an already subscribed device. Only one check runs per socket at a time.
+    // Revocation also closes a device's open or still opening WebSocket. Only one check runs per socket at a time.
     function watchDevice(request,socket){
       let timer,running=null;
       const check=()=>running??=(async()=>{
@@ -155,6 +155,8 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
       const result=remoteRoutes.socket(request.url)&&await authorize(request,true);
       if(server!==next||socket.destroyed)return;
       if(result?.ok!==true){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
+      // Watched before EE answers the upgrade, so a device removed while the upgrade waits never gets the socket.
+      if(result.device===true)watchDevice(request,socket);
       const upstream=http.request({host:'127.0.0.1',port:targetPort,path:request.url,headers:headers(request,true)});
       upstream.setTimeout(10000,()=>upstream.destroy());
       upstream.on('upgrade',(response,remote,remoteHead)=>{
@@ -165,7 +167,6 @@ export function createPrivateGateway({targetPort,listenPort=4184,listenHost='127
         remote.pipe(socket);socket.pipe(remote);
         remote.on('error',()=>socket.destroy());
         socket.on('close',()=>remote.destroy());remote.on('close',()=>socket.destroy());
-        if(result.device===true)watchDevice(request,socket);
       });
       upstream.on('error',()=>socket.destroy());upstream.on('response',()=>socket.destroy());socket.on('close',()=>upstream.destroy());upstream.end();
     });
