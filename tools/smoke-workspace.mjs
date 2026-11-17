@@ -225,6 +225,10 @@ async function checkPhoneFooter(width, height, bottomInset) {
     assert.equal(idle.normal, 0, 'An optional disconnected controller does not add a status row');
     assert.ok(Math.abs(idle.safeBottom) <= 1, `Idle port map leaves ${idle.safeBottom}px below its scroller`);
     assert.ok(Math.abs(idle.errorInset - bottomInset) <= 1, 'Reported errors clear the home indicator');
+    // On a phone the status row covers the bottom of the port map while it shows an error or a connection change.
+    // A slow runner can still be showing one from an earlier step, so the edge probe waits for the row to close.
+    await until(() => evaluate(`!document.querySelector('.app-shell > .statusbar :is(#status.error, .connection-state:is(.error, .waiting):not([hidden]))')`),
+      'the phone status row to close');
     const edge = await evaluate(`(() => {
       const scroller = document.querySelector('.studio-content');
       document.querySelector('#select-none').click();
@@ -236,11 +240,12 @@ async function checkPhoneFooter(width, height, bottomInset) {
       scroller.scrollTop = scroller.scrollHeight;
       const last = document.querySelectorAll('.port-tile.sfp');
       const port = last[last.length - 1];
-      return {midScroll, maxScroll, edgeHitsMap: Boolean(hit?.closest('.canvas-area')),
+      const edgeHit = hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + [...hit.classList].map(name => '.' + name).join('') : 'nothing';
+      return {midScroll, maxScroll, edgeHitsMap: Boolean(hit?.closest('.canvas-area')), edgeHit,
         lastPort: port.dataset.port, clearance: visualViewport.height - port.getBoundingClientRect().bottom};
     })()`);
     assert.ok(edge.midScroll > 0 && edge.midScroll < edge.maxScroll, 'Exercise the edge while the port list is between scroll limits');
-    assert.ok(edge.edgeHitsMap, 'The last pixel of the visible viewport belongs to the scrolling port map');
+    assert.ok(edge.edgeHitsMap, `The last pixel of the visible viewport belongs to the scrolling port map, not ${edge.edgeHit} (${width}x${height})`);
     assert.ok(edge.clearance >= bottomInset - 1, 'The last SFP port scrolls completely above the home indicator');
     const opticalPort = `.port-tile.sfp[data-port="${edge.lastPort}"]`;
     await tap(opticalPort, true);
