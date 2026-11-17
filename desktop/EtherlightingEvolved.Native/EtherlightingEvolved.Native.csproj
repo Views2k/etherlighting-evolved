@@ -28,10 +28,10 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="11.3.23" />
+    <PackageReference Include="Avalonia" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="12.1.6" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="EtherlightingEvolved.Native.Check" />
