@@ -393,7 +393,7 @@ test('repeated identity headers and any proxy or Authorization header are refuse
   const f=await enabledWithCode(t);
   const cookie=cookieOf(await pair(f.lan,{code:f.code}));
   for(const headers of [{authorization:'Bearer x'},{forwarded:'for=8.8.8.8'},{'x-forwarded-for':'8.8.8.8'},{'x-forwarded-host':'evil.example'},
-    {'x-forwarded-proto':'https'},{origin:[ORIGIN,ORIGIN]},{cookie:[cookie,cookie]},{cookie:`${cookie}; a=${'b'.repeat(4096)}`},{'sec-fetch-site':'none\u0001'}])
+    {'x-forwarded-proto':'https'},{'x-forwarded-port':'4280'},{'X-Forwarded-Prefix':'/ee'},{Authorization:['Basic x','Basic y']},{origin:[ORIGIN,ORIGIN]},{cookie:[cookie,cookie]},{cookie:`${cookie}; a=${'b'.repeat(4096)}`},{'sec-fetch-site':'none\u0001'}])
     assert.equal(f.lan.gate.authorize(request({headers:{cookie,...headers}})).ok,false,JSON.stringify(headers).slice(0,60));
   const repeatedHost=request({headers:{cookie}});repeatedHost.rawHeaders.push('Host',`${PC}:4280`);
   assert.equal(f.lan.gate.authorize(repeatedHost).ok,false);

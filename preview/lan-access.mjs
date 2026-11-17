@@ -42,8 +42,8 @@ const PAIRING_INVALID={detail:{code:'invalid',message:'Enter the 6-digit pairing
 const PAIRING_SAVE_FAILED={detail:{code:'lan_pairing_save_failed',message:'The device could not be saved on the computer running EE. Ask for a new pairing code there and try again.'}};
 const TOO_LARGE={detail:{code:'too_large',message:'The request is too large.'}};
 // Nothing proxies to the LAN listener, so a proxy or Authorization header means the request is not what it seems.
-const PROXY_HEADERS=['authorization','forwarded','x-forwarded-for','x-forwarded-host','x-forwarded-proto'];
-const HEADER_LIMITS=new Map([...['host','origin','sec-fetch-site','sec-fetch-mode',...PROXY_HEADERS].map(name=>[name,1024]),['cookie',4096]]);
+const proxyHeader=name=>name==='authorization'||name==='forwarded'||name.startsWith('x-forwarded-');
+const HEADER_LIMITS=new Map([...['host','origin','sec-fetch-site','sec-fetch-mode'].map(name=>[name,1024]),['cookie',4096]]);
 
 const sha256=value=>createHash('sha256').update(value).digest('hex');
 const iso=time=>new Date(time).toISOString();
@@ -234,7 +234,8 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
     authorize(request,{websocket=false}={}){
       const socket=request.socket,local=privateIPv4(socket?.localAddress);
       const headers=singleHeaders(request,HEADER_LIMITS);
-      if(!headers||!local||!thisComputer().has(local)||PROXY_HEADERS.some(name=>headers.has(name)))return DENIED;
+      if(!headers||!local||!thisComputer().has(local)
+          ||request.rawHeaders.some((name,index)=>index%2===0&&proxyHeader(name.toLowerCase())))return DENIED;
       // The Host must name the address the connection arrived on, so a page on another name that resolves to this PC
       // (DNS rebinding) can neither use a device's cookie nor guess codes.
       const host=`${local}:${socket.localPort}`;
