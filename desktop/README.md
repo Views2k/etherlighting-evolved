@@ -24,7 +24,7 @@ The app keeps `desktop.log` in its data folder: `%LOCALAPPDATA%\Etherlighting Ev
 
 ### Tailscale private access
 
-Tailscale is optional. **Tailscale private access** in Settings > Remote stays off until you select **Use Tailscale**, and EE runs no Tailscale command while it is off. When it is on, EE adds one Tailscale Serve route on its HTTPS port (8444 by default) when it starts and removes it when it quits. Turning private access off removes the route, and EE never changes other Serve routes. The port can be changed under **Connection options** while private access is off.
+Tailscale is optional. **Tailscale private access** in Settings > Remote stays off until you select **Use Tailscale**, and EE runs no Tailscale command while it is off. The one exception is a route that EE added earlier and has not yet seen removed, for example because Tailscale was not running when you turned private access off: EE then reads `tailscale serve status` at each start, refresh and quit until a start or refresh sees the route gone. When it is on, EE adds one Tailscale Serve route on its HTTPS port (8444 by default) when it starts and removes it when it quits. Turning private access off removes the route, and EE never changes other Serve routes. The port can be changed under **Connection options** while private access is off.
 
 An uninstall for one user removes EE's route and names the port if it cannot confirm the removal. To remove the route by hand, quit EE and run the cleanup tool as the user who runs EE. An installation for all users skips the automatic step; for it, set `$ee` to `Join-Path $env:ProgramFiles 'Etherlighting Evolved'` instead.
 
@@ -55,7 +55,7 @@ Use `status $device` to check that device, `status` to count saved approvals, or
 
 ### Connect over your network without Tailscale
 
-LAN access lets phones and other computers on your network open EE at the Windows computer's address, without Tailscale. It is off by default, and it runs only while EE controls a real switch, not in the demo. Paired devices have the same limits as devices on Tailscale: they can use lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app and reconnect to the saved switch, but logging in to a new switch, forgetting the saved login, UniFi Network setup, the LAN and Tailscale settings and accepting a changed SSH key work only on the computer running EE.
+LAN access lets phones and other computers on your network open EE at the Windows computer's address, without Tailscale. It is off by default. Once turned on, it runs whenever EE's service runs on the Windows computer, including before a switch is connected and while you use **Continue with demo**, but not in the demo that the app opens with `--demo`. Paired devices have the same limits as devices on Tailscale: they can use lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app and reconnect to the saved switch, but logging in to a new switch, forgetting the saved login, UniFi Network setup, the LAN and Tailscale settings and accepting a changed SSH key work only on the computer running EE.
 
 LAN access uses plain HTTP, so traffic between your devices and the computer running EE is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device's access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on the computer running EE. EE on another device never asks for switch or UniFi passwords; if it does, do not enter them. Use Tailscale for an encrypted connection.
 
@@ -81,13 +81,13 @@ Do not forward the LAN port on your router. LAN access uses port 4280 unless you
 
 Give the computer running EE a fixed address, for example with a DHCP reservation in your router or in UniFi Network. When its address changes, each device opens the new address and pairs again, and the old entries stay listed until you remove them.
 
-LAN access lists each paired device with how it paired, when and from which address, and when it was last used. **Remove** ends that device's access at once, including an open workspace. Turning LAN access off removes and disconnects every paired device, and each one needs a new code after you turn it on again. At most 16 devices can be paired.
+LAN access lists each paired device with how it paired, when and from which address, and when it was last used. **Remove** ends that device's access at once, including an open workspace. Turning LAN access off removes and disconnects every paired device, and each one needs a new code after you turn it on again. At most 16 devices can be paired. A browser keeps its access key for one year and then needs a new code; its old entry stays listed until you remove it. The desktop apps keep their keys with no time limit.
 
 On an iPhone or iPad, a Home Screen copy keeps its own cookies and pairs separately from Safari. Android cannot install the workspace as an app from a plain-HTTP address. Browsers with an HTTPS-only mode show a warning before they open the address.
 
 On macOS 15 or later, the app asks before it connects to devices on your local network. Allow it, or later turn on Etherlighting Evolved under System Settings > Privacy & Security > Local Network.
 
-The macOS and Linux clients, and the Windows app opened with `--url`, keep the key for each LAN address in `workspace-keys.json` in the data folder listed under [Desktop log](#desktop-log): one key per address, at most 16. A key is replaced only by a new pairing with that address.
+The macOS and Linux clients, and the Windows app opened with `--url`, keep the key for each LAN address in `workspace-keys.json` in the data folder listed under [Desktop log](#desktop-log): one key per address, at most 16. A key is replaced only by a new pairing with that address. A file saved by a newer version of EE is left as it is, and a pairing then does not save its key.
 
 An uninstall for one user deletes the LAN access setting and the paired devices, so a later installation starts with LAN access off. An uninstall for all users runs as an administrator and cannot reliably reach your data folder, so the setting and the paired devices stay until LAN access is turned off, and a later installation opens LAN access again when it starts. Turn LAN access off before you uninstall to remove them in either case.
 

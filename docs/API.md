@@ -146,7 +146,7 @@ and port-name refusals carry `message` without `code`.
 | 500 | `saved_login_failed` | Saving failed; sign in with Save login turned off |
 | 500 | `saved_login_forget_failed` | The saved login could not be removed |
 | 500 | `scene_save_failed` | The lighting setup for the switch could not be saved |
-| 500 | `host_key_save_failed` | The saved SSH keys could not be read or updated |
+| 500 | `host_key_save_failed` | The saved SSH keys (`known_switches.json`) could not be read or updated, or were saved by a newer version of EE; the message says which. Returned by logins, restores and key replacements |
 | 500 | `fan_settings_save_failed` | The switch runs the new fan setting, but EE could not save it on this PC |
 | 502 | `unreachable`, `ssh_error` | The switch couldn't be reached, or SSH failed |
 | 503 | `offline_scene_unconfirmed` | The lighting is applied in EE, but the switch has not confirmed its offline copy |
@@ -288,8 +288,10 @@ redeemed through a remote gateway, and `Set-Cookie` is removed from every answer
 
 ### `GET /api/workspace`
 
-Answered by the gateway, never by the engine. `live` is true when the workspace controls a real switch and false
-for the demo. `remote` is true when the request came through the Tailscale or LAN gateway:
+Answered by the gateway, never by the engine. `live` is the gateway's mode: true for the gateway that the installed
+app or `EE_PREVIEW_LIVE=1` starts, whose engine can log in to a real switch or open the demo, and false for the
+demo gateway (`--demo` or `EE_PREVIEW_LIVE=0`). `remote` is true when the request came through the Tailscale or LAN
+gateway:
 
 ```json
 { "live": true, "remote": false }
@@ -403,9 +405,10 @@ are false, and `admin_required` is true. A pending Tailscale sign-in link theref
 
 Tailscale is optional. `available` is true once EE has read this computer's Tailscale identity. While private access
 is off, EE reads it only after a `PUT` that turns private access on or a sign-in request since EE started, and a
-`PUT` that turns it off ends that setup. On a computer without Tailscale where private access was never turned on,
-the answer is therefore `available: false`, `enabled: false`, `error: null` and `setup_action: null`, and EE runs no
-Tailscale command.
+`PUT` that turns it off ends that setup; a `PUT` that changes `https_port` reads it once to save the new address. On
+a computer without Tailscale where private access was never turned on, the answer is therefore `available: false`,
+`enabled: false`, `error: null` and `setup_action: null`. While private access is off, EE runs no other Tailscale
+command once it has confirmed that its route is gone (see the startup check below).
 
 `error` is `null` or `{code, message}`:
 
@@ -460,15 +463,18 @@ closing returns 503, and an unexpected failure returns 409 with
 
 Refresh and sign-in repeat the startup check. When private access is on and its HTTPS port has no Tailscale Serve
 configuration, that check adds EE's route again, so a refresh after the Tailscale HTTPS approval completes a saved
-setup. When a saved setting is off, the check reads the Tailscale Serve status to confirm that EE's route is gone and
-reports `private_access_cleanup_unconfirmed` if it is still there; a Serve status that Tailscale cannot give is not
-reported. Sign-in runs `tailscale login` only when Tailscale reports that it needs a login.
+setup. Turning private access off removes the route and, once Tailscale Serve shows it gone, records that in
+`private-access.json`; a saved setting that is off with that record runs no Tailscale command at startup, refresh or
+stop. For a saved setting that is off without it, for example after a removal Tailscale could not confirm or a
+setting turned off by release 0.5.1, the check reads the Tailscale Serve status. It records the removal when EE's
+route is gone and reports `private_access_cleanup_unconfirmed` if it is still there; a Serve status that Tailscale
+cannot give is not reported. Sign-in runs `tailscale login` only when Tailscale reports that it needs a login.
 
 EE adds its own Serve route only on a port with no Serve configuration, and it never changes other Serve
-configuration. Turning private access off removes the route. When the gateway stops (Quit, Close web session or the
-installer closing EE), it removes exactly that route within 4 seconds and keeps the setting, so the next start adds
-the route again. A removal that cannot be confirmed is recorded as `private_route_cleanup_unconfirmed` in
-`service-diagnostics.log`.
+configuration. When the gateway stops (Quit, Close web session or the installer closing EE), it removes exactly that
+route within 4 seconds and keeps the setting, so the next start adds the route again; with a setting that is off and
+whose removal is recorded, it runs no Tailscale command. A removal that cannot be confirmed is recorded as
+`private_route_cleanup_unconfirmed` in `service-diagnostics.log`.
 
 ### `POST /api/workspace/close`
 
@@ -597,9 +603,10 @@ cannot hide the device's own. Browsers send cookies to every port of the same ho
 API requests, but another service at the same address on a different port receives it for paths under `/api`, as the
 administration cookie on 127.0.0.1 does.
 
-A device that pairs again gets a new entry. At most 16 devices can be paired. A device's pairing does not depend on
-its own address. When the address of the computer running EE changes, each device opens the new address and pairs
-again.
+A browser keeps the cookie for one year (`Max-Age=31536000`); after that it needs a new code, and its old entry stays
+listed until it is removed. The desktop client keeps its key with no time limit. A device that pairs again gets a new
+entry. At most 16 devices can be paired. A device's pairing does not depend on its own address. When the address of
+the computer running EE changes, each device opens the new address and pairs again.
 
 On the LAN gateway, `GET /api/workspace` answers whether this device is paired:
 
@@ -674,6 +681,7 @@ A failure during an operation is reported in `error` with a 200 answer:
 | `lan_access_turned_off` | The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again. |
 | `lan_access_revoke_unsaved` | EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off. |
 | `lan_access_invalid_configuration` | The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again. |
+| `lan_access_newer_configuration` | The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them. |
 | `lan_access_port_change_requires_off` | Turn off LAN access before changing its port. |
 
 When turning LAN access off or removing a device cannot be saved, EE turns LAN access off in memory and deletes its
@@ -709,7 +717,9 @@ The setting and the paired devices are kept together in `lan-access.json` in the
 The file holds only the SHA-256 of each key. It must be a regular file of at most 16 KB, not a link, and on macOS and
 Linux owned by the user with no group or other permissions. A file that does not match this layout exactly is
 reported as `lan_access_invalid_configuration` and keeps LAN access off; the next successful `PUT` writes a new file
-with no devices. A missing file means off with no devices. A per-user uninstall deletes the file.
+with no devices. A file whose `version` is an integer above 1 was saved by a newer version of EE: it is reported as
+`lan_access_newer_configuration`, LAN access stays off, `can_configure` is false and every `PUT` leaves the file as it
+is. A missing file means off with no devices. A per-user uninstall deletes the file.
 
 ### Windows Defender Firewall
 
@@ -826,6 +836,13 @@ The login reads the lighting saved for this switch, under the identity of its SS
   cannot be read, or that a newer version of EE saved ("...saved by a newer version of EE. Update EE to use it."),
   also returns `422 invalid_saved_scene` and is never moved.
 
+When `known_switches.json` cannot be read or was saved by a newer version of EE, the login returns
+`500 host_key_save_failed` before it contacts the switch, and the file is kept. The message names the case ("SSH
+host keys were saved by a newer version of EE. Update EE to use them." or "The saved SSH host keys in
+known_switches.json could not be read. Check the EE data folder."). A first key that cannot be saved after the login
+returns the same code. The clients show these messages, and the messages of `invalid_saved_scene` and
+`switch_playback_reserved`, as the service sends them.
+
 ### `POST /api/session/scene-choice`
 
 ```json
@@ -905,8 +922,8 @@ the session, clears a `host_key_changed` `error` for that address and publishes 
 
 The route refuses a caller whose address is not a loopback address before it reads the request body, and the
 Tailscale and LAN gateways refuse it, so a changed SSH key is accepted only on the computer running EE. The desktop
-app, the browser workspace and the gateway reach the service from 127.0.0.1. `POST /api/session/host-key/accept` and
-`POST /api/session/forget-host-key` no longer exist and return 404.
+app, the browser workspace and the gateway reach the service from 127.0.0.1. `POST /api/session/forget-host-key` no
+longer exists and returns 404.
 
 A client offers to accept a changed key only when the workspace gateway's `GET /api/private-access` returns
 `local: true`. The gateway on the computer running EE includes that field in its answer, with or without permission
@@ -1668,8 +1685,10 @@ Needs a connected switch or the demo, and answers `null` until the session attac
   (`fan_settings_save_failed`), or else `null`.
 - `settings_error` says why the saved fan mode is not in use, for example because the fan file for this switch could
   not be read or was saved by a newer version of EE. It stays until a change is saved.
-- `hold` is `null` when the check follows `settings`. `other_installation`: EE fan control from other settings, for
-  example EE on another PC, is running; EE reads it and leaves it running. `settings_unreadable`: the fan file for
+- `hold` is `null` when the check follows `settings`. `other_installation`: EE fan control with another owner line,
+  for example from EE on another PC with release 0.6.0 or later, is running; EE reads it and leaves it running. Fan
+  control without an owner line, as release 0.5.1 started it, never counts as `other_installation`.
+  `settings_unreadable`: the fan file for
   this switch could not be read or created; EE does not change running fan control and only cleans up a stopped EE
   controller. A successful `PUT /api/fans` clears either of these holds. `settings_newer`: the fan file for this
   switch was saved by a newer version of EE. The check behaves as with `settings_unreadable`, but `PUT /api/fans`

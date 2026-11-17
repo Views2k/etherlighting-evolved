@@ -94,7 +94,8 @@ public sealed class HelpPage : Page
                 "Every mode speeds the fans up near the switch’s temperature limits. If a sensor cannot be read or EE’s fan control stops, the switch’s own controller takes over.",
                 "EE saves the fan mode for each switch. A switch EE has not controlled before starts in Switch control. Fan control runs on the switch and continues while EE is closed. After a switch restart the switch controls the fans until EE connects again and restores the saved mode.",
                 "Handoff to UniFi returns the fans to the switch’s own controller. When EE connects to that switch again, it restores the fan mode saved for it.",
-                "If fan control on the switch was not started from the fan settings saved on this PC, for example by EE on another PC, Fans says so and EE leaves it running. Choose a mode to control the fans from this PC.",
+                "If EE on another PC started fan control on the switch with release 0.6.0 or later, Fans says so and EE leaves it running. Choose a mode to control the fans from this PC.",
+                "The fan mode chosen in release 0.5.1 moves to the first USW-Pro-XG-8-PoE that EE connects to after the update, and EE restarts its fan control there once. On other switches, EE stops fan control that release 0.5.1 started, on this or another PC, and the switch’s own controller runs the fans until you choose a mode.",
                 "Uninstalling EE does not connect to the switch. Before you uninstall, connect to each switch whose fans EE controls and choose Handoff to UniFi in Settings or Switch control in Fans. Otherwise its fan mode keeps running until the switch restarts.",
             ]),
             ("Choose an app theme", [

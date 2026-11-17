@@ -109,7 +109,7 @@ class ControllerIntegration:
 
     async def _complete(self, operation):
         task = asyncio.create_task(operation)
-        # asyncio.wait, unlike shield, does not report a failure that arrives after the caller was cancelled.
+        # asyncio.wait, unlike shield, does not report a failure that arrives after the caller was canceled.
         try:
             await asyncio.wait({task})
         except asyncio.CancelledError:

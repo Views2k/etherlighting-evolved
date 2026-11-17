@@ -442,7 +442,7 @@ public sealed class FansPage : Page
         switch (fans.Str("hold"))
         {
             case "other_installation":
-                return "Fan control on this switch was not started from the fan settings saved on this PC, for example by EE on another PC. EE leaves it running until you choose a mode here.";
+                return "Fan control on this switch was not started from the fan settings saved on this PC, for example by EE on another PC with release 0.6.0 or later. EE leaves it running until you choose a mode here.";
             case "settings_unreadable":
                 return "EE could not load the fan mode saved for this switch, so it does not change fan control that is running. Choose a mode to save it again.";
             case "settings_newer":

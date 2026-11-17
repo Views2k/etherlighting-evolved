@@ -98,10 +98,13 @@ switch's own fan controller takes over. Choosing **Switch control** on the Fans 
 
 EE saves the fan mode for each switch on the computer that runs it, and a switch that EE has not controlled
 before starts in Switch control. While connected, EE checks fan control every 5 seconds and starts it again
-after a switch restart or a handoff. Fan control started by EE on another computer keeps running until a mode
-is chosen here. The mode saved by release 0.5.1 moves to the first Pro XG 8 PoE that EE connects to after the
-update. EE's fan program changed after 0.5.1, so the first check on each switch that runs the earlier program
-restarts it once with the same mode; `ubnt-fanctrl` runs the fans while it restarts.
+after a switch restart or a handoff. Fan control that EE on another computer started with release 0.6.0 or
+later keeps running until a mode is chosen here. The mode saved by release 0.5.1 moves to the first Pro XG 8
+PoE that EE connects to after the update. EE's fan program changed after 0.5.1, so the first check on that
+switch restarts the earlier program once with the same mode; `ubnt-fanctrl` runs the fans while it restarts.
+On every other switch, the check treats fan control that release 0.5.1 started, on this or another computer,
+as EE's own: it replaces it with the mode saved for that switch, or stops it when that mode is Switch control,
+as it is for a switch that EE has not controlled before.
 
 ## Timing and physical acceptance
 
