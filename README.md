@@ -164,7 +164,7 @@ $env:EE_PREVIEW_LIVE = '0'
 npm start
 ```
 
-Open [the local workspace](http://127.0.0.1:4180). The simulator keeps its own data in `outputs/browser-preview-data/`. Set `EE_PREVIEW_LIVE` to `1` to log in to a switch instead; live mode runs on Windows only. The [development guide](docs/DEVELOPMENT.md) covers macOS and Linux, tests and the [Windows installer build](docs/DEVELOPMENT.md#windows-installer). The [desktop guide](desktop/README.md#build-and-test) covers the desktop app.
+Open [the local workspace](http://127.0.0.1:4180). `npm start` also prints an administration link that works once; a browser that opens it can change the Tailscale and LAN access settings until the browser session ends or `npm start` stops. The simulator keeps its own data in `outputs/browser-preview-data/`. Set `EE_PREVIEW_LIVE` to `1` to log in to a switch instead; live mode runs on Windows only. The [development guide](docs/DEVELOPMENT.md) covers macOS and Linux, tests and the [Windows installer build](docs/DEVELOPMENT.md#windows-installer). The [desktop guide](desktop/README.md#build-and-test) covers the desktop app.
 
 ## Repository layout
 
