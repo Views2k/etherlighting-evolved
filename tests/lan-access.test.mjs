@@ -200,7 +200,7 @@ test('an unreadable, oversized, linked, wrongly owned, unknown-version or extra-
   const valid={version:1,enabled:true,port:4280,devices:[{id:'3f9c0a1b2c3d4e5f',name:'Kitchen iPad',client:'browser',key_sha256:'a'.repeat(64),
     paired_at:'2026-11-16T20:10:12.000Z',paired_from:PHONE}]};
   const device=changes=>({...valid,devices:[{...valid.devices[0],...changes}]});
-  const records=['not json','',JSON.stringify({...valid,version:2}),JSON.stringify({...valid,extra:true}),JSON.stringify({...valid,port:80}),
+  const records=['not json','',JSON.stringify({...valid,version:0}),JSON.stringify({...valid,version:'2'}),JSON.stringify({...valid,extra:true}),JSON.stringify({...valid,port:80}),
     JSON.stringify(device({extra:1})),JSON.stringify(device({name:' Kitchen'})),JSON.stringify(device({name:'a'.repeat(41)})),
     JSON.stringify(device({client:'tv'})),JSON.stringify(device({key_sha256:'A'.repeat(64)})),JSON.stringify(device({paired_at:'2026-11-16'})),
     JSON.stringify(device({paired_from:'8.8.8.8'})),JSON.stringify(device({id:'3F9C0A1B2C3D4E5F'})),
@@ -226,6 +226,19 @@ test('an unreadable, oversized, linked, wrongly owned, unknown-version or extra-
     await mkdir(path.dirname(shared.configPath),{recursive:true});await writeFile(shared.configPath,JSON.stringify(valid));await chmod(shared.configPath,0o644);
     await shared.lan.initialize();assert.equal(shared.admin().error.code,'lan_access_invalid_configuration');
   }
+});
+
+test('a record from a newer release keeps LAN access off and is never written',async t=>{
+  const f=await fixture(t),text=JSON.stringify({version:2,enabled:true,port:4280,devices:[],future:true});
+  await mkdir(path.dirname(f.configPath),{recursive:true});await writeFile(f.configPath,text,{mode:0o600});
+  await f.lan.initialize();
+  const newer={code:'lan_access_newer_configuration',message:'The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them.'};
+  assert.deepEqual(f.admin().error,newer);assert.equal(f.admin().enabled,false);
+  assert.equal(f.admin().can_configure,false);assert.equal(f.admin().can_change_port,false);
+  await f.lan.configure(true);await f.lan.configure(false,{port:4281});
+  await assert.rejects(f.lan.issueCode(),{code:'lan_access_off'});
+  assert.deepEqual(f.admin().error,newer);assert.deepEqual(f.events,[]);
+  assert.equal(await readFile(f.configPath,'utf8'),text);
 });
 
 test('a code has six digits, lasts five minutes, works once, and a new code replaces it',async t=>{

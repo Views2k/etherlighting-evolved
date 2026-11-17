@@ -82,6 +82,8 @@ internal static class LanAccessChecks
               && Connections.LanUnreachable(true).EndsWith(" On macOS 15 or later, also check that Etherlighting Evolved is allowed under System Settings > Privacy & Security > Local Network.", StringComparison.Ordinal),
             "a LAN workspace that cannot be reached is explained, with the Local Network permission on macOS");
         check(Connections.LanAccessError("lan_access_port_in_use") == "Another program uses this port. Choose another LAN port in Connection options."
+              && Connections.LanAccessError(JsonNode.Parse("""{"code":"lan_access_newer_configuration","message":"x"}"""))
+                  == "The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them."
               && Connections.LanAccessError(new ApiException("x", "admin_required", 403, false, null)) == Connections.LanAdminRequired
               && Connections.LanAccessError("unknown") == Connections.LanAccessFallback,
             "LAN access errors show the browser's messages and never the service's own text");
@@ -282,6 +284,13 @@ internal static class LanAccessChecks
         System.IO.File.WriteAllText(DeviceKeys.File, "{\"format\":1,\"keys\":[{\"origin\":\"http://192.168.1.2:4280\"}]}");
         check(DeviceKeys.Get(LanAddress) is null && System.IO.File.ReadAllText(DeviceKeys.File).Contains("4280", StringComparison.Ordinal),
             "a malformed key file reads as empty and is left as it is");
+        const string newer = "{\"format\":2,\"keys\":[{\"origin\":\"http://192.168.1.2:4280\"}]}";
+        System.IO.File.WriteAllText(DeviceKeys.File, newer);
+        var refused = false;
+        try { DeviceKeys.Set(LanAddress, Key); }
+        catch (NewerDeviceKeysException) { refused = true; }
+        check(refused && DeviceKeys.Get(LanAddress) is null && System.IO.File.ReadAllText(DeviceKeys.File) == newer,
+            "a key file from a newer version reads as empty, and a pairing never replaces it");
         System.IO.File.Delete(DeviceKeys.File);
     }
 

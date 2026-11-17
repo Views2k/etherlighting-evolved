@@ -542,6 +542,7 @@ public static class Connections
         ["lan_access_turned_off"] = "The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again.",
         ["lan_access_revoke_unsaved"] = "EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off.",
         ["lan_access_invalid_configuration"] = "The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again.",
+        ["lan_access_newer_configuration"] = "The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them.",
         ["lan_access_port_change_requires_off"] = "Turn off LAN access before changing its port.",
         ["lan_access_off"] = "Turn on LAN access before pairing a device.",
         ["lan_access_device_limit"] = LanDeviceLimit,

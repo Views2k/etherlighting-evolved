@@ -771,6 +771,8 @@ test('LAN access is read-only without administration access and on remote pages'
   assert.equal(ui.shown(ui.button('Pair a device')),false);assert.equal(ui.texts().includes('Paired devices'),false);
   ui.button('Refresh LAN access').click();await flush();assert.deepEqual(ui.sent,[['/api/lan-access'],['/api/lan-access']]);
   assert.equal(lanAccessError({code:'admin_required'}),LAN_ADMIN);
+  assert.equal(lanAccessError({code:'lan_access_newer_configuration',message:'x'}),
+    'The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them.');
   for(const [lan,lines] of [[true,[LAN_PAGE_NOTE,'Change this setting in EE on the host computer.']],[false,['Change this setting in EE on the host computer.']]]){
     const remote=connectionDom(context),page=lanPanel(remote,()=>assert.fail('A remote page reads no LAN access status.'),{remote:true,lan});
     await flush();

@@ -21,6 +21,7 @@ public static class LanPairingDialog
     public const string Statement = "This connection uses plain HTTP and is not encrypted. Anyone who can watch or change traffic on your network can read workspace data and this computer’s access key, and can use the key to control EE. EE does not send switch or UniFi passwords over it.";
     public const string Warning = "EE on another device never asks for switch or UniFi passwords. If it does, do not enter them.";
     const string KeyUnsaved = "This computer is paired, but its access key could not be saved, so it needs a new pairing code after EE restarts. Check the application data folder.";
+    const string KeysNewer = "This computer is paired, but its access key was not saved, because a newer version of EE saved the access keys on this computer. It needs a new pairing code after EE restarts. Update EE to keep the key.";
 
     static readonly Dictionary<string, string> Refusals = new(StringComparer.Ordinal)
     {
@@ -72,7 +73,7 @@ public static class LanPairingDialog
             UiKit.Row(8, cancel, pair));
         var dialog = shell.Overlay.Show(content, width: 460);
         var sending = false;
-        var unsaved = false;
+        string? unsaved = null;
         cancel.Click += (_, _) => { if (!sending) dialog.Close("cancel"); };
         dialog.Canceling = () => !sending;
         pair.Click += async (_, _) =>
@@ -99,7 +100,8 @@ public static class LanPairingDialog
                 var key = await api.PairAsync(digits, label);
                 api.DeviceKey = key;
                 try { DeviceKeys.Set(api.BaseUri, key); }
-                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { unsaved = true; }
+                catch (NewerDeviceKeysException) { unsaved = KeysNewer; }
+                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { unsaved = KeyUnsaved; }
                 sending = false;
                 dialog.Close("paired");
             }
@@ -117,7 +119,7 @@ public static class LanPairingDialog
             }
         };
         var paired = await dialog.Result == "paired";
-        if (unsaved) shell.Notify(KeyUnsaved, true);
+        if (unsaved is not null) shell.Notify(unsaved, true);
         return paired;
     }
 }

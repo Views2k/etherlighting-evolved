@@ -9,7 +9,8 @@ namespace EtherlightingEvolved.Native.Core;
 /// application data folder: one key per origin, at most 16, and pairing at a 17th address replaces the oldest. A key is
 /// replaced only by a new pairing for the same origin. An answer that says this computer is not paired never removes
 /// it, because over plain HTTP anyone on the network can send that answer. A file that cannot be read counts as empty
-/// and stays as it is until the next pairing replaces it.
+/// and stays as it is until the next pairing replaces it. A file in a newer format also counts as empty, and a pairing
+/// never replaces it.
 /// </summary>
 public static class DeviceKeys
 {
@@ -37,20 +38,30 @@ public static class DeviceKeys
         lock (Gate)
         {
             var origin = Origin(address);
-            var entries = Read().Where(entry => entry.Origin != origin).OrderBy(entry => entry.SavedAt).ToList();
+            var saved = Read(out var newer);
+            if (newer) throw new NewerDeviceKeysException();
+            var entries = saved.Where(entry => entry.Origin != origin).OrderBy(entry => entry.SavedAt).ToList();
             if (entries.Count >= MaxKeys) entries.RemoveRange(0, entries.Count - MaxKeys + 1);
             entries.Add(new Entry(origin, key, DateTime.UtcNow));
             Write(entries);
         }
     }
 
-    static List<Entry> Read()
+    static List<Entry> Read() => Read(out _);
+
+    static List<Entry> Read(out bool newer)
     {
+        newer = false;
         string text;
         try { text = System.IO.File.ReadAllText(File); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
-        if (Json.Parse(text) is not JsonObject root || root["format"] is { } format && format.Int() != Format || root["keys"] is not JsonArray keys || keys.Count > MaxKeys)
+        if (Json.Parse(text) is not JsonObject root) return [];
+        if (root["format"] is { } format && format.Int() != Format)
+        {
+            newer = format.Int() > Format;
             return [];
+        }
+        if (root["keys"] is not JsonArray keys || keys.Count > MaxKeys) return [];
         var entries = new List<Entry>();
         foreach (var item in keys)
         {
@@ -87,3 +98,6 @@ public static class DeviceKeys
         finally { System.IO.File.Delete(temporary); }
     }
 }
+
+/// <summary>workspace-keys.json was saved by a newer version of EE, which this version neither reads nor replaces.</summary>
+public sealed class NewerDeviceKeysException() : IOException("The LAN access keys were saved by a newer version of EE.");

@@ -25,6 +25,7 @@ const MESSAGES={
   lan_access_turned_off:'The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again.',
   lan_access_revoke_unsaved:'EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off.',
   lan_access_invalid_configuration:'The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again.',
+  lan_access_newer_configuration:'The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them.',
   lan_access_port_change_requires_off:'Turn off LAN access before changing its port.',
 };
 // Requests the local gateway refuses with their own status instead of reporting them in the status.
@@ -98,6 +99,11 @@ function parseRecord(text){
   return {enabled:value.enabled,port:value.port,devices:value.devices.map(device=>({...device}))};
 }
 
+// A record from a later release, which this release neither reads nor replaces.
+function newerRecord(text){
+  try{const {version}=JSON.parse(text);return Number.isSafeInteger(version)&&version>1;}catch{return false;}
+}
+
 function pairingBody(text){
   let value;
   try{value=JSON.parse(text);}catch{return null;}
@@ -112,12 +118,13 @@ function pairingBody(text){
  * returned here, stopListener() closes it and every connection, and recheck() checks every device WebSocket again,
  * including one still waiting for EE to accept it.
  * Every change runs one at a time; a removal or turning LAN access off takes effect in memory before it is saved.
+ * A settings file from a newer release keeps LAN access off, and no change is applied or saved over it.
  */
 export function createLanAccessManager({configPath,startListener,stopListener,recheck,interfaces=os.networkInterfaces,now=Date.now,
   random=()=>randomInt(0,1000000)}={}){
   if(typeof configPath!=='string'||!path.isAbsolute(configPath)||![startListener,stopListener,recheck].every(item=>typeof item==='function'))
     throw new Error('LAN access requires local configuration and listener callbacks.');
-  let record={enabled:false,port:LAN_DEFAULT_PORT,devices:[]},loaded=false,ready=false,error=null,pairing=null;
+  let record={enabled:false,port:LAN_DEFAULT_PORT,devices:[]},loaded=false,ready=false,error=null,pairing=null,newer=false;
   // A turn-off or removal that EE could neither save nor undo by deleting the file: the file still lists devices.
   let revocationUnsaved=false;
   let operation=Promise.resolve();
@@ -137,7 +144,9 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
       text=null;
     }
     const saved=text===null?null:parseRecord(text);
-    if(saved)record=saved;else setError('lan_access_invalid_configuration');
+    if(saved){record=saved;return;}
+    newer=text!==null&&newerRecord(text);
+    setError(newer?'lan_access_newer_configuration':'lan_access_invalid_configuration');
   }
   async function save(next){
     const temporary=`${configPath}.${randomBytes(8).toString('hex')}.tmp`;
@@ -268,7 +277,7 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
   });
 
   function status({admin=false,closing=false}={}){
-    const active=currentPairing(),configurable=admin&&!closing;
+    const active=currentPairing(),configurable=admin&&!closing&&!newer;
     return {available:true,enabled:record.enabled,ready,port:record.port,addresses:ready?lanAddresses(record.port,interfaces()):[],
       error:error&&{...error},
       pairing:admin&&active?{code:active.code,expires_at:iso(active.expires),attempts_left:active.attempts,ended:active.ended}:null,
@@ -287,6 +296,7 @@ export function createLanAccessManager({configPath,startListener,stopListener,re
     }),
     configure:(enabled,{port}={})=>serial(async()=>{
       await load();
+      if(newer)return;
       if(port!==undefined&&port!==record.port&&(record.enabled||ready)){setError('lan_access_port_change_requires_off');return;}
       error=null;
       await (enabled?enable(port??record.port):disable(port??record.port));
