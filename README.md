@@ -20,16 +20,16 @@ The desktop app has Lighting, Effects, Automation, Profiles, Fans, Settings and 
 - Save lighting as a profile, apply it later, or undo the last apply. Weekly schedules can apply a profile, change brightness or hand lighting control to UniFi.
 - Rename ports or use their names from UniFi Network, and see uplink download and upload speeds.
 - On a USW-Pro-XG-8-PoE, set the fans to Switch control, a Low, Medium, High or Max curve, Manual (one fixed speed) or Thermal target, and see the CPU, SFP and port chip temperatures. Fan control is in the desktop app only.
-- Open the workspace from a phone or another computer through Tailscale.
+- Open the workspace from a phone or another computer through Tailscale, or on your own network with LAN access. Both are optional and off until you turn them on.
 
 ## Requirements
 
 - A computer with 64-bit Windows 10 or later. EE controls switches from Windows only.
-- A switch from the [hardware list](docs/HARDWARE.md), its IP address, and the SSH username and password set for your devices in UniFi Network.
+- A switch from the [hardware list](docs/HARDWARE.md), its IP address, and the SSH username and password set for your devices in UniFi Network. EE signs in with that username and password; no SSH key is needed.
 - UniFi Network, if you want device names and port telemetry.
-- Tailscale on the Windows computer and on each other device, if you want to open EE from elsewhere.
+- Tailscale on the Windows computer and on each other device, only if you want to open EE from elsewhere over an encrypted connection. LAN access works on your own network without Tailscale.
 
-The macOS client (macOS 12 or later, Apple silicon or Intel) and the Linux client (x64 or arm64) do not connect to a switch themselves. They open the workspace of a Windows computer that runs EE, through its private Tailscale address.
+The macOS client (macOS 12 or later, Apple silicon or Intel) and the Linux client (x64 or arm64) do not connect to a switch themselves. They open the workspace of a Windows computer that runs EE, through its private Tailscale address or, with LAN access, its address on your network.
 
 ## Install
 
@@ -79,19 +79,39 @@ Run Setup. It asks whether to install EE for you only or for all users, and it c
 
 ### macOS and Linux
 
-Extract the archive. On macOS, open `EtherlightingEvolved.app`. On Linux, run `./EtherlightingEvolved` in the extracted folder. Choose **Change workspace address** and enter the private address shown in Settings → Mobile & remote access on the Windows computer. The [desktop guide](desktop/README.md) has the details, including approving a tagged Tailscale device.
+Extract the archive. On macOS, open `EtherlightingEvolved.app`. On Linux, run `./EtherlightingEvolved` in the extracted folder. Choose **Change workspace address** and enter the address shown under Tailscale private access or LAN access in Settings → Remote on the Windows computer. The [desktop guide](desktop/README.md) has the details, including LAN pairing and approving a tagged Tailscale device.
 
 ## First run
 
 1. Start Etherlighting Evolved from the Start menu. The app starts its workspace service. Choose **Continue with demo** to try the controls on a simulated switch.
-2. To connect a switch, enter its address, SSH username and password. The first time EE connects to a switch, it shows the switch's SSH host key fingerprint and sends the password only after you accept the key. After a switch is reset or replaced, EE shows the saved and the new fingerprints, and the new key can be accepted only in EE on the computer that runs it.
+2. To connect a switch, enter its address, SSH username and password. The first connection saves the switch's SSH key, as described under [SSH host keys](#ssh-host-keys).
 3. Select **Save login on this PC** to let EE reconnect after a restart. Windows protects the saved login for your Windows account.
-4. In Settings → UniFi Network, select your controller and sign-in method to add device names and port telemetry.
-5. In Settings → Mobile & remote access, select **Use Tailscale** to open the workspace from other devices at a private Tailscale address.
+4. In Settings → UniFi, select your controller and sign-in method to add device names and port telemetry.
+5. To open the workspace on other devices, turn on Tailscale private access or LAN access in Settings → Remote, as described under [Remote access](#remote-access).
 
-Closing the window keeps EE running in the notification area. Choose **Quit** in the tray menu to stop it. To use the workspace in a browser on the same computer, choose **Open in browser** in the desktop app. A browser tab opened another way shows the Mobile & remote access settings read-only and cannot close the workspace.
+Closing the window keeps EE running in the notification area. Choose **Quit** in the tray menu to stop it. To use the workspace in a browser on the same computer, choose **Open in browser** in the tray menu or in Settings → Connection. The desktop app gives that tab the administration key that EE creates at each start. A browser tab opened another way shows the Tailscale and LAN access settings read-only and cannot close the workspace.
 
-Devices that open EE through Tailscale can change lighting, effects, automation, profiles, schedules, port names and fans, can reconnect to the saved switch, and can choose Handoff to UniFi. Logging in to a new switch, forgetting the saved login, UniFi Network setup, Tailscale settings and accepting a switch's key work only on the Windows computer that runs EE.
+### SSH host keys
+
+A first login, a reconnect with the saved login or the connection at startup to a switch that has no saved SSH key signs in with the username and password and then saves the switch's key (trust on first use, as in release 0.5.1). EE does not require an SSH key on the switch; a regular username and password login works, and you decide whether that is enough for your network. Keys saved by earlier releases are used as they are.
+
+While a switch is connected, Settings → Connection shows the saved key's SHA256 fingerprint and key type, as `ssh-keygen -l` prints them, so you can compare it with what an SSH client shows. If the switch later presents a key that differs from the saved one, EE refuses the connection before it sends the username or password, and the Connect page shows the saved and the new fingerprints. The new key can be accepted only in EE on the computer that runs it. Accept it only after you have reset or replaced the switch; otherwise another device may be using the switch's address. Accepting it clears EE's record of the lighting player on the previous switch. Lighting, schedules and port names saved for the previous key stay on disk but are not used with the new key.
+
+## Remote access
+
+EE can open its workspace on phones and other computers through Tailscale or through LAN access. Both are optional and off until you turn them on in Settings → Remote on the Windows computer, and both can be on together. They run only while EE controls a real switch, not in the demo.
+
+Devices on Tailscale and paired LAN devices have the same limits. They can change lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app, reconnect to the switch whose login is saved on the Windows computer, and choose Handoff to UniFi. Logging in to a new switch, forgetting the saved login, UniFi Network setup, the Tailscale and LAN access settings and accepting a changed SSH key work only in EE on the Windows computer that runs it.
+
+### Tailscale
+
+Tailscale is not required. Private access is off until you select **Use Tailscale**, and while it is off EE runs no Tailscale command. When it is on, EE publishes the workspace at a private HTTPS address in your tailnet with Tailscale Serve, on port 8444 by default, and Tailscale encrypts the connection. EE never uses Tailscale Funnel. Private access admits your Tailscale account, or every account in the tailnet if you choose that, and tagged devices that you approve one by one on the Windows computer. EE adds its Tailscale Serve route when it starts and removes it when it quits.
+
+### LAN access
+
+LAN access lets devices on your own network open EE at the Windows computer's address, without Tailscale. It is off by default. Select **Allow devices on my network** under LAN access and choose **Apply setting** to turn it on. EE then listens on port 4280, or another port that you choose under Connection options while LAN access is off, on IPv4 only, and accepts connections only from private IPv4 addresses. Each device pairs with a 6-digit code that EE shows on the Windows computer when you choose **Pair a device**. A code works once and ends after 5 minutes. Paired devices stay paired until you remove them; turning LAN access off removes all of them. Do not forward the LAN port on your router.
+
+LAN access uses plain HTTP, so the traffic between your devices and the Windows computer is not encrypted. Anyone who can watch the network can read what crosses it: lighting, fan and handoff commands, the switch address, SSH port and SSH username, the switch model and port status, port names, profiles, schedules and rules, saved effect settings, device names and telemetry from UniFi Network, fan readings, the Tailscale private address when private access is on, the pairing code once, and the device's access key, which every request carries. With a copied key, someone can do anything a paired device can until you remove that device or turn LAN access off. Switch passwords, UniFi Network passwords and API keys never cross the network, because switch login and UniFi Network setup work only on the Windows computer. Use Tailscale when you need an encrypted connection. The [desktop guide](desktop/README.md#connect-over-your-network-without-tailscale) covers pairing and the Windows firewall prompt.
 
 ## What EE changes on the switch
 
@@ -101,7 +121,7 @@ Two features leave a program running on a USW-Pro-XG-8-PoE after EE closes. Both
 
 When the switch login is saved and the firmware passes EE's playback checks, EE copies a lighting player to `/tmp/ee-lighting-playback-v1`. The switch keeps showing your lighting, including traffic effects, while EE is closed.
 
-A fan mode other than Switch control runs from `/tmp/ee-fan-control-v1`. While it runs, the switch's own fan service is paused. The service takes the fans back when EE's fan control stops or fails. EE saves the fan mode for each switch, and a switch that EE has not controlled before starts in Switch control.
+A fan mode other than Switch control runs from `/tmp/ee-fan-control-v1`. While it runs, the switch's own fan service is paused. The service takes the fans back when EE's fan control stops or fails. EE saves the fan mode for each switch, and a switch that EE has not controlled before starts in Switch control. The fan mode chosen in release 0.5.1 moves to the first USW-Pro-XG-8-PoE that EE connects to after the update. Because EE's fan program changed, that first connection restarts it on the switch once with the same mode; the switch's own fan service runs the fans while it restarts.
 
 ### Return the switch to UniFi
 
@@ -111,16 +131,16 @@ Uninstalling EE does not connect to the switch. Before you uninstall, connect to
 
 ## Data and logs
 
-On Windows, EE keeps its data in two folders. The uninstaller removes the program and leaves both folders in place.
+On Windows, EE keeps its data in two folders. The uninstaller removes the program and leaves both folders in place, except that an uninstall for one user deletes `lan-access.json`, so a later installation starts with LAN access off and no paired devices. An uninstall for all users cannot reach that file; turn LAN access off before you uninstall to remove the paired devices.
 
 | Folder | Contents |
 | --- | --- |
-| `%USERPROFILE%\.etherlighting-evolved` | Saved switch and UniFi Network logins (encrypted with Windows DPAPI for your account), pinned SSH host keys, lighting, profiles, schedules, port names, fan settings, the switch playback record and the output ownership records in `output-ownership` |
-| `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`. `workspace` holds the private access settings, approved Tailscale devices and `service-diagnostics.log`. `demo` holds the demo's data. |
+| `%USERPROFILE%\.etherlighting-evolved` | Saved switch and UniFi Network logins (encrypted with Windows DPAPI for your account), saved SSH host keys (`known_switches.json`), lighting, profiles, schedules, port names, the fan mode of each switch in `device-fans`, the switch playback record and the output ownership records in `output-ownership` |
+| `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`. `workspace` holds the Tailscale private access setting (`private-access.json`), approved Tailscale devices (`approved-device.json`), the LAN access setting and paired devices (`lan-access.json`) and `service-diagnostics.log`. `demo` holds the demo's data. |
 
-The macOS and Linux clients keep their settings and `desktop.log` in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, quit it and delete the app or its extracted folder and that data folder. If you turned on **Start at login** in its tray menu, turn it off first, or delete `~/Library/LaunchAgents/com.views2k.etherlighting-evolved.plist` on macOS or `~/.config/autostart/etherlighting-evolved.desktop` on Linux. On Linux, also delete the files that the [desktop guide](desktop/README.md#add-ee-to-the-linux-applications-menu) adds for the applications menu: `~/.local/bin/EtherlightingEvolved`, `~/.local/share/applications/etherlighting-evolved.desktop` and `~/.local/share/icons/hicolor/256x256/apps/etherlighting-evolved.png`.
+The macOS and Linux clients keep their settings, `desktop.log` and the access keys from LAN pairing (`workspace-keys.json`) in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, quit it and delete the app or its extracted folder and that data folder. If you turned on **Start at login** in its tray menu, turn it off first, or delete `~/Library/LaunchAgents/com.views2k.etherlighting-evolved.plist` on macOS or `~/.config/autostart/etherlighting-evolved.desktop` on Linux. On Linux, also delete the files that the [desktop guide](desktop/README.md#add-ee-to-the-linux-applications-menu) adds for the applications menu: `~/.local/bin/EtherlightingEvolved`, `~/.local/share/applications/etherlighting-evolved.desktop` and `~/.local/share/icons/hicolor/256x256/apps/etherlighting-evolved.png`.
 
-To remove EE and its data from Windows, choose **Handoff to UniFi** for each switch, uninstall EE in Windows Settings → Apps, then delete both folders. Delete `output-ownership` only after Handoff to UniFi has finished: it records the switches whose lighting EE has to return at the next login. EE removes its Tailscale Serve route when it quits, and uninstalling removes it as well when EE was installed for you only. The uninstaller of an installation for all users skips that step. In that case, or when the uninstaller reports that it could not confirm the removal, run `tailscale serve status`; if the port of EE's private address (8444 by default) still forwards to `http://127.0.0.1`, remove it with `tailscale serve --https=<port> off`.
+To remove EE and its data from Windows, choose **Handoff to UniFi** for each switch, uninstall EE in Windows Settings → Apps, then delete both folders. Delete `output-ownership` only after Handoff to UniFi has finished: it records the switches whose lighting EE has to return at the next login. If you used Tailscale private access, EE removes its Tailscale Serve route when it quits, and uninstalling removes it as well when EE was installed for you only. The uninstaller of an installation for all users skips that step. In that case, or when the uninstaller reports that it could not confirm the removal, run `tailscale serve status`; if the port of EE's private address (8444 by default) still forwards to `http://127.0.0.1`, remove it with `tailscale serve --https=<port> off`.
 
 ## Reporting a problem
 
@@ -151,7 +171,7 @@ Open [the local workspace](http://127.0.0.1:4180). The simulator keeps its own d
 | Directory | Contents |
 | --- | --- |
 | `desktop/` | Desktop app, its checks and the macOS and Linux client packaging |
-| `preview/` | Workspace gateway, private access gateway and browser workspace |
+| `preview/` | Workspace gateway, Tailscale and LAN gateways and browser workspace |
 | `src/etherlighting_evolved/` | Python lighting engine, API, switch adapters and the programs EE runs on the switch |
 | `src/*.mjs` | Effect catalog, color, rule and icon modules shared by the browser workspace |
 | `assets/` | Logo, favicon and web app icons |

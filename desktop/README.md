@@ -6,15 +6,36 @@ The desktop workspace uses Avalonia 11.3 and .NET 10. Lighting, Effects, Automat
 
 The Windows installer includes the desktop app, gateway and lighting engine. Start Etherlighting Evolved from the Start menu, then connect to your switch or choose the demo. Closing the window hides it in the notification area. Use the tray menu to open it again or quit.
 
-Fans controls the fans of a USW-Pro-XG-8-PoE. Fan control runs on the switch and keeps running after you quit EE; **Switch control** returns the fans to the switch's own controller. The uninstaller does not connect to the switch, so before you uninstall, connect to each switch EE controls and choose **Handoff to UniFi** in Settings. The [README](../README.md#what-ee-changes-on-the-switch) lists what EE leaves on the switch.
+To use the workspace in a browser on the same computer, choose **Open in browser** in the tray menu or in Settings > Connection. The tab it opens can change the Tailscale and LAN access settings and close the web session; a tab opened another way, such as a bookmark of `http://127.0.0.1:4180`, shows those settings read-only.
+
+Fans controls the fans of a USW-Pro-XG-8-PoE. EE saves the fan mode for each switch, and a switch that EE has not controlled before starts in Switch control. Fan control runs on the switch and keeps running after you quit EE; **Switch control** returns the fans to the switch's own controller, and **Handoff to UniFi** in Settings returns them as well. The uninstaller does not connect to the switch, so before you uninstall, connect to each switch EE controls and choose **Handoff to UniFi**, which also stops the lighting player. The [README](../README.md#what-ee-changes-on-the-switch) lists what EE leaves on the switch.
+
+The first connection to a switch that has no saved SSH key signs in with the username and password and saves the switch's key. Settings > Connection shows the connected switch's SSH key fingerprint and key type as selectable text. If a switch presents a different key, the Connect page shows the saved and the new fingerprints, and **Accept new key** appears only in the window on the computer that runs the workspace service. A window connected through a Tailscale or LAN address shows a message to review the key on that computer instead. If the key changes while EE is connected, choose **Quit** from the tray menu and open EE again to review it.
 
 For macOS, extract the archive for your processor and open `EtherlightingEvolved.app`. On Linux, extract the archive into a folder and run `./EtherlightingEvolved` in that folder. Keep the application and its libraries together. These archives contain the desktop client and the .NET runtime, but no workspace service, and only the Windows app connects to a switch. Connect to the workspace of a Windows computer that runs EE through its Tailscale private HTTPS address, through its LAN address with a pairing code (see [Connect over your network without Tailscale](#connect-over-your-network-without-tailscale)), or to a simulator started from a source checkout on the same computer. Choose **Change workspace address** on the connection error screen or in Settings to save the address. An explicit `--url` argument takes precedence over the saved address, and the `EE_WORKSPACE_URL` environment variable sets the same address with lower precedence than `--url`. Each source accepts only the addresses the dialog accepts: an HTTPS origin, an HTTP origin on this computer, or an HTTP origin at a private IPv4 address, one that starts with 10, 172.16 to 172.31 or 192.168, with a port other than 80, without account details, a path or a query. Host names such as `.local` names and IPv6 addresses are not accepted for LAN access. A `--url` value that does not qualify opens the connection error screen with **Change workspace address**, and an environment value that does not qualify is ignored. The default local address is `http://127.0.0.1:4180/`.
+
+A window connected through a Tailscale or LAN address can use lighting, effects, automation, profiles, schedules, port names and fans, and can reconnect to the switch whose login is saved on the Windows computer. Its Connect page shows **Connect with saved login**, **Retry handoff** when a handoff waits, and **Change workspace address** instead of the login form, and Settings leaves out **Forget saved switch login** and UniFi Network setup. **Change workspace address** stays available on the Connect page while a connection or handoff is pending. A client connected by address, including the Windows app opened with `--url` or `EE_WORKSPACE_URL`, cannot change the Tailscale or LAN access settings or close a workspace it did not start. Use the Windows computer for those.
 
 On macOS, the packaging script signs the graphics libraries and completed application with an ad hoc signature and verifies the bundle before archiving it. A macOS host produces the signature-verified ZIPs used by CI. Developer ID signing and notarization are separate distribution steps.
 
 ### Desktop log
 
 The app keeps `desktop.log` in its data folder: `%LOCALAPPDATA%\Etherlighting Evolved` on Windows, `~/Library/Application Support/Etherlighting Evolved` on macOS and `~/.config/etherlighting-evolved` on Linux. It records errors the window could not report in full and why the bundled service did not start or stopped. Each entry has the time, the app version, the error type and the code locations involved, or the service's exit code and its last 64 error output lines. The app does not record its own error messages, screen text or request contents. The service's output lines can include file paths and addresses; the user name and password in an address are removed. The file stays on the computer. When it passes 256 KB it is renamed to `desktop.log.1`, replacing the previous one.
+
+### Tailscale private access
+
+Tailscale is optional. **Tailscale private access** in Settings > Remote stays off until you select **Use Tailscale**, and EE runs no Tailscale command while it is off. When it is on, EE adds one Tailscale Serve route on its HTTPS port (8444 by default) when it starts and removes it when it quits. Turning private access off removes the route, and EE never changes other Serve routes. The port can be changed under **Connection options** while private access is off.
+
+An uninstall for one user removes EE's route and names the port if it cannot confirm the removal. To remove the route by hand, quit EE and run the cleanup tool as the user who runs EE. An installation for all users skips the automatic step; for it, set `$ee` to `Join-Path $env:ProgramFiles 'Etherlighting Evolved'` instead.
+
+[WINDOWS POWERSHELL]
+
+```powershell
+$ee = Join-Path $env:LOCALAPPDATA 'Programs\Etherlighting Evolved'
+& "$ee\runtime\node.exe" "$ee\tools\private-access-cleanup.mjs"
+```
+
+The tool exits with 0 when the route is gone or there is none, with the HTTPS port number when it cannot confirm the removal, and with 2 when it cannot read the setting or is run with arguments.
 
 ### Connect a tagged Tailscale device
 
@@ -34,7 +55,7 @@ Use `status $device` to check that device, `status` to count saved approvals, or
 
 ### Connect over your network without Tailscale
 
-LAN access lets phones and other computers on your network open EE at the Windows computer's address, without Tailscale. It is off by default, and it runs only while EE controls a real switch, not in the demo. Paired devices have the same limits as devices on Tailscale: they can use lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app and reconnect to the saved switch, but switch login, UniFi Network setup and the LAN and Tailscale settings work only on the computer running EE.
+LAN access lets phones and other computers on your network open EE at the Windows computer's address, without Tailscale. It is off by default, and it runs only while EE controls a real switch, not in the demo. Paired devices have the same limits as devices on Tailscale: they can use lighting, effects, automation, profiles, schedules and port names, control fans in the desktop app and reconnect to the saved switch, but logging in to a new switch, forgetting the saved login, UniFi Network setup, the LAN and Tailscale settings and accepting a changed SSH key work only on the computer running EE.
 
 LAN access uses plain HTTP, so traffic between your devices and the computer running EE is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device's access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on the computer running EE. EE on another device never asks for switch or UniFi passwords; if it does, do not enter them. Use Tailscale for an encrypted connection.
 
@@ -89,7 +110,7 @@ The menu entry runs `EtherlightingEvolved` by name. Make sure `$HOME/.local/bin`
 
 ## Build and test
 
-Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md); set `EE_PREVIEW_PYTHON` to use a Python other than the checkout's `.venv`. Run the following from the repository root. The restore downloads the locked packages into `outputs/nuget-packages`, as `desktop/NuGet.Config` sets, and restores the app project too.
+Use the .NET 10 SDK and the locked packages for the two projects in this folder. Source mode uses the existing Node and Python environments described in the [development guide](../docs/DEVELOPMENT.md); set `EE_PREVIEW_PYTHON` to use a Python other than the checkout's `.venv`. The app run from a source checkout passes that variable to the gateway it starts, and `tools/verify.ps1` sets it to its `-PythonExe` for the desktop check; a packaged app ignores it. Run the following from the repository root. The restore downloads the locked packages into `outputs/nuget-packages`, as `desktop/NuGet.Config` sets, and restores the app project too.
 
 [WINDOWS POWERSHELL]
 

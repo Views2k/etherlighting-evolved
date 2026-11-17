@@ -82,6 +82,8 @@ The lighting player runs from `/tmp/ee-lighting-playback-v1` when the switch log
 passes the playback checks (the qualified Pro XG 8 PoE profile with native breathing and precise SFP
 output). It keeps the saved lighting and traffic-driven effects on the switch while EE is closed, and EE
 updates its scene as the lighting changes. **Handoff to UniFi** stops it from the computer that saved it.
+Accepting a changed SSH key for the switch deletes the player record of the previous key, because that player
+ran in the previous switch's memory.
 Another EE installation cannot connect to a switch while a player it did not start is running; return
 playback to UniFi from the computer that saved it, or restart the switch.
 
@@ -91,8 +93,15 @@ SIGSTOP and sets both fan outputs. A guard process resumes `ubnt-fanctrl` with S
 stops, fails or disappears. In every mode the fans speed up as the CPU passes 85 °C (full speed at 95 °C),
 the SFP sensor passes 65 °C (75 °C) or a port chip passes 100 °C (110 °C). A failed sensor reading runs
 the fans at full speed for that step, and after six failed readings in a row fan control stops and the
-switch's own fan controller takes over. Choosing **Switch control** on the Fans page stops fan control.
-While connected, EE checks fan control every 5 seconds and starts it again after a switch restart.
+switch's own fan controller takes over. Choosing **Switch control** on the Fans page stops fan control, and
+**Handoff to UniFi** stops it as well and confirms that `ubnt-fanctrl` runs again.
+
+EE saves the fan mode for each switch on the computer that runs it, and a switch that EE has not controlled
+before starts in Switch control. While connected, EE checks fan control every 5 seconds and starts it again
+after a switch restart or a handoff. Fan control started by EE on another computer keeps running until a mode
+is chosen here. The mode saved by release 0.5.1 moves to the first Pro XG 8 PoE that EE connects to after the
+update. EE's fan program changed after 0.5.1, so the first check on each switch that runs the earlier program
+restarts it once with the same mode; `ubnt-fanctrl` runs the fans while it restarts.
 
 ## Timing and physical acceptance
 

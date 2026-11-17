@@ -35,7 +35,25 @@ $env:EE_PREVIEW_LIVE = '0'
 npm start
 ```
 
-Open [the workspace](http://127.0.0.1:4180). The gateway starts its own Python service, exchanges its session token through the child process's private input, and forwards API and WebSocket requests. The service port is assigned at startup.
+Open [the workspace](http://127.0.0.1:4180). The gateway starts its own Python service, exchanges its session token through the child process's private input, and forwards API and WebSocket requests. The service port is assigned at startup. The gateway also prints an administration link that works once. A browser that opens it can change the Tailscale and LAN access settings and close the web session until the browser session ends or `npm start` stops; other tabs show those settings read-only.
+
+To open another administration link, start the gateway with your own key and request a link with it from a second PowerShell window that has the same `$env:EE_ADMIN_KEY`:
+
+[WINDOWS POWERSHELL]
+
+```powershell
+$bytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$env:EE_ADMIN_KEY = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+npm start
+```
+
+[WINDOWS POWERSHELL]
+
+```powershell
+$code = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4180/api/workspace/admin-link -Headers @{ 'X-EE-Admin-Key' = $env:EE_ADMIN_KEY }).code
+Start-Process "http://127.0.0.1:4180/?admin_code=$code"
+```
 
 To use another existing Python environment, set `EE_PREVIEW_PYTHON` to its absolute executable path before starting. The runtime also searches the checkout's `.venv` and the existing `PATH`. The desktop app, run from a source checkout, passes `EE_PREVIEW_PYTHON` to the gateway it starts; a packaged app ignores it.
 
@@ -48,14 +66,15 @@ For a live workspace, set `EE_PREVIEW_LIVE` to `1` and start the same command. E
 | `EE_PREVIEW_PYTHON` | Absolute path to an existing Python executable; also read by the desktop app run from source |
 | `EE_WORKSPACE_DATA_DIR` | Absolute directory for gateway settings and simulator data |
 | `EE_ENGINE_SOURCE_ROOT` | Explicit alternate engine checkout for integration work |
+| `EE_ADMIN_KEY` | Optional 64-character lowercase hexadecimal administration key; generated at each start when absent; never passed to the engine or to Tailscale |
 
 Keep credentials out of command arguments, environment examples, and committed configuration. The workspace login forms provide the credential path.
 
 ## Data and generated files
 
-Source workspace data defaults to `outputs/browser-preview-data/`. Simulator data is isolated there. Live engine settings, profiles, host keys, and encrypted logins use the existing engine data directory, normally `~/.etherlighting-evolved/`. `EE_DATA_DIR` moves that directory for `etherlighting-evolved serve` and `eectl`; the gateway removes it from the engine's environment.
+Source workspace data defaults to `outputs/browser-preview-data/`. Simulator data is isolated there. Live engine settings, profiles, saved SSH host keys (`known_switches.json`), the fan mode saved for each switch (`device-fans/`) and encrypted logins use the existing engine data directory, normally `~/.etherlighting-evolved/`. `EE_DATA_DIR` moves that directory for `etherlighting-evolved serve` and `eectl`; the gateway removes it from the engine's environment.
 
-The packaged Windows gateway stores its workspace settings under `%LOCALAPPDATA%/Etherlighting Evolved/workspace/`. Its live engine uses the same engine data directory as source mode. Changing the checkout or rebuilding an installer does not require copying or deleting either data directory.
+The packaged Windows gateway stores its workspace settings under `%LOCALAPPDATA%/Etherlighting Evolved/workspace/`: `private-access.json`, `approved-device.json`, `lan-access.json`, `last-session.json` and `service-diagnostics.log`. A source gateway keeps the same files in its workspace data directory. Its live engine uses the same engine data directory as source mode. Changing the checkout or rebuilding an installer does not require copying or deleting either data directory.
 
 `outputs/`, `dist/`, build caches, virtual environments, runtime configuration, and local working notes are excluded from version control. Firmware images, extracted vendor files, private diagnostics, and saved credentials do not belong in the source repository.
 
@@ -91,12 +110,12 @@ Installing the project into the environment adds the commands `etherlighting-evo
 | Subcommand | Purpose |
 | --- | --- |
 | `serve` | Runs the API server on `127.0.0.1:8787`; the default when no subcommand is given. `--demo` logs in to the simulator. The page at `/` links to the API documentation at `/docs`. |
-| `probe <host> -u <user>` | Reads the switch's model, ports and lighting interface and reports whether EE allows output on it. It does not change the switch. |
+| `probe <host> -u <user>` | Reads the switch's model, ports and lighting interface and reports whether EE allows output on it. It does not change the switch. Like the app, the first connection saves the switch's SSH key. `--accept-host-key <fingerprint>` accepts the changed key that the previous run printed, unless switch playback is saved for that switch. |
 | `set <host> -u <user> <port> <color>` | Sets one port's color once. |
 | `benchmark <host> -u <user>` | Measures LED command timing with paced writes to one port. |
 | `effects` | Lists the effects and their parameters. |
 | `init-config [path]` | Writes an example `ee.toml`. |
-| `forget-host <host>` | Removes the pinned SSH host key of a switch. |
+| `forget-host <host>` | Removes the saved SSH host key of a switch; the next connection saves the key it presents. |
 
 `set` and `benchmark` write to the switch and apply the same model and firmware check as the app. `serve`, `set` and `benchmark` take the application instance lock, so they run on Windows only and not while EE runs. The switch commands ask for the SSH password unless `EE_PASSWORD` or a key file (`-i`) provides it. The `-p` option also accepts it, but leaves it in the shell history.
 
