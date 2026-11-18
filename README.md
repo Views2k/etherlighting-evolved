@@ -22,6 +22,34 @@ The desktop app has Lighting, Effects, Automation, Profiles, Fans, Settings and 
 - On a USW-Pro-XG-8-PoE, set the fans to Switch control, a Low, Medium, High or Max curve, Manual (one fixed speed) or Thermal target, and see the CPU, SFP and port chip temperatures. Fan control is in the desktop app only.
 - Open the workspace from a phone or another computer through Tailscale, or on your own network with LAN access. Both are optional and off until you turn them on.
 
+## Screenshots
+
+These images show the desktop app in its demo session with the Midnight theme.
+
+The Lighting page with the Rainbow Wave effect applied to the Ethernet ports:
+
+![Lighting page with a rainbow effect on eight Ethernet ports and the port controls panel](docs/screenshots/lighting.svg)
+
+The Effects page, where each effect is previewed before it is applied:
+
+![Effects page with a grid of effect previews](docs/screenshots/effects.svg)
+
+The Fans page in a rack-sized window, following the Medium curve:
+
+![Fans page showing CPU, SFP and port chip temperatures, fan speed and the four fan curves](docs/screenshots/fans-curve.svg)
+
+The Fans page with a thermal target of 55 °C:
+
+![Fans page with the thermal target slider set to 55 °C](docs/screenshots/fans-target.svg)
+
+The Automation page with rules for anomalies, offline ports and PoE++ devices:
+
+![Automation page with a rule list and the rule editor](docs/screenshots/automation.svg)
+
+The Profiles page with three saved profiles:
+
+![Profiles page with saved lighting profiles and the details of one profile](docs/screenshots/profiles.svg)
+
 ## Requirements
 
 - A computer with 64-bit Windows 10 or later. EE controls switches from Windows only.
