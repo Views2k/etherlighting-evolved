@@ -24,6 +24,10 @@ updates:
       - /desktop/EtherlightingEvolved.Native.Check
     schedule:
       interval: weekly
+    # Avalonia 12 does not build without source changes, so major versions are left to a planned migration.
+    ignore:
+      - dependency-name: 'Avalonia*'
+        update-types: ['version-update:semver-major']
     groups:
       avalonia:
         patterns: ['Avalonia*']
