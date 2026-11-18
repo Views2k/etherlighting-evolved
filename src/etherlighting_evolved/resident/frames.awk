@@ -18,29 +18,38 @@ function configuration() {
 # Open the replacement once per frame. A rename during a read leaves this frame
 # on the old complete scene. Original RAM players pass the same four filenames.
 BEGIN {
+    # Earlier players omit this argument and retain their ten-port scene format.
+    if (port_count == "") port_count=10
+    if (port_count !~ /^[1-9][0-9]*$/ || port_count>54) {bad=1; exit 2}
+    channels=6*port_count
     scene="scene.active"
     if ((getline < scene)>0) {
         edited=1
         if (NF!=1 || ($1!=1 && $1!=120)) {bad=1; exit 2}
         count=$1
-        for (row=1;row<=10;row++) {
+        for (row=1;row<=port_count;row++) {
             if ((getline < scene)!=1 || NF<9 || $1!=row) {bad=1; exit 2}
             configuration()
             if ($2>0 || $10==1 || $10==2) reactive=1
         }
         wanted=int(stamp*4)%count+1
-        for (row=1;row<=wanted;row++) if ((getline < scene)!=1 || (NF!=60 && NF!=120)) {bad=1; exit 2}
+        for (row=1;row<=wanted;row++) if ((getline < scene)!=1 || (NF!=channels && NF!=2*channels)) {bad=1; exit 2}
         for (i=1;i<=NF;i++) color[i]=$i
     }
     close(scene)
 }
 FILENAME == "config" {
     if ($2>0 || $10==1 || $10==2) originalReactive=1
+    if (FNR>port_count || NF<9 || $1!=FNR) {bad=1; next}
+    originalRows=FNR
     if (!edited) configuration()
     next
 }
 FILENAME == "palette" {
-    if (!edited && FNR == frame+1) for (i=1; i<=NF; i++) color[i]=$i
+    if (!edited && FNR == frame+1) {
+        if (NF!=channels && NF!=2*channels) {bad=1; next}
+        for (i=1; i<=NF; i++) color[i]=$i
+    }
     next
 }
 FILENAME == "previous" {
@@ -52,7 +61,7 @@ function traffic() {
     for (i=1; i<NF; i++) {
         if ($i !~ /^[1-9][0-9]*$/ || $(i+1) !~ /^[UD]\/[UD]$/) continue
         p=$i+0
-        if (p>10) break
+        if (p>port_count) break
         if (seen[p]++) { bad=1; break }
         online[p]=substr($(i+1),3,1)=="U"; trunk[p]=(i>1 && $(i-1)=="U")
         eligible[p]=online[p] && (uplink[p] || !trunk[p])
@@ -86,7 +95,7 @@ END {
         while ((poll | getline)>0) traffic()
         if (close(poll)!=0) bad=1
     }
-    if (bad || !(1 in color) || !(60 in color)) exit 2
+    if (bad || originalRows!=port_count || !(1 in color) || !(channels in color)) exit 2
     if (needsClock) {
         clock="date '+%H %M %S'"
         if ((clock | getline)!=1 || NF!=3) exit 2
@@ -107,7 +116,7 @@ END {
     }
     dt=oldtime ? stamp-oldtime : 0
     if (dt<0) exit 2
-    for (p=1; p<=10; p++) {
+    for (p=1; p<=port_count; p++) {
         if ((group[p]>0 || mode[p]==1 || mode[p]==2) && !seen[p]) exit 2
         if (dt>0 && valid[p] && oldvalid[p] && eligible[p] && bytes[p]>=oldbytes[p])
             rate[p]=(bytes[p]-oldbytes[p])*8/dt
@@ -134,18 +143,19 @@ END {
             target[p]=clamp(log(1+watts[p])/log(61)); powerTarget[p]=watts[p]>0
         }
     }
-    for (p=1; p<=10; p++) {
+    for (p=1; p<=port_count; p++) {
         g=group[p]
         printf "%d %.6f %.0f %d %.12f %.12f %.12f %d\n",p,stamp,bytes[p],valid[p],level[p],(g>0 ? rate[p]/scale[g] : target[p]),powered[p],powerTarget[p] > "next"
         s=source[p]
+        if (s !~ /^[0-9]+$/ || s>port_count) exit 2
         if (s==0) continue
         printf "%d",p
         for (c=1; c<=3; c++) {
             lo=color[6*(s-1)+c]; hi=color[6*(s-1)+3+c]
             value=lo+(hi-lo)*level[s]
-            aux=color[60+6*(s-1)+c]
+            aux=color[channels+6*(s-1)+c]
             if (mode[s]==1 && !online[s]) value=aux
-            else if (mode[s]==1 && trunk[s] && custom[s]) value=color[60+6*(s-1)+3+c]
+            else if (mode[s]==1 && trunk[s] && custom[s]) value=color[channels+6*(s-1)+3+c]
             else if (mode[s]==2) value=online[s] ? value*trail(s) : aux
             else if (mode[s]==3) value=lo*(1-powered[s])+hi*(powered[s]-level[s])+aux*level[s]
             else if (mode[s]==4) value=daylightChannel(s,c)
