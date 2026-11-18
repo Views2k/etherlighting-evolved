@@ -56,6 +56,24 @@ test('an unconfirmed close can retry rather than pretending output stopped',asyn
   assert.equal(closes,1);retry();await new Promise(resolve=>setImmediate(resolve));assert.equal(closes,2);
 });
 
+test('a desktop that sends exit after its own refused close gets no further close attempts',async()=>{
+  const input=new PassThrough(),timers=[];let closes=0,exits=0;
+  watchDesktopParent({input,close:async()=>{closes++;},exit:()=>exits++,setTimer:fn=>timers.push(fn)});
+  input.write('exit\r\n');input.end();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(exits,1);assert.equal(closes,0);assert.equal(timers.length,0);
+  input.emit('data','exit\n');assert.equal(exits,1);
+});
+
+test('exit during a retry wait cancels the retry',async()=>{
+  const input=new PassThrough(),timers=[];let closes=0,exits=0;
+  watchDesktopParent({input,close:async()=>{closes++;throw Error('unconfirmed');},exit:()=>exits++,setTimer:fn=>timers.push(fn)});
+  input.write('quit\n');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closes,1);assert.equal(timers.length,1);
+  input.write('exit\n');await new Promise(resolve=>setImmediate(resolve));
+  timers.shift()();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(exits,1);assert.equal(closes,1);
+});
+
 test('blocked output does not claim automatic reconnect is running',()=>{
   const session={logged_in:true,connected:false,reconnect_required:true};
   assert.equal(connectionLabel(session),'Switch connection needs attention');

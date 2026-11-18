@@ -106,7 +106,10 @@ async def test_engine_recovery_preserves_scene_and_resumes_only_after_ack(tmp_pa
     engine.connected = True
     before = engine.snapshot()
     engine._lost(TransportError("cable disconnected"))
-    assert engine.state()["reconnect_required"]
+    # The connection loop would start this recovery on its own; Reconnect switch runs the same steps.
+    assert engine.mode == "released" and not engine.state()["reconnect_required"]
+    with pytest.raises(TransportError):
+        engine.resume()
     await engine.recover_connection()
     assert engine.connected and engine.mode == "running"
     assert engine.snapshot() == before
