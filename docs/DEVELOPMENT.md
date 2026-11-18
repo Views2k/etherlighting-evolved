@@ -11,6 +11,7 @@ Follow [WORKFLOW.md](WORKFLOW.md) for branches, pull request checks and releases
 - The `dev` Python extras for tests and linting.
 - The .NET 10 SDK (`global.json`) and the packages pinned by the desktop projects’ lock files. EE Quality restores the check project with `dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --locked-mode`.
 - The packaging dependencies in `requirements-ci.txt`, including PyInstaller and Pillow, and Inno Setup 6.7 for Windows Setup.
+- A C11 compiler for the Pro Max device helper tests: the MSVC x64 tools on Windows, or Clang or GCC on macOS and Linux. The tests find the installed compiler and build the helper with device access left out. EE does not need a compiler to run.
 
 Build scripts check for tools and dependencies; they do not install them. Create the Python environment once from the repository root:
 

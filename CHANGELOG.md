@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The lighting player that a switch runs from its memory takes its port layout from the switch's hardware profile, and EE now checks both the player and its renderer before reusing a running player. The first connection after the update replaces a running player once and keeps its saved scene. Switch playback is still available only on the USW-Pro-XG-8-PoE.
+
 ## 0.6.0
 
 This release removes API routes, saves schedules and port names in a format that 0.5.1 cannot read, keeps the fan mode for each switch in a new place, and moves the build to Python 3.14, Node.js 24.18.0 and .NET 10.

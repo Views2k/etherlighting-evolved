@@ -8,7 +8,7 @@ The November 14, 2026 inventory covers all 25 Etherlighting models in the curren
 
 Ubiquiti's model-specific release API was checked for all 25 platforms on November 14 at 23:51:59–23:52:00 UTC. Nine platforms point to two updated 7.6.11+17272 images. The other sixteen point to images already examined in the November 1 review. Release-channel metadata describes the available artifact, not an update observed on every controller.
 
-All six image hashes were compared with the official release metadata. The two newly downloaded images matched their official lengths and SHA-256 hashes. Microsoft Defender found no threats in those archives or their extracted files. Firmware was inspected as data, without running its programs or connecting to a switch.
+All six image hashes were compared with the official release metadata. The two newly downloaded images matched their official lengths and SHA-256 hashes. Microsoft Defender found no threats in those archives or their extracted files. Firmware was inspected as data without running its programs. Separate read-only storage metadata from the previously accepted Pro XG 8 establishes its RAM-backed persistent directory and 1 MiB configuration partition; it does not verify a saved EE archive or reboot recovery.
 
 ## Model matrix
 
@@ -72,9 +72,14 @@ The vendor host mapping is now traced across all 192 connector rows in the six m
 
 The connector map is source-qualified for these exact model/firmware profiles. Each connector has a unique output ID, and those IDs are disjoint from the extra MCU records on every model. The status-bit map is a separate index space; its different ordering does not establish a routing defect. Extra MCU records must stay outside connector command masks. Physical output acceptance remains unobserved. The next adapter also needs bounded packet encoding and independent completion checks: acknowledgment occurs before execution, so successful submission is not confirmation that a queued command completed.
 
-The MCU has a bounded readback lead: selecting register 0x10 snapshots current RGBW and retains the selected-record echo. A checked echo plus eight color bytes can corroborate the selected record's observed MCU values. The host transfer, response lengths and interleaving behavior still need qualification. This is not a completed adapter or confirmation of animation behavior, unique command execution or physical light output.
+The MCU has a bounded readback lead: selecting register 0x10 snapshots current RGBW and retains the selected-record echo. A checked echo plus eight color bytes reports a captured MCU register snapshot. The same register window can be overwritten with staged channel values without changing the selector; an echo match alone does not establish freshness or execution. The host transfer, response lengths and interleaving behavior still need qualification. This is not a completed adapter or confirmation of animation behavior, unique command execution or physical light output.
 
 Ownership also requires proof. Mode 3 suppresses ordinary link/PoE writers, but locate and controller device-type changes have separate paths. A controller change can retain the same mode. Restoring a cached mode would risk overwriting newer controller intent. No output adapter should use broad configuration locks, stop vendor services or infer exclusive ownership from this mode alone.
+
+
+`pro_max.py` contains the bounded packet codec and a transport-independent transaction planner for all six connector layouts. It distinguishes transfer acceptance from a matching register snapshot, checks exact lengths, bounds read retries and never retransmits an uncertain write. It performs no I/O and grants no output ownership. The fixed-device helper in `tools/device-helpers/pro-max-io.c` implements the reviewed `I2C_RDWR` framing with exact completed-message counts. Its parser allows only the reviewed packets and short register reads, fixed bus/address and model-specific connector bounds. Partial or failed writes are never replayed. Compiler-backed tests inject syscall results; their build excludes device access entirely. The separate Linux wrapper requires an explicit build macro and is not packaged or invoked by EE. Target compilation, actual firmware admission, concurrent-writer exclusion, intent observation and restoration remain integration gates.
+
+The controller's global configuration lock is not an output lease. Some vendor handlers abandon a controller action when that lock is held. EE must not hold it to prevent lighting changes.
 
 ## Campus aggregation and core adapter work
 
@@ -86,13 +91,34 @@ MCU selector register 0x10 can snapshot the selected port's active channels; reg
 
 Mode 3 suppresses normal link events, but direct color writes bypass it. Controller-policy reconciliation and completion-aware cleanup remain required before output admission.
 
+
+`sonic_lighting.py` binds the captured MCU hash and board ID to the canonical 54- or 32-port layout. Its decoder validates the nine-byte selector/RGBW snapshot and a later selector echo. The result is a register observation; matching echoes do not exclude an intervening change or prove ownership. No transport or output admission is added by this module.
+
+## Resident scenes and startup
+
+The numeric scene compiler and AWK renderer now use the canonical connector count for all 25 layouts, including optical-only models and the last connector of larger switches. Stacking and internal records stay outside the scene. Offline tests exercise actual renderer output, Activity Glow input changes, atomic scene replacement and rejection of incomplete layouts. The common ubus player can be built for each of the 17 qualified command layouts. Runtime admission remains separate: the new compiler and generator do not establish per-model sensor compatibility, command timing or reboot behavior.
+
+Reconnect now checks both the player and renderer hashes before reusing a resident process. A changed renderer triggers the existing drained replacement path. Earlier ten-port scenes keep their format and normal editor workflow.
+
+| Firmware families | Models | Persistent storage evidence | Startup gate |
+| --- | ---: | --- | --- |
+| USPM16, USWED72 | 10 | Vendor configuration archive restores `/etc/persistent` | Vendor cron is a candidate; archive writer and configuration transaction qualification remain open |
+| USWED42, USWF001, USWF004 | 13 | Configuration archive and existing eMMC mount at `/mnt/data` | Saved cron can start a launcher after isolated reboot; concurrent configuration edits and later UniFi ownership remain unresolved |
+| USWF066 | 2 | Persistent disk under `/host`; writable root overlay is RAM | Traced startup producer emits fixed vendor commands; no scoped EE startup extension established |
+
+The ARM boot script can format an entire eMMC device when expected partitions are missing. EE must never call that initializer to obtain storage. A future persistent package needs a verified existing mount, an EE-owned directory, atomic settings replacement, bounded writes and removal through Handoff. Copying a service into a RAM overlay alone does not survive reboot. Saved cron plus an archived launcher provides a candidate isolated-reboot path on the non-SONiC firmware. The inspected BusyBox cron requires a five-field schedule; a conventional `@reboot` job is not accepted. An eventual launcher must be idempotent, check complete saved generations and current device identity, honor Handoff, and keep counters and periodic writes in RAM.
+
+The fully decoded ARM archive uses two 512 KiB slots with 24-byte headers. Its 16 MiB input guard is not persistent capacity. Storage budgeting must cover the entire compressed configuration and archive, not just EE files. A future installer must preserve existing cron sections and jobs: duplicate user sections overwrite the same generated crontab. Controller provisioning replaces the configuration rather than merging these keys. A compare-before-rename check is not a proven transaction boundary against that writer.
+
+On Campus Aggregation/Core, the real LINUXCFG START consumer receives fixed VRRP commands from its normal producer. The ordinary full CONFIG_DB save path excludes these two board IDs. The active startup plugin list excludes the ARM cron path, and the root overlay is RAM. Persisting the entire network database would broaden this lighting change into network configuration management and is not used here. No persistent startup registration is shipped or enabled by this work.
+
 ## Launch acceptance
 
 Every enabled model/firmware pair must pass identity, schema, exact hash-pair, connector mapping, pacing, stale-connection revocation, interrupted apply, reconnect and cleanup checks. Malformed or cross-family evidence must leave the writer unbound. A firmware update must retain saved settings while requiring fresh qualification on its new connection.
 
 The ordinary Lighting, Effects, Automation and Profiles workspace must remain usable. No playback gate or separate effect editor is part of this work. Browser and native topology fixtures cover the model layouts; physical labeling and visible behavior need device acceptance.
 
-Switch-resident playback is currently specific to Pro XG 8 PoE. It uses a RAM-resident player. Other models need their own telemetry, port-map and resource-budget validation before that path is enabled. Isolated reboot recovery and direct UniFi-edit precedence remain open, including on Pro XG 8 PoE. Firmware analysis alone cannot establish those behaviors.
+Switch-resident playback is currently specific to Pro XG 8 PoE. It uses a RAM-resident player. Other models need their own telemetry and resource-budget validation before that path is enabled. Isolated reboot recovery and direct UniFi-edit precedence remain open, including on Pro XG 8 PoE. Firmware analysis alone cannot establish those behaviors.
 
 Before enabling a new family, a controlled device acceptance run must verify every physical port at bounded brightness, an unchanged nonselected port, link/PoE stability, sustained CPU/memory and command latency, loss of the desktop/SSH connection, explicit handoff and recovery. Reboot testing requires a supported persistent startup mechanism and separate authorization for the network interruption. Public release notes must describe only the model/firmware behavior actually accepted.
 
