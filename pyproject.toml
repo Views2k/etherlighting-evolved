@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "etherlighting-evolved"
-version = "0.6.0"
+version = "0.6.1"
 description = "Open-source controller for UniFi Etherlighting switches. Unofficial; not affiliated with Ubiquiti."
 readme = "README.md"
 license = "MIT"
