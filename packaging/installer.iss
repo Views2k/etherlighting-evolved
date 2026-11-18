@@ -2,7 +2,7 @@
 ; passes the application version with /DAppVersion=... The default below is kept equal to it by tools/set-version.py.
 
 #ifndef AppVersion
-  #define AppVersion "0.6.0"
+  #define AppVersion "0.6.1"
 #endif
 
 #ifndef AppSourceDir
