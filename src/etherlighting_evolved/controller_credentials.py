@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 
 from .controller import (
@@ -19,6 +16,7 @@ from .controller import (
     validate_controller_kind,
 )
 from .credentials import CredentialStoreError, _dpapi
+from .storage import atomic_write_bytes
 
 
 class ControllerLoginStore:
@@ -102,22 +100,10 @@ class ControllerLoginStore:
             raise CredentialStoreError("Windows could not protect the controller login. Try saving it again.") from exc
         envelope = json.dumps({"version": 1, "protection": "windows-dpapi", "purpose": "unifi-controller-login",
                                "data": base64.b64encode(encrypted).decode("ascii")}).encode("utf-8")
-        temporary = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="wb", dir=self.path.parent, prefix=".controller-login-",
-                                             suffix=".tmp", delete=False) as file:
-                temporary = Path(file.name)
-                file.write(envelope)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary, self.path)
+            atomic_write_bytes(self.path, envelope)
         except OSError as exc:
             raise CredentialStoreError("Could not save the protected controller login. Try again.") from exc
-        finally:
-            if temporary is not None:
-                with contextlib.suppress(OSError):
-                    temporary.unlink()
 
     def clear(self) -> None:
         try:

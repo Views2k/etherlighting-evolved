@@ -9,12 +9,11 @@ from etherlighting_evolved.controller import (
     MAX_RESPONSE,
     ControllerClient,
     ControllerError,
-    ControllerManager,
     controller_origin,
     match_switch,
-    port_diagnostics,
     port_metadata,
 )
+from etherlighting_evolved.controller_manager import ControllerManager
 
 TARGET = "02:00:00:00:00:01"
 CHILD = "02:00:00:00:00:02"
@@ -133,67 +132,6 @@ def test_bad_optional_shapes_and_mac_fallback_are_not_names():
               "port_overrides": "invalid"}
     assert port_metadata(switch, [], [client("02:00:00:01:00:01", 1, name=TARGET)]) == {}
     assert port_metadata({**switch, "mac": None}, [], []) == {}
-
-
-def test_diagnostics_report_only_matches_and_ages_without_identifying_values():
-    switch = {"mac": TARGET, "port_table": [{"port_idx": 3, "name": "Private host",
-              "peer_mac": "02:00:00:01:00:01", "mac_table": [{"mac": "02:00:00:01:00:02"}]}],
-              "port_overrides": [{"port_idx": 3, "name": "Private host"}],
-              "lldp_table": [{"local_port_idx": 3, "chassis_id": "02:00:00:01:00:01",
-                              "system_name": "Private host"}]}
-    clients = [client("02:00:00:01:00:01", 3, name="Private host", ip="192.0.2.30",
-                      hostname="Private hostname", last_seen=990, uptime=1234, sw_depth=2,
-                      last_uplink_mac=TARGET, is_direct=True),
-               client("02:00:00:01:00:02", 3, name="Private guest", hostname="", is_downstream=True,
-                      sw_depth=2, last_seen=995, uptime=234, is_virtual=True)]
-    result = port_diagnostics(switch, clients, observed_at=1000)
-    row = result[0]
-    assert row["candidate_count"] == 2 and row["port"] == 3
-    assert row["port_label_matches"] == row["configured_label_matches"] == [0]
-    assert row["peer_identity_fields"] == [{"field": "peer_mac", "candidates": [0]}]
-    assert row["mac_table_candidates"] == [1]
-    assert row["lldp"] == [{"chassis_candidates": [0],
-                            "name_fields": [{"field": "system_name", "candidates": [0]}]}]
-    assert row["candidates"][0]["last_seen_age_seconds"] == 10
-    assert row["candidates"][0]["last_uplink_matches_switch"] is True
-    assert row["candidates"][1]["included_by_mapping"] is False
-    serialized = json.dumps(result)
-    assert all(value not in serialized for value in
-               ("Private", "192.0.2.30", TARGET, "02:00:00:01:00:01", "02:00:00:01:00:02"))
-
-
-def test_diagnostics_bound_candidates_and_handle_missing_malformed_topology():
-    switch = {"mac": TARGET, "port_table": [{"port_idx": 1, "name": None, "lldp_table": "invalid"}],
-              "lldp_table": None, "port_overrides": None}
-    clients = [client(f"02:00:00:01:00:{index:02x}", 1, last_seen="invalid", sw_depth=True,
-                      uptime=float("inf"), is_direct="unknown") for index in range(100)]
-    result = port_diagnostics(switch, clients, observed_at=1000)
-    assert result[0]["candidate_count"] == 100
-    assert result[0]["candidates_truncated"] and len(result[0]["candidates"]) == 64
-    assert result[0]["lldp"] == []
-    assert all(row["last_seen_age_seconds"] is None and row["sw_depth"] is None
-               and row["uptime_seconds"] is None and row["flags"]["is_direct"] is None
-               for row in result[0]["candidates"])
-    assert port_diagnostics({"mac": None}, clients, observed_at=1000) == []
-
-
-def test_diagnostics_preserve_boolean_field_variants_and_collection_shapes_only():
-    switch = {"mac": TARGET, "port_table": [None, {"port_idx": 3, "sta": ["private-token"],
-              "connected_client": {"mac": CHILD, "name": "Private host"}, "mac_table": None}],
-              "station_table": [{"name": "Private host"}, "private-token"]}
-    records = [client(CHILD, 3, name="Private host", virtual=True, is_virtual=False,
-                      wired=True, is_wireless=False, is_direct="private-token")]
-    row = port_diagnostics(switch, records, observed_at=1000)[0]
-    assert row["port_table_row_indexes"] == [1]
-    assert row["port_collection_shapes"] == {
-        "sta": {"type": "list", "count": 1, "object_count": 0},
-        "connected_client": {"type": "object"}, "mac_table": {"type": "null"}}
-    assert row["switch_collection_shapes"] == {
-        "station_table": {"type": "list", "count": 2, "object_count": 1}}
-    assert row["candidates"][0]["flags"] == {"is_wired": True, "wired": True, "is_wireless": False,
-                                              "is_virtual": False, "virtual": True, "is_direct": None}
-    serialized = json.dumps(row)
-    assert all(value not in serialized for value in ("Private host", "private-token", CHILD, TARGET))
 
 
 def test_switch_match_requires_one_actual_address_and_switch_ports():
@@ -504,6 +442,9 @@ class FakeClient:
     instances = []
     sites = [{"name": "default", "desc": "Home"}]
     error = None
+    auth_method = "password"
+    console_id = None
+    api_key = ""
 
     def __init__(self, url, username, password, pin=None, *, kind="self_hosted"):
         self.url, self.username, self.password, self.pin = url, username, password, pin
@@ -535,10 +476,6 @@ def test_manager_enriches_only_matching_fresh_switch_and_clears_on_failure():
         result = await manager.connect(url="https://controller.test", username="user", password="secret",
                                        switch_host="192.0.2.1")
         assert result["connected"] and result["site"] == "default"
-        diagnostics = manager.diagnostics("192.0.2.1")
-        assert diagnostics["available"] and diagnostics["updated_at"] == result["updated_at"]
-        assert diagnostics["ports"][0]["candidate_count"] == 1
-        assert manager.diagnostics("192.0.2.9") == {"available": False, "updated_at": None, "ports": []}
         ports = [{"port": 1, "display_rgb": [1.0, 2.0, 3.0], "poe": {"power_w": 8}, "traffic_bps": 900}]
         enriched = manager.enrich_ports(ports, "192.0.2.1")
         assert enriched[0]["name"] == "Desk"
@@ -547,18 +484,15 @@ def test_manager_enriches_only_matching_fresh_switch_and_clears_on_failure():
         assert manager.enrich_ports(ports, "192.0.2.9") == ports
         clock[0] += 46
         assert manager.status()["stale"]
-        assert not manager.diagnostics("192.0.2.1")["available"]
         assert manager.enrich_ports(ports, "192.0.2.1") == ports
         await manager.refresh("192.0.2.1")
         assert manager.status()["connected"]
         manager._client.error = ControllerError("unreachable", "Could not reach the controller over HTTPS.", 503)
         await manager.refresh("192.0.2.1")
         assert manager.status()["mapped_ports"] == 0
-        assert manager.diagnostics("192.0.2.1")["ports"] == []
         assert manager.enrich_ports(ports, "192.0.2.1") == ports
         await manager.disconnect()
         assert not manager.status()["configured"]
-        assert manager.diagnostics("192.0.2.1") == {"available": False, "updated_at": None, "ports": []}
         assert "secret" not in json.dumps(manager.status())
     asyncio.run(case())
 
@@ -575,7 +509,6 @@ def test_login_for_saving_returns_only_current_successful_identity():
         assert record == {"url": "https://controller.test", "username": "user", "password": "private-password",
                           "site": "default", "certificate_sha256": "1" * 64, "controller_kind": "self_hosted"}
         assert "private-password" not in json.dumps(manager.status())
-        assert "private-password" not in json.dumps(manager.diagnostics("192.0.2.1"))
         assert not manager.can_save_login(None)
         assert not manager.can_save_login("192.0.2.9")
         clock[0] += 46

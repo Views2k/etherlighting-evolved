@@ -16,6 +16,7 @@ class Process:
         self.started = asyncio.Event()
         self.replies = asyncio.Queue()
         self.exit_status = None
+        self.exit_signal = None
         self.stdin = SimpleNamespace(write=self.write, write_eof=self.eof)
         self.stdout = SimpleNamespace(readline=self.replies.get)
 

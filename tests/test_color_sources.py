@@ -2,11 +2,10 @@ import copy
 import json
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from etherlighting_evolved import engine as engine_module
+from etherlighting_evolved import timing
 from etherlighting_evolved.color import Color
 from etherlighting_evolved.effects import EFFECTS, create_effect, list_effects
 from etherlighting_evolved.effects.base import RenderContext
@@ -15,6 +14,7 @@ from etherlighting_evolved.links import PortLink
 from etherlighting_evolved.switch import EtherlightSwitch
 from etherlighting_evolved.transport import SimulatedTransport
 
+# fixed_effects.json records earlier engine output on purpose. It has no generator and must not be regenerated.
 BASELINE = json.loads((Path(__file__).parent / "fixtures" / "fixed_effects.json").read_text("utf-8"))
 
 
@@ -174,7 +174,7 @@ def test_scene_round_trip_retains_independent_sources_and_fixed_colors():
 
 def test_toggling_a_color_source_uses_the_existing_engine_crossfade(monkeypatch):
     clock = [100.0]
-    monkeypatch.setattr(engine_module, "timing", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(timing, "monotonic", lambda: clock[0])
     engine = Engine(EtherlightSwitch(SimulatedTransport(latency=0)), effect="static",
                     effect_params={"color": "white"}, rules=[], transition=1)
     before = engine.compose()[0]

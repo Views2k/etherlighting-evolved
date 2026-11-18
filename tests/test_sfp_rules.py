@@ -24,7 +24,7 @@ def alert(ports=None, **look):
 
 
 async def settled(engine, port):
-    engine._sync_sfp_rules()
+    engine.sfp_indicators.sync_rules()
     await asyncio.wait_for(engine.wait_for_sfp(port), 1)
 
 
@@ -35,7 +35,7 @@ def test_rule_scope_requires_verified_sfp_and_general_rules_remain_copper_only()
     engine = engine_for_sfp()
     anomaly(engine, 9, True)
     engine.add_rule(alert())
-    assert not engine.sfp_outputs()
+    assert not engine.sfp_indicators.outputs()
     engine.switch.sfp_ports = ()
     with pytest.raises(ValueError):
         engine.add_rule(alert([9]))
@@ -51,15 +51,15 @@ async def test_anomaly_acquires_only_targeted_sfp_then_restores_link_status():
         await settled(engine, 9)
         assert engine.switch.sfp_applied[9].color == Color(255, 0, 0)
         assert 10 not in engine.switch.sfp_applied
-        state = engine.sfp_state()[0]
+        state = engine.sfp_indicators.state()[0]
         assert state["mode"] == "unmanaged" and state["rule"]["name"] == "SFP anomaly"
         assert state["preview"] == "#ff0000" and state["facts"]["anomaly"] is True
         assert state["control"]["state"] == "active"
         anomaly(engine, 9, False)
         await settled(engine, 9)
         assert 9 not in engine.switch.sfp_applied
-        assert engine.sfp_state()[0]["rule"] is None
-        assert engine.sfp_state()[0]["control"]["state"] == "idle"
+        assert engine.sfp_indicators.state()[0]["rule"] is None
+        assert engine.sfp_indicators.state()[0]["control"]["state"] == "idle"
     finally:
         await engine.stop()
 
@@ -81,7 +81,7 @@ async def test_rule_clear_returns_to_saved_color_and_explicit_off_stays_off():
         engine.set_sfp(9, {"mode": "off"})
         await settled(engine, 9)
         assert engine.switch.sfp_applied[9].color == Color(0, 0, 0)
-        assert engine.sfp_state()[0]["rule"] is None
+        assert engine.sfp_indicators.state()[0]["rule"] is None
     finally:
         await engine.stop()
 
@@ -110,10 +110,10 @@ async def test_disabling_deleting_and_reordering_rules_restores_current_priority
 def test_unknown_facts_do_not_trigger_alert_and_keep_effect_preserves_link_status():
     engine = engine_for_sfp()
     engine.add_rule(alert([9]))
-    assert engine.sfp_outputs() == {}
+    assert engine.sfp_indicators.outputs() == {}
     anomaly(engine, 9, True)
     engine.set_rules([alert([9], style="effect", brightness=50)])
-    assert engine.sfp_outputs() == {}
+    assert engine.sfp_indicators.outputs() == {}
 
 
 def test_scene_round_trip_preserves_targets_without_persisting_active_rule_ownership():
@@ -125,8 +125,8 @@ def test_scene_round_trip_preserves_targets_without_persisting_active_rule_owner
     restored.apply_snapshot(snapshot)
     assert restored.snapshot() == snapshot
     assert restored.rules[0].id == rule.id
-    assert restored.sfp_outputs() == {}
-    assert all(item["rule"] is None for item in restored.sfp_state())
+    assert restored.sfp_indicators.outputs() == {}
+    assert all(item["rule"] is None for item in restored.sfp_indicators.state())
 
 
 @pytest.mark.anyio
@@ -134,11 +134,11 @@ async def test_failed_alert_release_keeps_output_blocked_until_reconnection():
     engine = engine_for_sfp()
     engine.add_rule(alert([9]))
     anomaly(engine, 9, True)
-    engine._sync_sfp_rules()
-    engine.switch.sfp_applied.update(engine.sfp_outputs())
+    engine.sfp_indicators.sync_rules()
+    engine.switch.sfp_applied.update(engine.sfp_indicators.outputs())
     engine.switch.fail_sfp_release = True
     anomaly(engine, 9, False)
-    engine._sync_sfp_rules()
+    engine.sfp_indicators.sync_rules()
     with pytest.raises(TransportError):
         await engine.wait_for_sfp(9)
     assert engine.mode == "released" and engine._native_blocked

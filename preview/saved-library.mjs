@@ -1,6 +1,6 @@
 import {confirmAction} from './confirmation.mjs';
 import {sceneTopology,lightingPorts,portRanges} from './port-topology.mjs';
-const node=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el;};
+import {node} from './dom.mjs';
 export function selectionFits(item,state){
   const topology=sceneTopology({topology:item.value.topology}),current=lightingPorts(state);
   return topology&&JSON.stringify(topology)===JSON.stringify(current);

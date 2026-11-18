@@ -1,17 +1,12 @@
 import {confirmAction} from './confirmation.mjs';
 import {controllerConnectionStatus} from './workspace-session.mjs';
+import {field, node, randomId} from './dom.mjs';
+import {deviceName, LAN_DEFAULT_PORT, loopbackHost, pairingCode, privateIPv4} from './lan-address.mjs';
 
 export function showConnectionStatus(element, {label, tone}) {
   if (element.textContent !== label) element.textContent = label;
   for (const name of ['online', 'waiting', 'is-disconnected', 'error']) element.classList.toggle(name, name === tone);
 }
-
-const node = (tag, className = '', text) => {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-};
 
 const messages = {
   auth_failed: 'The switch rejected the login. Check your SSH username and password.',
@@ -19,7 +14,7 @@ const messages = {
   missing_host: 'Enter the switch address.',
   missing_username: 'Enter your SSH username.',
   bad_port: 'Enter an SSH port between 1 and 65535.',
-  host_key_changed: 'The switch identity has changed. Verify its SSH host key before reconnecting.',
+  host_key_changed: 'The switch’s SSH key changed. Review the saved and new keys before connecting.',
   unreachable: 'The switch could not be reached. Check its address and that SSH is enabled.',
   connect_failed: 'The switch could not be reached. Check its address and that SSH is enabled.',
   ssh_error: 'SSH could not connect. Check the switch address and SSH settings.',
@@ -45,11 +40,120 @@ const messages = {
   controller_invalid_response: 'The controller response could not be read. Check the UniFi Network address.',
   site_required: 'Choose the UniFi site that contains your switch.',
   switch_not_found: 'The connected switch was not found in this site. Check the selected site.',
+  local_access_required: 'This action is available only on the computer running EE.',
+  output_unconfirmed: 'EE could not confirm the switch lighting. Check that the switch is reachable, then connect again.',
+  invalid_settings: 'EE could not apply its lighting settings to this switch. Connect again; if this continues, check the advanced settings in ee.toml.',
+  scene_save_failed: 'The lighting setup could not be saved. Check the EE data folder and try again.',
+  // For these codes the service's own text says what failed and how to recover, and it names no host or user: which
+  // saved lighting failed (damaged behind switch playback, or saved by a newer EE), which switch playback holds the
+  // connection and where to release it, and whether the saved SSH keys are unreadable or from a newer EE.
+  invalid_saved_scene: serviceMessage,
+  switch_playback_reserved: serviceMessage,
+  host_key_save_failed: serviceMessage,
 };
 
+function serviceMessage(error) {return typeof error.message === 'string' ? error.message : null;}
+
 export function connectionError(error, fallback = 'The connection could not be confirmed. Check the details and try again.') {
-  const message = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
+  const entry = typeof error?.code === 'string' && Object.hasOwn(messages,error.code) ? messages[error.code] : null;
+  const message = typeof entry === 'function' ? entry(error) : entry;
   return message || (error?.name === 'TimeoutError' ? messages.timeout : fallback);
+}
+
+// A device on Tailscale cannot sign in, change the saved login or accept a changed host key, so these point to the
+// computer running EE.
+const remoteMessages = {
+  no_saved_login: 'No switch login is saved on the computer running EE. Sign in to the switch on that computer. This page opens the workspace when the switch connects.',
+  saved_login_unavailable: 'The saved login could not be opened. Sign in to the switch on the computer running EE.',
+  auth_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
+  authentication_failed: 'The switch rejected the saved login. Sign in to the switch on the computer running EE.',
+  host_key_changed: 'The switch identity has changed. Review its SSH host key on the computer running EE before reconnecting.',
+};
+
+export function remoteConnectionError(error) {
+  return typeof error?.code === 'string' && Object.hasOwn(remoteMessages,error.code) ? remoteMessages[error.code] : connectionError(error);
+}
+
+// SessionManager reports has_saved_login with saved_login_error when a saved login exists but cannot be opened.
+export function remoteCanRestore(session) {
+  return session?.has_saved_login === true && !session.saved_login_error;
+}
+
+const SSH_FINGERPRINT=/^SHA256:[A-Za-z0-9+/]{43}$/;
+const SSH_KEY_TYPE=/^[A-Za-z0-9@._+-]{1,64}$/;
+
+const sshKeyType=type=>typeof type==='string'&&SSH_KEY_TYPE.test(type)?type:null;
+const HOST_KEY_ROUTE='/api/session/host-key/replace';
+
+// A host_key_changed error whose fields can be shown and echoed back, or null. It reads a refused request's details
+// or a session error object.
+export function hostKeyProblem(error) {
+  const source=error?.details&&typeof error.details==='object'?error.details:error;
+  if(!source||typeof source!=='object'||!Object.hasOwn(source,'code'))return null;
+  const {code,host,port,ssh_host_key:fingerprint,saved_ssh_host_key:savedFingerprint,ssh_host_key_type:type}=source;
+  if(code!=='host_key_changed')return null;
+  if(typeof host!=='string'||host.length>253||!host.trim()||/[\u0000-\u001f\u007f]/.test(host))return null;
+  if(typeof port!=='number'||!Number.isInteger(port)||port<1||port>65535)return null;
+  if(typeof fingerprint!=='string'||!SSH_FINGERPRINT.test(fingerprint))return null;
+  if(typeof savedFingerprint!=='string'||!SSH_FINGERPRINT.test(savedFingerprint)||savedFingerprint===fingerprint)return null;
+  const name=host.trim();
+  return {host,port,fingerprint,savedFingerprint,keyType:sshKeyType(type),
+    key:[name.toLowerCase(),port,fingerprint,savedFingerprint].join('\n'),
+    address:port===22?name:`${name} port ${port}`,
+    body:{host,port,ssh_host_key:fingerprint,saved_ssh_host_key:savedFingerprint}};
+}
+
+// The SSH key of the connected switch from GET /api/session, or null when there is none or it is not valid.
+export function sshHostKey(session) {
+  const fingerprint=session?.ssh_host_key;
+  return typeof fingerprint==='string'&&SSH_FINGERPRINT.test(fingerprint)?{fingerprint,keyType:sshKeyType(session.ssh_host_key_type)}:null;
+}
+
+const HOST_KEY_REMOTE_NOTE='A new key can be accepted only in EE on the computer that runs it.';
+
+const hostKeyMessages = {
+  host_key_stale: 'The switch’s SSH key changed again. Connect again to review the current key.',
+  host_key_in_use: 'EE still has an open switch connection. Accept the new key after it closes. If it stays open, quit EE on the computer that runs it and open it again.',
+  switch_playback_reserved: 'EE is handing lighting back to UniFi or has lighting saved on another switch. A new SSH key cannot be accepted until that is finished.',
+  host_key_save_failed: 'The SSH key could not be saved. Check the EE data folder and try again.',
+  invalid_credentials: 'The SSH key details were not accepted. Connect again to review the key.',
+};
+
+// The message for a refused key replacement.
+export function hostKeyError(error) {
+  const code=typeof error?.code==='string'?error.code:'';
+  if(code==='local_access_required')return HOST_KEY_REMOTE_NOTE;
+  return Object.hasOwn(hostKeyMessages,code)?hostKeyMessages[code]:'The SSH key could not be saved. Connect again to review the key.';
+}
+
+// Keys are accepted only on the computer running EE, which only the local gateway reports. A failed private access
+// request counts as remote. A LAN answer can be changed on the way, so the page must also be on this computer.
+export function canAcceptHostKey(privateAccess, page = location) {return privateAccess?.local===true&&loopbackHost(page.hostname);}
+
+// Which key problem the Connect page reviews, and what runs after the key is saved: 'form' submits the login form
+// again, 'saved' restores the saved login, 'none' only asks the user to connect.
+export function createHostKeyFlow() {
+  let dismissed='';
+  const sameHost=(value,problem)=>typeof value==='string'&&value.trim()!==''&&value.trim().toLowerCase()===problem.host.trim().toLowerCase();
+  const flow={open:null,retry:'none',
+    fromAction(problem,retry){flow.open=problem;flow.retry=retry;},
+    fromSession(session,{host,port},{pending,blocked}){
+      if(session?.logged_in||session?.pending_scene_choice){flow.close();return false;}
+      if(flow.open||pending||blocked)return false;
+      const problem=hostKeyProblem(session?.error);
+      if(!problem||problem.key===dismissed)return false;
+      const remembered=session.remembered;
+      let retry=null;
+      if(session.has_saved_login===true&&sameHost(remembered?.host,problem)&&Number(remembered?.port??22)===problem.port)retry='saved';
+      else if(sameHost(host,problem)&&Number.isInteger(port)&&port===problem.port)retry='none';
+      if(!retry)return false;
+      flow.open=problem;flow.retry=retry;return true;
+    },
+    targetEdited(){flow.close();},
+    dismiss(){if(flow.open)dismissed=flow.open.key;flow.close();},
+    close(){flow.open=null;flow.retry='none';},
+  };
+  return flow;
 }
 
 function handoffNeedsReview(session) {return session?.error?.code==='handoff_recovery_required';}
@@ -60,11 +164,35 @@ export function handoffComplete(session) {
   return session?.handed_off===true&&session.handoff_state==='complete'&&session.logged_in===false&&session.connected===false&&session.connecting!==true&&session.automatic_connect_paused===true&&!handoffNeedsReview(session);
 }
 
+/** The fan result of a completed handoff as a sentence with its notice tone, or null when there is none. */
+export function handoffFans(session) {
+  switch(session?.fan_handoff){
+    case 'returned':return {message:'The switch’s own controller runs the fans again.',error:false,tone:'online'};
+    case 'unconfirmed':return {message:'EE could not confirm that the switch’s own controller runs the fans again. Connect again and choose Handoff to UniFi to retry, or restart the switch.',error:true,tone:''};
+    default:return null;
+  }
+}
+
+/**
+ * The Handoff to UniFi confirmation. `fans` is true on a switch with fan control. `noRestore` is true on a device
+ * using private access when the computer running EE has no saved login it can reconnect with.
+ */
+export function handoffConfirmation(fans, unsaved = false, noRestore = false) {
+  const message=fans
+    ?'Stop EE lighting and its switch helpers, return the fans to the switch’s own controller, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, your lighting setup, and your fan mode are kept. EE will wait until you connect again.'
+    :'Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again.';
+  return message+(unsaved?' Unapplied connection changes will be discarded.':'')
+    +(noRestore?' The computer running EE has no saved switch login that can be opened, so you will need that computer to connect again.':'');
+}
+
 export function handoffStatus(session) {
   if(handoffNeedsReview(session))return {message:messages.handoff_recovery_required,error:true,tone:''};
   if(session?.handoff_state==='pending')return {message:'Handing lighting back to UniFi…',error:false,tone:'waiting'};
   if(session?.handoff_state==='unconfirmed')return {message:messages.handoff_unconfirmed,error:true,tone:''};
-  if(handoffComplete(session))return {message:'Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',error:false,tone:'online'};
+  if(handoffComplete(session)){
+    const lighting='Lighting returned to UniFi. Your saved logins and profiles are kept. Connect when you want EE to control lighting again.',fans=handoffFans(session);
+    return fans?{message:`${lighting} ${fans.message}`,error:fans.error,tone:fans.tone}:{message:lighting,error:false,tone:'online'};
+  }
   if(session?.automatic_connect_paused&&!session.logged_in)return {message:'Automatic switch connection is paused. Connect when you want EE to control lighting again.',error:false,tone:''};
   return null;
 }
@@ -197,18 +325,11 @@ export function controllerConnectionProblem(values, current = {}) {
   return null;
 }
 
-function input(name, type = 'text', autocomplete = 'off') {
+function namedInput(name, type = 'text', autocomplete = 'off') {
   const control = node('input');
   control.name = name; control.type = type; control.autocomplete = autocomplete;
   control.spellcheck = false; control.autocapitalize = 'none';
   return control;
-}
-
-function field(label, control, help) {
-  const wrapper = node('label', 'field');
-  wrapper.append(node('span', '', label), control);
-  if (help) wrapper.append(node('small', '', help));
-  return wrapper;
 }
 
 function button(text, className = '') {
@@ -219,7 +340,7 @@ function button(text, className = '') {
 function passwordField(label, control) {
   const wrapper = node('div', 'field');
   const title = node('label', '', label);
-  control.id = `connection-${control.name}-${crypto.randomUUID()}`;
+  control.id = `connection-${control.name}-${randomId()}`;
   title.htmlFor = control.id;
   const row = node('div', 'connection-secret');
   const reveal = button('Show', 'quiet');
@@ -265,6 +386,7 @@ const privateAccessMessages = {
   private_access_invalid_configuration:'Check the Tailscale configuration on this PC, then refresh status.',
   unavailable:'Private access could not be checked. Refresh status to try again.',
   forbidden:'Change this setting in EE on the host computer.',
+  admin_required:'To change private access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.',
 };
 
 export function privateAccessError(error) {
@@ -301,19 +423,20 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   host.replaceChildren();
   if(!active)return ()=>{};
   const section=node('section','private-access automation-section'),header=node('div','connection-heading');
-  const title=node('h2','','Mobile & remote access'),refresh=button('Refresh private access','quiet');header.append(title,refresh);
+  const title=node('h2','','Tailscale private access'),refresh=button('Refresh private access','quiet');header.append(title,refresh);
   const state=node('p','connection-state waiting','Checking private access…');
-  const help=node('p','help-text','Use Tailscale to open this workspace on your phone or another device.');
+  const help=node('p','help-text','Use Tailscale to open this workspace on your phone or another device over an encrypted connection, at home or away. Tailscale is optional. LAN access in Settings works on your own network without it.');
+  const scope=node('p','help-text','Devices on Tailscale can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on the computer running EE.');
   const setup=node('div','connection-setup'),setupHelp=node('p','help-text','Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.');
   const setupActions=node('div','connection-actions'),setupLink=node('a','button'),signIn=button('Sign in to Tailscale','primary');
   setupLink.target='_blank';setupLink.rel='noopener noreferrer';setupActions.append(setupLink,signIn);setup.append(setupHelp,setupActions);setup.hidden=true;
-  const toggle=input('private_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Use Tailscale'));
+  const toggle=namedInput('private_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Use Tailscale'));
   const audience=node('select');audience.name='private_audience';
   for(const [value,text] of [['owner','Only my Tailscale account'],['accounts','Any Tailscale account that can reach this computer']]){const option=node('option','',text);option.value=value;audience.append(option);}
   const audienceField=field('Who can open EE',audience,'Tailscale decides which accounts can reach this computer. Devices without an account stay blocked.');
   const readOnly=node('p','help-text','Change this setting in EE on the host computer.');readOnly.hidden=true;
   const apply=button('Apply setting','primary'),actions=node('div','connection-actions');actions.append(apply);
-  const advanced=node('details','connection-options'),port=input('private_https_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
+  const advanced=node('details','connection-options'),port=namedInput('private_https_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
   const resetPort=button('Reset port','quiet');resetPort.hidden=true;
   const portHelp=node('p','help-text','Use a free HTTPS port between 1024 and 65535. Turn off private access before changing it.');
   advanced.append(node('summary','','Connection options'),field('Private HTTPS port',port),resetPort,portHelp);
@@ -321,9 +444,16 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   open.target='_blank';open.rel='noopener noreferrer';address.append(open,copy);address.hidden=true;
   const install=node('p','help-text','iPhone or iPad: Share → Add to Home Screen. Android: browser menu → Install app.');install.hidden=true;
   const [message,status]=notice();
-  section.append(header,help,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
+  section.append(header,help,scope,state,setup,label,audienceField,advanced,readOnly,actions,address,install,message);host.append(section);
   const canConfigure=()=>current?.can_configure===true;
+  // A local tab without administration access on a live host. Only a live host reports its private HTTPS port; the
+  // demo gateway has none, so a demo tab keeps the general text.
+  const locked=()=>current?.admin_required===true&&Number.isInteger(current.https_port);
   const canRetry=()=>current?.enabled===true&&current?.available===true&&current?.ready!==true;
+  // An attempt to turn private access on stopped at a Tailscale setup step. Apply with Use Tailscale cleared ends it.
+  const setupPending=()=>current?.enabled!==true&&['install','signin','approve'].includes(current?.setup_action);
+  const unchanged=(chosen,portChange,audienceChange)=>chosen===(current?.enabled===true)&&!portChange&&!audienceChange
+    &&!(chosen&&canRetry())&&!(!chosen&&setupPending());
   const currentPort=()=>Number.isInteger(current?.https_port)&&current.https_port>=1024&&current.https_port<=65535?current.https_port:8444;
   const readyUrl=()=>{const url=privateAccessUrl(current?.url);return current?.available===true&&current.enabled===true&&current.ready===true&&url&&Number(new URL(url).port)===currentPort()?url:null;};
   const canChangePort=()=>canConfigure()&&current?.can_change_port===true&&current?.enabled!==true&&current?.ready!==true;
@@ -334,12 +464,13 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   const render=()=>{
     if(!active)return;
     const enabled=current?.enabled===true,url=readyUrl(),ready=Boolean(url),chosen=draft??enabled;
-    toggle.checked=chosen;toggle.disabled=Boolean(pending)||!canConfigure()||(!current?.available&&!enabled);
+    toggle.checked=chosen;toggle.disabled=Boolean(pending)||!canConfigure();
     const portChange=hasPortChange(),portAllowed=!portChange||canChangePort(),audienceChange=hasAudienceChange();
     audience.value=audienceDraft??currentAudience();audience.disabled=Boolean(pending)||!canConfigure();audienceField.hidden=!current||!canConfigure();
-    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||(chosen===enabled&&!portChange&&!audienceChange&&!(chosen&&canRetry()))||chosen&&!current?.available;
+    apply.disabled=Boolean(pending)||!canConfigure()||!validPort()||!portAllowed||unchanged(chosen,portChange,audienceChange);
     apply.textContent=pending==='apply'?'Applying…':chosen===enabled&&canRetry()?'Retry private access':'Apply setting';refresh.disabled=Boolean(pending);
     section.setAttribute('aria-busy',String(Boolean(pending)));readOnly.hidden=!current||canConfigure();
+    readOnly.textContent=locked()?privateAccessMessages.admin_required:privateAccessMessages.forbidden;
     port.value=portDraft??String(currentPort());port.disabled=Boolean(pending)||!canChangePort();advanced.hidden=!current||!canConfigure();
     resetPort.hidden=portDraft===null;resetPort.disabled=Boolean(pending)||!canConfigure();
     const setupAction=current?.setup_action,setupUrl=privateAccessSetupUrl(current?.action_url,setupAction);
@@ -347,8 +478,9 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     setupLink.hidden=!setupUrl;setupLink.href=setupUrl||'';setupLink.textContent=setupAction==='install'?'Install Tailscale':'Continue in Tailscale';
     signIn.hidden=setupAction!=='signin';signIn.disabled=Boolean(pending)||!canConfigure()||setupAction!=='signin';signIn.textContent=pending==='login'?'Starting sign-in…':'Sign in to Tailscale';
     setupHelp.textContent=setupAction==='approve'?'Complete the Tailscale approval in your browser, then refresh status here.':setupAction==='signin'?'Sign in with the same Tailscale account you use on your phone or other device.':'Install Tailscale on this computer and your phone or other device. Sign in with the same Tailscale account on both.';
+    // Use Tailscale and Apply stay during setup, to try again or to end it; the other options wait until it is done.
     const firstSetup=!setup.hidden&&!current.available&&!enabled;
-    label.hidden=firstSetup;actions.hidden=firstSetup;advanced.hidden ||= firstSetup;audienceField.hidden ||= firstSetup;
+    advanced.hidden ||= firstSetup;audienceField.hidden ||= firstSetup;
     address.hidden=!ready;install.hidden=!ready;open.href=ready?url:'';copy.disabled=!ready||Boolean(pending);
     if(!current)showConnectionStatus(state,{label:pending?'Checking private access…':'Private access unavailable',tone:pending?'waiting':'is-disconnected'});
     else if(ready)showConnectionStatus(state,{label:'Private access connected',tone:'online'});
@@ -356,7 +488,6 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     else if(setupAction==='install'&&setupUrl)showConnectionStatus(state,{label:'Set up Tailscale',tone:'is-disconnected'});
     else if(setupAction==='signin')showConnectionStatus(state,{label:'Sign in to enable private access',tone:'is-disconnected'});
     else if(current.error)showConnectionStatus(state,{label:privateAccessError(current.error),tone:'is-disconnected'});
-    else if(!current.available)showConnectionStatus(state,{label:'Tailscale is unavailable on this PC.',tone:'is-disconnected'});
     else showConnectionStatus(state,{label:enabled?'Private access is not ready. Refresh status to check it.':'Private access is off',tone:enabled?'waiting':'is-disconnected'});
   };
   const update=value=>{
@@ -371,7 +502,7 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
     const wanted=draft??current?.enabled;
     const portChange=hasPortChange(),wantedPort=Number(portDraft??currentPort());
     const audienceChange=hasAudienceChange(),wantedAudience=audienceDraft??currentAudience(),wasEnabled=current?.enabled;
-    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||(wanted===current?.enabled&&!portChange&&!audienceChange&&!(wanted&&canRetry()))||wanted&&!current.available))return;
+    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||typeof wanted!=='boolean'||unchanged(wanted,portChange,audienceChange)))return;
     if(login&&(!canConfigure()||current?.setup_action!=='signin'))return;
     pending=operation;render();status();
     try{
@@ -385,7 +516,14 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
       else if(saving&&(result.enabled!==wanted||portChange&&result.https_port!==wantedPort||audienceChange&&result.audience!==wantedAudience))status('The setting could not be confirmed. Refresh status before trying again.',true);
       else if(saving)status(audienceChange&&wanted===wasEnabled?'Private access updated.':wanted?'Private access enabled.':'Private access disabled.');
       else if(login&&result.setup_action==='approve')status('Continue in Tailscale to finish signing in, then refresh status.');
-    }catch(error){if(active){status(privateAccessError(error),true);if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});}}
+    }catch(error){
+      if(active){
+        status(privateAccessError(error),true);
+        // The page was opened before EE restarted, or without administration access: show the read-only status.
+        if(error?.code==='admin_required'){try{const latest=await request('/api/private-access');if(active)update(latest);}catch{}}
+        if(!current)showConnectionStatus(state,{label:'Private access unavailable',tone:'is-disconnected'});
+      }
+    }
     finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});else if(login)(setupLink.hidden?refresh:setupLink).focus({preventScroll:true});}}
   };
   const start=(operation,check=false)=>{if(pending)return completion;completion=perform(operation,check);return completion;};
@@ -409,6 +547,277 @@ export function renderPrivateAccess(host, request, {signal} = {}) {
   return cleanup;
 }
 
+const LAN_STATEMENT='LAN access uses plain HTTP, so traffic between your devices and this PC is not encrypted. Anyone who can watch or change traffic on your network can read workspace data, such as the switch address and SSH username, port names, profiles and schedules, and can copy a device’s access key. With that key they can do anything a paired device can, including changing lighting and fans and handing lighting back to UniFi, until you remove that device or turn off LAN access. EE does not send switch or UniFi passwords over LAN access, because switch login and UniFi Network setup work only on this PC. Use Tailscale for an encrypted connection.';
+const LAN_SCOPE='Paired devices can use lighting, effects, automation, profiles, schedules and port names, can control fans in the desktop app, and can reconnect to the saved switch. Switch login, UniFi Network setup and these settings are available only on this PC.';
+const LAN_FIREWALL='Before you turn on LAN access, make sure Windows lists this network as private. If Windows then asks about Node.js JavaScript Runtime, allow it on private networks only. EE’s service runs on Node.js. EE does not check the firewall, so if a device cannot open the address, check the firewall settings on this PC.';
+const LAN_ADMIN='To change LAN access, choose Open in browser in the EE tray menu. If EE runs from source, use the administration link it printed when it started.';
+const LAN_FALLBACK='LAN access could not be confirmed. Refresh status before trying again.';
+export const LAN_PAGE_NOTE='This device uses LAN access. Its connection to the computer running EE is not encrypted.';
+export const LAN_UNREACHABLE='EE could not be reached at this address. LAN access may be off, or the computer running EE may have a new address. Check LAN access in Settings on that computer.';
+
+const lanAccessMessages = {
+  lan_access_port_in_use:'Another program uses this port. Choose another LAN port in Connection options.',
+  lan_access_listener_failed:'EE could not open its LAN port. Choose another LAN port in Connection options, then try again.',
+  lan_access_save_failed:'The LAN access setting could not be saved. Check the local data folder and try again.',
+  lan_access_turned_off:'The change could not be saved, so EE turned off LAN access and removed every paired device. Check the local data folder, then turn on LAN access again.',
+  lan_access_revoke_unsaved:'EE turned off LAN access and removed every paired device, but could not save this. Paired devices can connect again after EE restarts. Check the local data folder, then apply the setting again with LAN access off.',
+  lan_access_invalid_configuration:'The saved LAN access settings could not be read, so LAN access is off and no devices are paired. Turn it on to start again.',
+  lan_access_newer_configuration:'The LAN access settings were saved by a newer version of EE, so LAN access is off and its settings stay as they are. Update EE to use them.',
+  lan_access_port_change_requires_off:'Turn off LAN access before changing its port.',
+  lan_access_off:'Turn on LAN access before pairing a device.',
+  lan_access_device_limit:'16 devices are paired, the most EE allows. Remove one before pairing another.',
+  lan_access_failed:'LAN access could not be updated. Refresh status and try again.',
+  not_found:'That device is no longer paired.',
+  workspace_closing:'EE is closing. Reopen EE to change LAN access.',
+  admin_required:LAN_ADMIN,
+};
+
+export function lanAccessError(error) {
+  const code=typeof error==='string'?error:error?.code;
+  return typeof code==='string'&&Object.hasOwn(lanAccessMessages,code)?lanAccessMessages[code]:LAN_FALLBACK;
+}
+
+const PAIRING_ENDED = {
+  expired:'The pairing code expired. Choose Pair a device to show a new one.',
+  attempts:'The pairing code ended after 5 wrong attempts. If no one at your devices entered them, another device on your network may be trying to pair. Choose Pair a device to show a new one.',
+  failed:'The device could not be saved. Check the local data folder, then choose Pair a device to show a new code.',
+  used:'The pairing code was used.',
+};
+const lanDate=new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric'});
+const lanTime=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit'});
+const lanAddressUrl=value=>{const match=/^http:\/\/([\d.]+):\d{4,5}$/.exec(value);return match&&privateIPv4(match[1])===match[1];};
+// Only an id of 16 lowercase hexadecimal characters is put in a request path.
+const lanDevice=value=>typeof value?.id==='string'&&/^[0-9a-f]{16}$/.test(value.id)&&typeof value.name==='string';
+
+// LAN access on the computer running EE, or on a remote page (remote) the read-only lines, with the statement that this
+// page's own connection is not encrypted when it is a LAN page (lan).
+export function renderLanAccess(host, request, {signal, remote = false, lan = false} = {}) {
+  let active=!signal?.aborted,current=null,draft=null,portDraft=null,pending=null,completion=Promise.resolve();
+  let countdown=null,poll=null,knownDevices=null,announced=null,addressKey='',deviceKey='';
+  host.replaceChildren();
+  if(!active)return ()=>{};
+  const section=node('section','lan-access automation-section'),header=node('div','connection-heading');
+  header.append(node('h2','','LAN access'));
+  if(remote){
+    section.append(header,...(lan?[node('p','lan-access-warning',LAN_PAGE_NOTE)]:[]),node('p','help-text','Change this setting in EE on the host computer.'));
+    host.append(section);
+    const cleanup=()=>{active=false;};
+    cleanup.hasChanges=()=>false;cleanup.canLeave=async()=>true;
+    return cleanup;
+  }
+  const refresh=button('Refresh LAN access','quiet');header.append(refresh);
+  const state=node('p','connection-state waiting','Checking LAN access…');
+  const help=node('p','help-text','Open EE on phones and other computers on your network without Tailscale. Each device needs a pairing code from this PC.');
+  const toggle=namedInput('lan_access','checkbox'),label=node('label','check-row');label.append(toggle,node('span','','Allow devices on my network'));
+  const readOnly=node('p','help-text',LAN_ADMIN);readOnly.hidden=true;
+  const apply=button('Apply setting','primary'),actions=node('div','connection-actions');actions.append(apply);
+  const firewall=node('p','help-text',LAN_FIREWALL);
+  const advanced=node('details','connection-options'),port=namedInput('lan_port','number');port.min='1024';port.max='65535';port.step='1';port.inputMode='numeric';
+  const resetPort=button('Reset port','quiet');resetPort.hidden=true;
+  advanced.append(node('summary','','Connection options'),field('LAN port',port),resetPort,
+    node('p','help-text','Use a free port between 1024 and 65535. Turn off LAN access before changing it. Do not forward this port on your router.'));
+  const addresses=node('div','lan-addresses'),addressList=node('ul','lan-address-list');
+  addresses.append(node('p','muted','Address for other devices'),addressList);
+  const pairing=node('div','lan-pairing'),pair=button('Pair a device'),codeBlock=node('div','lan-pairing-active');
+  const codeText=node('p','lan-pairing-code'),codeHelp=node('p','help-text'),newCode=button('New code','quiet');
+  codeBlock.append(node('p','muted','Pairing code'),codeText,codeHelp,newCode);pairing.append(pair,codeBlock);
+  const devicesBlock=node('div','lan-devices'),deviceList=node('ul','lan-device-list'),noDevices=node('p','help-text','No devices are paired.');
+  const limit=node('p','help-text',lanAccessMessages.lan_access_device_limit);
+  devicesBlock.append(node('h3','','Paired devices'),deviceList,noDevices,limit);
+  const [message,status]=notice();
+  section.append(header,state,help,node('p','lan-access-warning',LAN_STATEMENT),node('p','help-text',LAN_SCOPE),label,readOnly,actions,firewall,advanced,
+    addresses,pairing,devicesBlock,message);
+  host.append(section);
+  const canConfigure=()=>current?.can_configure===true;
+  const enabled=()=>current?.enabled===true;
+  const ready=()=>enabled()&&current.ready===true;
+  const canRetry=()=>enabled()&&current.ready!==true;
+  // A turn-off that could not be saved is applied again with the setting left off.
+  const revokeUnsaved=()=>current?.error?.code==='lan_access_revoke_unsaved';
+  const devices=()=>Array.isArray(current?.devices)?current.devices.filter(lanDevice):[];
+  const deviceLimit=()=>Number.isInteger(current?.max_devices)?current.max_devices:16;
+  const activeCode=()=>typeof current?.pairing?.code==='string'&&/^\d{6}$/.test(current.pairing.code)?current.pairing.code:null;
+  const currentPort=()=>Number.isInteger(current?.port)&&current.port>=1024&&current.port<=65535?current.port:LAN_DEFAULT_PORT;
+  const canChangePort=()=>canConfigure()&&current?.can_change_port===true&&!enabled()&&current?.ready!==true;
+  const validPort=()=>{const text=portDraft??String(currentPort());return /^\d+$/.test(text)&&Number(text)>=1024&&Number(text)<=65535;};
+  const hasPortChange=()=>portDraft!==null&&Number(portDraft)!==currentPort();
+  const unchanged=(chosen,portChange)=>chosen===enabled()&&!portChange&&!(chosen&&canRetry())&&!(!chosen&&revokeUnsaved());
+  const renderCode=()=>{
+    const code=activeCode();
+    if(!code){codeText.textContent='';codeHelp.textContent='';return;}
+    const expires=Date.parse(current.pairing.expires_at),left=Number.isFinite(expires)?Math.max(0,Math.ceil((expires-Date.now())/1000)):0;
+    codeText.textContent=`${code.slice(0,3)} ${code.slice(3)}`;
+    codeHelp.textContent=`Open the address above on the other device and enter this code. It works once and expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}.`;
+  };
+  // The lists are rebuilt only when they change, so a periodic refresh keeps focus on their buttons.
+  const renderAddresses=list=>{
+    const key=JSON.stringify(list);
+    if(key===addressKey)return;
+    addressKey=key;addressList.replaceChildren();
+    for(const {url,interface:name} of list){
+      const row=node('li','lan-address'),copy=button('Copy address','quiet');
+      row.append(node('code','',`${url} (${name})`),copy);addressList.append(row);
+      copy.addEventListener('click',async()=>{
+        if(!active)return;
+        try{
+          if(!globalThis.navigator?.clipboard?.writeText)throw new Error('clipboard_unavailable');
+          await navigator.clipboard.writeText(url);if(active)status('LAN address copied.');
+        }catch{if(active)status('Select the address and copy it.');}
+      });
+    }
+  };
+  const renderDevices=list=>{
+    const key=JSON.stringify(list);
+    if(key===deviceKey)return;
+    deviceKey=key;deviceList.replaceChildren();
+    for(const device of list){
+      const row=node('li','lan-device'),details=node('div','lan-device-details'),remove=button('Remove','quiet');
+      details.append(node('strong','',device.name),node('span','help-text',`${device.client==='app'?'Desktop app':'Browser'} · Paired ${lanDate.format(new Date(device.paired_at))} from ${device.paired_from}`));
+      if(device.last_used_at)details.append(node('span','help-text',`Last used from ${device.last_address} at ${lanTime.format(new Date(device.last_used_at))}`));
+      row.append(details,remove);deviceList.append(row);
+      remove.addEventListener('click',()=>{void start('remove',device.id);});
+    }
+  };
+  const render=()=>{
+    if(!active)return;
+    const on=enabled(),chosen=draft??on,busy=Boolean(pending),configurable=canConfigure(),available=current?.available===true;
+    toggle.checked=chosen;toggle.disabled=busy||!configurable;
+    const portChange=hasPortChange();
+    apply.disabled=busy||!configurable||!validPort()||portChange&&!canChangePort()||unchanged(chosen,portChange);
+    apply.textContent=pending==='apply'?'Applying…':chosen===on&&canRetry()?'Retry LAN access':'Apply setting';
+    refresh.disabled=busy;section.setAttribute('aria-busy',String(busy));
+    label.hidden=actions.hidden=firewall.hidden=!available;
+    readOnly.hidden=!available||configurable;advanced.hidden=!configurable;
+    port.value=portDraft??String(currentPort());port.disabled=busy||!canChangePort();
+    resetPort.hidden=portDraft===null;resetPort.disabled=busy;
+    const shown=ready()&&Array.isArray(current.addresses)?current.addresses.filter(item=>lanAddressUrl(item?.url)&&typeof item.interface==='string'):[];
+    addresses.hidden=!shown.length;renderAddresses(shown);
+    const code=activeCode(),list=devices(),full=list.length>=deviceLimit();
+    pairing.hidden=!configurable||!ready();
+    pair.hidden=Boolean(code);pair.disabled=busy||full;codeBlock.hidden=!code;newCode.disabled=busy||full;renderCode();
+    devicesBlock.hidden=!configurable||!(ready()||list.length);renderDevices(list);
+    noDevices.hidden=list.length>0;limit.hidden=!full;
+    if(!current)showConnectionStatus(state,{label:busy?'Checking LAN access…':LAN_FALLBACK,tone:busy?'waiting':'is-disconnected'});
+    else if(!available)showConnectionStatus(state,{label:'LAN access is not available in the demo.',tone:'is-disconnected'});
+    else if(ready())showConnectionStatus(state,shown.length?{label:'LAN access is on',tone:'online'}
+      :{label:'LAN access is on, but this PC has no private network address. Connect it to your network, then refresh.',tone:'waiting'});
+    else if(current.error)showConnectionStatus(state,{label:lanAccessError(current.error),tone:'is-disconnected'});
+    else showConnectionStatus(state,on?{label:LAN_FALLBACK,tone:'waiting'}:{label:'LAN access is off',tone:'is-disconnected'});
+  };
+  const stopTimers=()=>{clearInterval(countdown);clearInterval(poll);countdown=poll=null;};
+  // While a code is shown, the countdown runs every second and the status is read every 2 seconds to see it used.
+  const syncTimers=()=>{
+    if(!active||!activeCode()||!canConfigure()){stopTimers();return;}
+    countdown??=setInterval(renderCode,1000);
+    poll??=setInterval(async()=>{
+      if(pending)return;
+      try{const latest=await request('/api/lan-access');if(active&&!pending)update(latest);}
+      catch(error){if(active){stopTimers();status(lanAccessError(error),true);}}
+    },2000);
+  };
+  // The reason a code ended is shown once; a code used by a device that appeared since it was shown names that device.
+  const announcePairing=()=>{
+    const ended=current.pairing?.ended;
+    if(typeof ended!=='string'||!Object.hasOwn(PAIRING_ENDED,ended))return;
+    const key=`${current.pairing.expires_at}|${ended}`;
+    if(key===announced)return;
+    announced=key;
+    const added=ended==='used'&&knownDevices?devices().find(device=>!knownDevices.has(device.id)):null;
+    status(added?`Paired ${added.name}.`:PAIRING_ENDED[ended],ended!=='used');
+  };
+  const update=value=>{
+    if(!active)return;
+    if(!value||typeof value.enabled!=='boolean'||typeof value.available!=='boolean'||typeof value.ready!=='boolean')throw new Error('invalid_lan_status');
+    current=value;if(draft===enabled())draft=null;if(portDraft!==null&&Number(portDraft)===currentPort())portDraft=null;
+    announcePairing();render();syncTimers();
+  };
+  const perform=async (operation,deviceId)=>{
+    if(!active||pending)return;
+    const saving=operation==='apply',wanted=draft??enabled(),portChange=hasPortChange(),wantedPort=Number(portDraft??currentPort()),wasEnabled=enabled();
+    const device=operation==='remove'?devices().find(item=>item.id===deviceId):null;
+    if(saving&&(!canConfigure()||!validPort()||portChange&&!canChangePort()||unchanged(wanted,portChange)))return;
+    if(['code','remove'].includes(operation)&&!canConfigure()||operation==='remove'&&!device)return;
+    pending=operation;render();status();
+    try{
+      if(saving&&!wanted&&wasEnabled&&devices().length&&!await confirmAction(host,'Turn off LAN access?',
+        'All paired devices are removed and disconnected. Each one needs a new pairing code after you turn LAN access on again.','Turn off',signal))return;
+      if(!active)return;
+      if(operation==='code')knownDevices=new Set(devices().map(item=>item.id));
+      const payload={enabled:wanted};if(portChange)payload.port=wantedPort;
+      const result=saving?await request('/api/lan-access','PUT',payload):operation==='code'?await request('/api/lan-access/code','POST')
+        :operation==='remove'?await request(`/api/lan-access/devices/${device.id}`,'DELETE'):await request('/api/lan-access');
+      if(!active)return;update(result);
+      if(result.error&&(saving||operation==='remove'))status(lanAccessError(result.error),true);
+      else if(saving&&(result.enabled!==wanted||portChange&&result.port!==wantedPort))status('The setting could not be confirmed. Refresh status before trying again.',true);
+      else if(saving)status(wanted?'LAN access enabled.':portChange&&!wasEnabled?'LAN port saved.':'LAN access disabled.');
+      else if(operation==='remove')status(`Removed ${device.name}. It needs a new pairing code to connect again.`);
+    }catch(error){
+      if(active){
+        status(lanAccessError(error),true);
+        // The page was opened before EE restarted, or without administration access: show the read-only status.
+        if(error?.code==='admin_required'){try{const latest=await request('/api/lan-access');if(active)update(latest);}catch{}}
+        if(!current)showConnectionStatus(state,{label:LAN_FALLBACK,tone:'is-disconnected'});
+      }
+    }
+    finally{pending=null;if(active){render();if(saving)(toggle.disabled?refresh:toggle).focus({preventScroll:true});}}
+  };
+  const start=(operation,deviceId)=>{if(pending)return completion;completion=perform(operation,deviceId);return completion;};
+  toggle.addEventListener('change',()=>{if(!active||pending||!canConfigure())return;draft=toggle.checked===enabled()?null:toggle.checked;status();render();});
+  port.addEventListener('input',()=>{if(!active||pending||!canChangePort())return;portDraft=port.value===String(currentPort())?null:port.value;status(validPort()?'':'Enter a whole-number port between 1024 and 65535.',!validPort());render();});
+  resetPort.addEventListener('click',()=>{if(!active||pending||!canConfigure())return;portDraft=null;status();render();(port.disabled?refresh:port).focus({preventScroll:true});});
+  apply.addEventListener('click',()=>{void start('apply');});refresh.addEventListener('click',()=>{void start('refresh');});
+  for(const control of [pair,newCode])control.addEventListener('click',()=>{void start('code');});
+  const cleanup=()=>{active=false;stopTimers();signal?.removeEventListener('abort',cleanup);};
+  signal?.addEventListener('abort',cleanup,{once:true});
+  cleanup.update=update;cleanup.hasChanges=()=>draft!==null||portDraft!==null;
+  cleanup.canLeave=async()=>{await completion;return true;};
+  render();void start('refresh');
+  return cleanup;
+}
+
+const pairingMessages = {
+  lan_pairing_failed:'The pairing code is wrong or has expired. Check the code on the computer running EE, or choose Pair a device there to show a new one.',
+  lan_pairing_save_failed:'The device could not be saved on the computer running EE. Ask for a new pairing code there and try again.',
+  invalid:'Enter the 6-digit pairing code and a name of up to 40 characters for this device.',
+};
+
+// The pairing screen on a LAN page that has no pairing, or whose pairing was removed (revoked).
+export function renderLanPairing(host, {request, revoked = false, onPaired}) {
+  let active=true,pending=false;
+  const section=node('section','connection-panel panel lan-pairing'),form=node('form','connection-form');
+  const code=namedInput('pairing_code','text','one-time-code');code.inputMode='numeric';code.maxLength=7;
+  const name=namedInput('device_name');name.placeholder='For example, Kitchen iPad';
+  const submit=button('Pair device','primary');submit.type='submit';
+  const [message,status]=notice();
+  form.append(field('Pairing code',code),field('Device name',name,'This name appears in the list of paired devices on the computer running EE.'),
+    node('p','lan-access-warning','This connection uses plain HTTP and is not encrypted. Anyone who can watch or change traffic on your network can read workspace data and this device’s access key, and can use the key to control EE. EE does not send switch or UniFi passwords over it.'),
+    node('p','help-text','EE on another device never asks for switch or UniFi passwords. If it does, do not enter them.'),submit,message);
+  section.append(node('h1','','Pair this device'),node('p','help-text',revoked
+    ?'This device is not paired. Enter a new pairing code from the computer running EE to continue.'
+    :'Enter the pairing code shown on the computer running EE. On that computer, open Settings, go to LAN access and choose Pair a device.'),form);
+  host.replaceChildren(section);
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(!active||pending)return;
+    const digits=pairingCode(code.value),label=deviceName(name.value);
+    if(!digits){status('Enter the 6-digit code.',true);code.focus();return;}
+    if(!label){status('Enter a name for this device, up to 40 characters.',true);name.focus();return;}
+    pending=true;submit.disabled=true;submit.textContent='Pairing…';status();
+    try{
+      await request('/api/lan-access/pair','POST',{code:digits,name:label,client:'browser'});
+      if(!active)return;
+      active=false;status('Paired. Opening the workspace…',false,'online');onPaired();
+    }catch(error){
+      if(active){
+        status(Object.hasOwn(pairingMessages,error?.code)?pairingMessages[error.code]:LAN_UNREACHABLE,true);
+        code.value='';code.focus();
+      }
+    }finally{if(active){pending=false;submit.disabled=false;submit.textContent='Pair device';}}
+  });
+  code.focus();
+  return ()=>{active=false;};
+}
+
 let sceneChoiceDialog = null;
 
 export function showSceneChoice(request, session, {signal} = {}) {
@@ -422,7 +831,7 @@ export function showSceneChoice(request, session, {signal} = {}) {
   let resolve;
   const promise=new Promise(done=>{resolve=done;});
   const dialog=node('dialog','dialog scene-choice-dialog');
-  const heading=node('h2','','Choose lighting for this switch');heading.id=`scene-choice-${crypto.randomUUID()}`;
+  const heading=node('h2','','Choose lighting for this switch');heading.id=`scene-choice-${randomId()}`;
   dialog.setAttribute('aria-labelledby',heading.id);
   const intro=node('p','help-text','Choose which lighting to start on this switch.');
   const choices=node('div','connection-form');
@@ -517,33 +926,52 @@ export function showSceneChoice(request, session, {signal} = {}) {
   return promise;
 }
 
-export function renderSwitchConnection(host, {request, session = {}, onConnected, onSessionChange, onDemo, restoreSaved, onHelp}) {
+// remote: the page is open on a device that uses private access. Such a device can only reconnect to the login saved
+// on the computer running EE, so the form holds only Connect with saved login and Retry handoff.
+export function renderSwitchConnection(host, {request, session = {}, onConnected, onSessionChange, onDemo, restoreSaved, onHelp, remote = false}) {
   let active = true, pending = null, completed = false, dirty = false, saved = session, forgetting = false;
-  let retryingHandoff = false;
+  let retryingHandoff = false, savingKey = false, keyAccess = null;
+  const keys = createHostKeyFlow();
   const lifecycle = new AbortController();
   host.replaceChildren();
   const panel = node('section', 'connection-panel panel');
-  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo.png'; logo.alt = '';
+  const logo = node('img', 'connection-logo'); logo.src = '/assets/logo-256.png'; logo.alt = '';
   const heading=node('h1','','Connect your switch');
   const intro=node('p','help-text','Enter the switch’s SSH login to open its lighting workspace.');
   panel.append(logo,heading,intro);
   const [message, status] = notice();
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
-  const address = input('host'); address.required = true; address.maxLength = 253;
-  const username = input('username', 'text', 'username'); username.required = true; username.maxLength = 128;
-  const password = input('password', 'password', 'current-password'); password.required = true;
-  const port = input('port', 'number'); port.value = '22'; port.min = '1'; port.max = '65535'; port.step = '1'; port.required = true;
-  const remember = input('remember', 'checkbox');
+  const address = namedInput('host'); address.required = true; address.maxLength = 253;
+  const username = namedInput('username', 'text', 'username'); username.required = true; username.maxLength = 128;
+  const password = namedInput('password', 'password', 'current-password'); password.required = true;
+  const port = namedInput('port', 'number'); port.value = '22'; port.min = '1'; port.max = '65535'; port.step = '1'; port.required = true;
+  const remember = namedInput('remember', 'checkbox');
   const rememberLabel = node('label', 'check'); rememberLabel.append(remember, node('span', '', 'Save login on this PC'));
   const options = node('details', 'connection-options'); options.append(node('summary', '', 'Connection options'), field('SSH port', port));
   const submit = button('Connect to switch', 'primary'); submit.type = 'submit';
   const restore = button('Connect with saved login');
   const forget = button('Forget saved login','quiet');
   const retryHandoff = button('Retry handoff','primary');retryHandoff.hidden=true;
-  const actions = node('div', 'connection-actions'); actions.append(submit);
+  const actions = node('div', 'connection-actions');
+  if (!remote) actions.append(submit);
   if (restoreSaved) actions.append(restore);
-  actions.append(forget,retryHandoff);
-  form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, actions);
+  if (!remote) actions.append(forget);
+  actions.append(retryHandoff);
+  const review = node('div', 'connection-trust notice error host-key-review'); review.hidden = true; review.setAttribute('role', 'group');
+  const reviewHeading = node('h2', '', 'The switch’s SSH key changed'); reviewHeading.tabIndex = -1; reviewHeading.id = `host-key-review-${randomId()}`;
+  review.setAttribute('aria-labelledby', reviewHeading.id);
+  const reviewAddress = node('p'), newKeyLabel = node('p', 'muted');
+  const savedFingerprint = node('code', 'certificate-fingerprint'), newFingerprint = node('code', 'certificate-fingerprint');
+  const reviewNote = node('p', 'help-text', HOST_KEY_REMOTE_NOTE);
+  const acceptKey = button('Accept new key'), dismissKey = button('Keep saved key', 'quiet');
+  const reviewActions = node('div', 'connection-actions'); reviewActions.append(acceptKey, dismissKey);
+  review.append(reviewHeading, reviewAddress,
+    node('p', '', 'Lighting, schedules and port names saved for the previous switch stay saved but are not used with the new key.'),
+    node('p', 'muted', 'Saved key'), savedFingerprint, newKeyLabel, newFingerprint, reviewNote, reviewActions);
+  // A remote device cannot accept a changed key, so it shows the remote message instead of the review.
+  if (remote) form.append(actions);
+  else form.append(field('Switch address', address), field('SSH username', username), passwordField('SSH password', password), rememberLabel, options, review, actions);
+  const primary = remote ? restore : submit, failure = remote ? remoteConnectionError : connectionError;
   panel.append(message, form);
   if (onDemo) {
     const demo = button('Continue with demo', 'quiet');
@@ -568,12 +996,16 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     for (const control of form.elements) control.disabled = waiting||recovering;
     retryHandoff.hidden=!handoffRetryable(saved);retryHandoff.disabled=waiting||!handoffRetryable(saved);
     retryHandoff.textContent=retryingHandoff?'Handing off…':'Retry handoff';
-    submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting ? 'Connecting…' : 'Connect to switch';
+    submit.textContent = saved.handoff_state==='pending'||retryingHandoff ? 'Handing off…' : waiting && !forgetting && !savingKey ? 'Connecting…' : 'Connect to switch';
     forget.textContent = forgetting ? 'Removing saved login…' : 'Forget saved login';
     restore.hidden=!restoreSaved || !saved.has_saved_login;
     forget.hidden=!saved.has_saved_login;
+    if (remote) intro.textContent = saved.has_saved_login === true ? 'Reconnect to the switch saved on the computer running EE.' : remoteMessages.no_saved_login;
     panel.querySelector(':scope > button')?.toggleAttribute('disabled', waiting);
   };
+  const canceledChoice = resolved => !remote ? 'Lighting setup canceled. You can edit this login and connect again.'
+    : remoteCanRestore(resolved) ? 'Lighting setup canceled. Choose Connect with saved login to try again.'
+    : resolved.saved_login_error ? remoteMessages.saved_login_unavailable : remoteMessages.no_saved_login;
   const enter = async value => {
     if (!active || completed) return;
     const resolved=await showSceneChoice(request,value,{signal:lifecycle.signal});
@@ -581,13 +1013,29 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     saved=resolved;
     if(handoffBlocked(resolved)){const handoff=handoffStatus(resolved);status(handoff.message,handoff.error,handoff.tone);setBusy();return;}
     if(!resolved.logged_in){
-      if(value?.pending_scene_choice)status('Lighting setup canceled. You can edit this login and connect again.');
-      setBusy();submit.focus({preventScroll:true});return;
+      if(value?.pending_scene_choice)status(canceledChoice(resolved));
+      setBusy();primary.focus({preventScroll:true});return;
     }
     completed = true; password.value = ''; dirty = false;
     try { await onConnected(resolved); }
     catch { if (active) { completed = false; status('The switch connected, but the workspace could not load. Try opening it again.', true); } }
   };
+  const showReview = () => {
+    const problem = keys.open;
+    keyAccess = null;
+    reviewAddress.textContent = `The device at ${problem.address} presented a different SSH key than the one EE saved. This happens after the switch is reset or replaced. If you did not reset or replace it, another device may be using its address. In that case, keep the saved key and check your network.`;
+    savedFingerprint.textContent = problem.savedFingerprint;
+    newKeyLabel.textContent = problem.keyType ? `New key (${problem.keyType})` : 'New key';
+    newFingerprint.textContent = problem.fingerprint;
+    showKeyAccess(); review.hidden = false;
+    status('The switch’s SSH key changed. Review it before connecting.', true);
+    reviewHeading.focus({preventScroll:true});
+    void request('/api/private-access').catch(() => null).then(result => {
+      if (!active || keys.open !== problem) return;
+      keyAccess = canAcceptHostKey(result); showKeyAccess();
+    });
+  };
+  const showKeyAccess = () => { acceptKey.hidden = keyAccess !== true; reviewNote.hidden = keyAccess !== false; };
   const update = value => {
     if (!active) return;
     saved = value || {};
@@ -598,16 +1046,19 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
       remember.checked = saved.has_saved_login === true;
     }
     const handoff=handoffStatus(saved);
+    const reviewing = keys.open && hostKeyProblem(saved.error)?.key === keys.open.key;
     if(handoffBlocked(saved)&&handoff)status(handoff.message,handoff.error,handoff.tone);
     else if (saved.pending_scene_choice) status('Choose lighting to finish connecting.');
     else if (saved.connecting) status('Connecting with saved login…');
-    else if (saved.saved_login_error) status(messages.saved_login_unavailable, true);
-    else if (saved.error) status(connectionError(saved.error), true);
+    else if (saved.saved_login_error) status((remote ? remoteMessages : messages).saved_login_unavailable, true);
+    else if (saved.error) { if (!reviewing) status(failure(saved.error), true); }
     else if(handoff)status(handoff.message,handoff.error,handoff.tone);
+    if (!remote && keys.fromSession(saved, {host:address.value, port:Number(port.value)}, {pending:Boolean(pending), blocked:handoffBlocked(saved)})) showReview();
+    else review.hidden = !keys.open;
     setBusy();
     if(sceneChoiceDialog||(!handoffBlocked(saved)&&(saved.logged_in||saved.pending_scene_choice)))queueMicrotask(() => { void enter(saved); });
   };
-  const connect = action => {
+  const connect = (action, retry) => {
     if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     status('Connecting…');
     pending = (async () => {
@@ -617,14 +1068,53 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
         saved = result;
         if (!result?.logged_in&&!result?.pending_scene_choice) throw new Error('Connection was not established.');
         await enter(result);
-      } catch (error) { if (active) status(connectionError(error), true); }
-      finally { pending = null; setBusy();if(active&&!completed)submit.focus({preventScroll:true}); }
+      } catch (error) {
+        if (!active) return;
+        const problem = remote ? null : hostKeyProblem(error);
+        if (problem) { keys.fromAction(problem, retry); showReview(); }
+        else status(failure(error), true);
+      }
+      finally { pending = null; setBusy();if(active&&!completed)(keys.open?reviewHeading:primary).focus({preventScroll:true}); }
     })();
     setBusy();
   };
-  form.addEventListener('input', event => { dirty = true;event?.target?.removeAttribute('aria-invalid'); });
-  form.addEventListener('submit', event => {
-    event.preventDefault();
+  const runRetry = retry => {
+    if (retry === 'form') submitLogin();
+    else if (retry === 'saved' && restoreSaved) connect(restoreSaved, 'saved');
+    else { status('SSH key saved. Connect to the switch to continue.'); (password.value ? submit : password).focus({preventScroll:true}); }
+  };
+  acceptKey.addEventListener('click', () => {
+    const problem = keys.open, retry = keys.retry;
+    if (!active || pending || !problem || keyAccess !== true || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
+    savingKey = true; status('Saving the SSH key…');
+    let accepted = false;
+    pending = (async () => {
+      try {
+        const result = await request(HOST_KEY_ROUTE, 'POST', problem.body);
+        if (!active) return;
+        if (result && typeof result === 'object') saved = result;
+        keys.close(); review.hidden = true; accepted = true;
+      } catch (error) {
+        if (!active) return;
+        keys.dismiss(); review.hidden = true; status(hostKeyError(error), true);
+      } finally {
+        pending = null; savingKey = false; setBusy();
+        if (active) { if (accepted) runRetry(retry); else submit.focus({preventScroll:true}); }
+      }
+    })();
+    setBusy();
+  });
+  dismissKey.addEventListener('click', () => {
+    if (!active || pending || !keys.open) return;
+    keys.dismiss(); review.hidden = true;
+    status('EE kept the saved SSH key and did not connect.');
+    submit.focus({preventScroll:true});
+  });
+  form.addEventListener('input', event => {
+    dirty = true;event?.target?.removeAttribute('aria-invalid');
+    if (event?.target === address || event?.target === port) { keys.targetEdited(); review.hidden = true; }
+  });
+  const submitLogin = () => {
     const invalid = [
       [address,!address.value.trim(),'Enter the switch address.'],
       [username,!username.value.trim(),'Enter the SSH username.'],
@@ -634,9 +1124,10 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
     if(invalid){invalid[0].setAttribute('aria-invalid','true');status(invalid[2],true);invalid[0].focus();return;}
     if (!form.reportValidity()) return;
     const payload = {host:address.value.trim(),username:username.value.trim(),password:password.value,port:Number(port.value),remember:remember.checked};
-    connect(() => request('/api/session/login', 'POST', payload));
-  });
-  restore.addEventListener('click', () => connect(restoreSaved));
+    connect(() => request('/api/session/login', 'POST', payload), 'form');
+  };
+  form.addEventListener('submit', event => { event.preventDefault(); submitLogin(); });
+  restore.addEventListener('click', () => connect(restoreSaved, 'saved'));
   retryHandoff.addEventListener('click',()=>{
     if(!active||pending||!handoffRetryable(saved))return;
     retryingHandoff=true;
@@ -650,11 +1141,11 @@ export function renderSwitchConnection(host, {request, session = {}, onConnected
         if(result.session){update(result.session);await onSessionChange?.(result.session,result.error?{message:result.error,error:true}:undefined);}
         if(active&&result.error)status(result.error,true);
       }catch{if(active)status('Handoff status could not be displayed. Refresh the page to check its status.',true);}
-      finally{pending=null;retryingHandoff=false;setBusy();if(active){const target=handoffRetryable(saved)?retryHandoff:handoffBlocked(saved)?message:restoreSaved&&saved.has_saved_login?restore:submit;if(target===message)message.tabIndex=-1;target.focus({preventScroll:true});}}
+      finally{pending=null;retryingHandoff=false;setBusy();if(active){const target=handoffRetryable(saved)?retryHandoff:handoffBlocked(saved)?message:restoreSaved&&saved.has_saved_login?restore:primary;if(target===message)message.tabIndex=-1;target.focus({preventScroll:true});}}
     })();setBusy();
   });
   forget.addEventListener('click', async () => {
-    if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
+    if (remote || !active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     if (!await confirmAction(host,'Forget saved login?','Remove the saved switch login from this PC.','Forget login',lifecycle.signal)) return;
     if (!active || pending || saved.connecting || saved.pending_scene_choice || handoffBlocked(saved)) return;
     forgetting = true;
@@ -694,17 +1185,17 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const capabilityHint = node('p', 'help-text'); capabilityHint.hidden = true;
   const [message, status] = notice();
   const reconnectSection = node('section', 'connection-reconnect automation-section'); reconnectSection.hidden = true;
-  const reconnect = input('auto_reconnect', 'checkbox');
+  const reconnect = namedInput('auto_reconnect', 'checkbox');
   const reconnectLabel = node('label', 'check-row'); reconnectLabel.append(reconnect, node('span', '', 'Reconnect controller automatically'));
   const reconnectHelp = node('p', 'help-text', 'Save this controller login securely on this PC.');
-  reconnectHelp.id = `controller-reconnect-help-${crypto.randomUUID()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
+  reconnectHelp.id = `controller-reconnect-help-${randomId()}`; reconnect.setAttribute('aria-describedby', reconnectHelp.id);
   const reconnectHint = node('p', 'help-text');
   const applyPreference = button('Save reconnect preference', 'primary');
   const preferenceActions = node('div', 'connection-actions'); preferenceActions.append(applyPreference);
   const [preferenceNotice, preferenceStatus] = notice();
   reconnectSection.append(reconnectLabel, reconnectHelp, reconnectHint, preferenceActions, preferenceNotice);
   const form = node('form', 'connection-form'); form.autocomplete = 'on';
-  form.id = `controller-form-${crypto.randomUUID()}`;
+  form.id = `controller-form-${randomId()}`;
   const editConnection = button('Edit connection'); editConnection.hidden = true;
   editConnection.setAttribute('aria-controls', form.id); editConnection.setAttribute('aria-expanded', 'false');
   const editorHint = node('p', 'help-text', 'Connection edits are not applied.'); editorHint.hidden = true;
@@ -713,19 +1204,19 @@ export function renderControllerConnection(host, {request, onChanged = () => {}}
   const kindField = field('Controller type', kind); kindField.append(kindHelp);
   const auth = node('select'); auth.name = 'auth_method';
   const authHelp = node('small'), authField = field('Sign-in method', auth); authField.append(authHelp);
-  const address = input('url', 'url'); address.required = true; address.maxLength = 2048; address.placeholder = 'https://controller:8443';
+  const address = namedInput('url', 'url'); address.required = true; address.maxLength = 2048; address.placeholder = 'https://controller:8443';
   const addressField = field('Controller address', address);
-  const username = input('username', 'text', 'username'); username.maxLength = 128;
-  const password = input('password', 'password', 'current-password');
+  const username = namedInput('username', 'text', 'username'); username.maxLength = 128;
+  const password = namedInput('password', 'password', 'current-password');
   const usernameField = field('Username', username), passwordRow = passwordField('Controller password', password);
-  const apiKey = input('api_key', 'password'); apiKey.maxLength = 4096;
+  const apiKey = namedInput('api_key', 'password'); apiKey.maxLength = 4096;
   const apiKeyField = passwordField('API key', apiKey), keyHelp = node('small'); apiKeyField.append(keyHelp);
   const consoleId = node('select'); consoleId.name = 'console_id';
-  consoleId.id = `controller-console-${crypto.randomUUID()}`;
+  consoleId.id = `controller-console-${randomId()}`;
   const consoleField = node('div', 'field'), consoleLabel = node('label', '', 'Console'); consoleLabel.htmlFor = consoleId.id;consoleField.append(consoleLabel,consoleId);
   const findConsoles = button('Find consoles', 'quiet'), consoleHelp = node('small', '', 'Enter an API key, then find and choose your console.');
   consoleField.append(findConsoles, consoleHelp);
-  const verification = input('verification_code', 'text', 'one-time-code');
+  const verification = namedInput('verification_code', 'text', 'one-time-code');
   verification.inputMode = 'numeric'; verification.pattern = '[0-9]{6,8}'; verification.maxLength = 8;
   const twoFactor = node('details', 'connection-options');
   twoFactor.append(node('summary', '', 'Two-factor authentication'), field('Verification code', verification, 'Enter your account’s current verification code.'));

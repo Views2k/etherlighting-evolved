@@ -82,7 +82,7 @@ document.documentElement.dataset.fixtureReady='true';
     const url=new URL(request.url,'http://localhost');
     const finish=(type,body,status=200)=>response.writeHead(status,{...headers,'Content-Type':type}).end(body);
     if(request.method!=='GET'){finish('text/plain','Not found',404);return;}
-    if(/^\/(?:preview|src)\/[a-z0-9-]+\.(?:mjs|css)$/.test(url.pathname)||url.pathname==='/assets/logo.png'){
+    if(/^\/(?:preview|src)\/[a-z0-9-]+\.(?:mjs|css)$/.test(url.pathname)||url.pathname==='/assets/logo-256.png'){
       try{finish(url.pathname.endsWith('.css')?'text/css; charset=utf-8':url.pathname.endsWith('.png')?'image/png':'text/javascript; charset=utf-8',readFileSync(path.join(root,url.pathname.slice(1))));}
       catch{finish('text/plain','Not found',404);}return;
     }

@@ -46,6 +46,14 @@ public static class FansPageChecks
         check(await Until(() => Task.FromResult(Shows("Switch control") && All<TextBlock>(Page()).Any(t => (t.Text ?? "").EndsWith(" °C", StringComparison.Ordinal)))),
             "Fans shows the switch temperatures and the fan modes");
 
+        var lost = (JsonObject)shell.Workspace.State["fans"]!;
+        lost["error"] = null;
+        lost["settings_error"] = "Saved fan settings could not be read. The switch controls the fans until you choose a mode.";
+        shell.CurrentPage!.Update();
+        check(Shows("Saved fan settings could not be read."), "a fan choice that could not be read stays shown while error is empty");
+        lost["settings_error"] = null;
+        shell.CurrentPage.Update();
+
         check(await Click("Thermal target") && await Until(async () => (await Fans()).Str("settings.mode") == "target"),
             "Thermal target starts fan control on the switch");
         var described = await Until(() => Task.FromResult(Shows("Keeping the CPU at 55 °C")));
@@ -74,10 +82,26 @@ public static class FansPageChecks
             "moving the speed slider sets both fans");
         check(await Until(() => Task.FromResult(Shows("82%"))), "the fan reading follows the new speed");
 
+        // A later service may send other limits; the sliders follow them.
+        var state = (JsonObject)shell.Workspace.State["fans"]!;
+        var limits = state["limits"]?.DeepClone();
+        state["limits"] = JsonNode.Parse("""{"manual_percent":[40,90],"target_celsius":[50,80]}""");
+        shell.CurrentPage!.Update();
+        check(Visible(40) is { Maximum: 90 }, "the speed slider uses the limits the service reports");
+        state["limits"] = limits;
+        shell.CurrentPage.Update();
+
         check(await Click("Curve") && await Click("High") && await Until(async () => (await Fans()) is { } fans
                                                                     && fans.Str("settings.mode") == "curve" && fans.Str("settings.curve") == "high"),
             "a fan curve is chosen from the four curves");
         check(await Until(() => Task.FromResult(Shows("Following the High curve"))), "the page names the curve the fans follow");
+        var fanState = (JsonObject)shell.Workspace.State["fans"]!;
+        var curves = fanState["curves"]?.DeepClone();
+        fanState["curves"] = JsonNode.Parse("""{"low":{"name":"Low","points":[[35.5,30],"invalid",[70,100]]}}""");
+        shell.CurrentPage!.Update();
+        check(Shows("30% at 35.5 °C, 100% at 70 °C"), "a curve with fractional points is shown and a malformed point is skipped");
+        fanState["curves"] = curves;
+        shell.CurrentPage.Update();
 
         var refused = await shell.Workspace.Api.RequestAsync("/api/fans", "PUT", new JsonObject { ["mode"] = "manual", ["manual_percent"] = 12 }, shell.Workspace.WorkspaceId)
             .ContinueWith(task => task.Exception?.InnerException as ApiException);
@@ -124,6 +148,16 @@ public static class FansPageChecks
                 // tooltips: the tooltip service is off for the window and every control in it.
                 check(!ToolTip.GetServiceEnabled(window) && !ToolTip.GetServiceEnabled(plus),
                     $"a rack-sized window shows no tooltips (window {ToolTip.GetServiceEnabled(window)}, control {ToolTip.GetServiceEnabled(plus)}, client {window.ClientSize})");
+
+                // A page that was left must stop following the window, or every visit stays referenced by it.
+                var left = shell.CurrentPage!;
+                var rackLayout = left.Content;
+                await shell.Navigate("Help");
+                window.Height = height;
+                await Until(() => Task.FromResult(window.ClientSize.Height >= 520));
+                check(window.ClientSize.Height >= 520 && ReferenceEquals(left.Content, rackLayout), "a Fans page that was left no longer follows the window size");
+                window.Height = 400;
+                await shell.Navigate("Fans");
             }
             finally
             {
@@ -137,5 +171,40 @@ public static class FansPageChecks
         check(await Click("Switch control") && await Until(async () => (await Fans()) is { } fans
                                                                        && fans.Str("settings.mode") == "switch" && fans.Str("reading.controller") == "absent"),
             "Switch control returns the fans to the switch");
+
+        check(await Fans() is JsonObject reported && reported.ContainsKey("hold") && reported["hold"] is null
+              && All<TextBlock>(Page()).Any(text => (text.Text ?? "").Contains("EE saves the fan mode for each switch", StringComparison.Ordinal)),
+            "the demo switch has no hold and the footer says the fan mode is saved for each switch");
+
+        // While a hold is set, the saved mode is not what runs: no mode, curve or chart shows it.
+        bool Unselected() => !All<Button>(Page()).Any(button => button.IsEffectivelyVisible && button.Classes.Contains("selected"))
+                             && !All<Control>(Page()).Any(control => control.IsEffectivelyVisible && control.GetType().Name == "FanCurveChart");
+        // The service refuses every change while a newer EE's fan file is in place, so the modes cannot be chosen then.
+        bool Choosable(bool enabled) => new[] { "Switch control", "Curve", "Manual", "Thermal target" }.All(label => Find(Page(), label)?.IsEnabled == enabled);
+        foreach (var (hold, text) in new[]
+                 {
+                     ("settings_newer", "The fan mode for this switch was saved by a newer version of EE. This version does not change fan control"),
+                     ("other_installation", "Fan control on this switch was not started from the fan settings saved on this PC"),
+                     ("settings_unreadable", "EE could not load the fan mode saved for this switch"),
+                 })
+        {
+            var held = (JsonObject)shell.Workspace.State["fans"]!.DeepClone();
+            held["hold"] = hold;
+            held["settings"]!["mode"] = "curve";
+            held["settings"]!["curve"] = "high";
+            held["reading"]!["controller"] = "running";
+            shell.Workspace.State["fans"] = held;
+            shell.CurrentPage!.Update();
+            var locked = hold == "settings_newer";
+            check(Shows(text) && Unselected() && Choosable(!locked),
+                $"the hold {hold} shows its reason and no selected mode, and the modes {(locked ? "cannot" : "can")} be chosen");
+        }
+        Find(Page(), "Manual")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        check(Find(Page(), "Manual")!.Classes.Contains("selected"), "a mode chosen during a hold shows as selected at once");
+        check(await Until(async () => (await Fans()).Str("settings.mode") == "manual"), "a mode chosen during a hold reaches the switch");
+        if (await Fans() is JsonObject served) shell.Workspace.State["fans"] = served.DeepClone();
+        shell.CurrentPage!.Update();
+        check(await Click("Switch control") && await Until(async () => (await Fans()).Str("settings.mode") == "switch"),
+            "the Fans checks leave the demo switch in Switch control");
     }
 }

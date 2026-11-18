@@ -8,7 +8,7 @@ from etherlighting_evolved.engine import Engine, NotFound, to_output
 from etherlighting_evolved.links import PortLink
 from etherlighting_evolved.poe import PoePort
 from etherlighting_evolved.switch import EtherlightSwitch, PortOutput
-from etherlighting_evolved.transport import SimulatedTransport
+from etherlighting_evolved.transport import SimulatedTransport, TransportError
 
 NOON = datetime(2026, 6, 3, 12, 0)
 
@@ -192,10 +192,8 @@ def test_a_bad_scene_changes_nothing():
     assert engine.snapshot() == before
 
 
-def test_level_dimming_moves_brightness_into_the_hardware_level():
-    out = to_output(Color(128, 0, 0), 100, "level", gamma=1.0)
-    assert out.color == Color(255, 0, 0) and out.level == 50
-    assert to_output(Color(128, 0, 0), 100, "rgb", gamma=1.0) == PortOutput(Color(128, 0, 0), 100)
+def test_brightness_stays_in_the_color_bytes_at_full_hardware_level():
+    assert to_output(Color(128, 0, 0), 100, gamma=1.0) == PortOutput(Color(128, 0, 0), 100)
     assert to_output(Color(255, 255, 255), 0) == PortOutput(Color(0, 0, 0), 100)
     assert to_output(Color(255, 255, 255), 0).preview().is_off
 
@@ -206,8 +204,6 @@ def test_gamma_encodes_effect_amplitude_and_global_brightness_in_rgb():
     assert to_output(Color(128, 128, 128), 100) == PortOutput(Color(56, 56, 56), 100)
     assert to_output(white, 100) == PortOutput(white, 100)
     assert to_output(Color(128, 64, 0), 100) == PortOutput(Color(56, 12, 0), 100)
-    # Explicit legacy conversion stays available, but is no longer Engine's output path.
-    assert to_output(Color(128, 128, 128), 100, "level") == PortOutput(white, 22)
 
 
 def test_a_new_effect_crossfades_from_the_old_one():
@@ -241,16 +237,16 @@ def test_busy_switch_slows_engine_down_and_calm_switch_speeds_it_up(monkeypatch)
     clock = [100.0]
     monkeypatch.setattr("etherlighting_evolved.engine.timing.monotonic", lambda: clock[0])
     engine = make_engine()
-    engine._adjust_throttle(0.10)
-    assert engine.command_budget == 15
+    engine.budget.adjust(0.10)
+    assert engine.budget.value == 15
     for _ in range(10):
         clock[0] += 1
-        engine._adjust_throttle(0.05)
-    assert engine.command_budget == 5
+        engine.budget.adjust(0.05)
+    assert engine.budget.value == 5
     for _ in range(10):
         clock[0] += 1
-        engine._adjust_throttle(0.9)
-    assert engine.command_budget == 30  # shell recovery never exceeds its own ceiling
+        engine.budget.adjust(0.9)
+    assert engine.budget.value == 30  # shell recovery never exceeds its own ceiling
 
 
 async def wait_for(condition, timeout=2.0):
@@ -285,6 +281,137 @@ async def test_engine_drives_the_simulator():
 
 
 @pytest.mark.anyio
+async def test_a_failed_loop_is_reported_and_reconnect_restarts_it(caplog):
+    sim = SimulatedTransport(latency=0)
+    switch = EtherlightSwitch(sim)
+    engine = Engine(switch, fps=30, rules=[])
+    await engine.start()
+    try:
+        assert await wait_for(lambda: len(sim.leds) == 8)
+        write = switch.write
+
+        async def invariant_failure(*args, **kwargs):
+            raise ValueError("fixture invariant failure")
+
+        switch.write = invariant_failure
+        engine.set_override(1, "#00ff00")
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        assert engine.error == "Lighting stopped unexpectedly. Reconnect the switch."
+        assert "ee-render stopped" in caplog.text and "fixture invariant failure" in caplog.text
+        switch.write = write
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.mode == "running"
+        assert len(engine._tasks) == 5 and not any(task.done() for task in engine._tasks)
+        engine.set_override(1, "#0000ff")
+        assert await wait_for(lambda: sim.leds[1] == ("0000ff", 100))
+    finally:
+        await engine.stop()
+
+
+class FailingFans:
+    def __init__(self):
+        self.failing, self.polls = True, 0
+
+    async def poll(self):
+        if self.failing:
+            raise ValueError("fixture fan failure")
+        self.polls += 1
+
+    def interval(self):
+        return 0.05
+
+    def to_dict(self):
+        return {}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("loop", ["ee-status", "ee-fans"])
+async def test_reconnect_restarts_a_failed_status_or_fan_loop(loop, caplog):
+    switch = EtherlightSwitch(SimulatedTransport(latency=0))
+    engine = Engine(switch, fps=30, rules=[], link_poll=0.5)
+    fans, read_links = FailingFans(), switch.read_links
+    engine.attach_fans(fans)
+    if loop == "ee-status":
+        fans.failing = False
+
+        async def broken_links():
+            raise ValueError("fixture status failure")
+
+        switch.read_links = broken_links
+    await engine.start()
+    try:
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        assert f"{loop} stopped" in caplog.text
+        assert engine.mode == "running" and engine.error == "Lighting stopped unexpectedly. Reconnect the switch."
+        fans.failing, switch.read_links = False, read_links
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        sequence, polls = engine._telemetry_sequence, fans.polls
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.error is None
+        assert await wait_for(lambda: engine._telemetry_sequence > sequence and fans.polls > polls)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("attempt_succeeds", [False, True])
+async def test_a_reconnect_attempt_does_not_clear_a_failed_loop(attempt_succeeds):
+    switch = EtherlightSwitch(SimulatedTransport(latency=0))
+    engine = Engine(switch, fps=30, rules=[], reconnect_delay=1)
+    await engine.start()
+    try:
+        assert await wait_for(lambda: engine.connected)
+        connect, attempting, finish = switch.connect, asyncio.Event(), asyncio.Event()
+
+        async def slow_connect():
+            attempting.set()
+            await finish.wait()
+            if not attempt_succeeds:
+                raise TransportError("fixture connection refused")
+            await connect()
+
+        def broken_compose(*args, **kwargs):
+            raise ValueError("fixture effect failure")
+
+        switch.connect = slow_connect
+        engine._lost(TransportError("fixture connection lost"))
+        await asyncio.wait_for(attempting.wait(), 3)
+        engine.compose = broken_compose
+        assert await wait_for(lambda: engine.state()["reconnect_required"])
+        finish.set()
+        if attempt_succeeds:
+            assert await wait_for(lambda: engine.connected)
+        else:
+            assert await wait_for(lambda: engine._reconnect_failures == 1)
+        state = engine.state()
+        assert state["reconnect_required"] and state["error"] == "Lighting stopped unexpectedly. Reconnect the switch."
+        with pytest.raises(TransportError):
+            engine.resume()
+
+        del engine.compose
+        switch.connect = connect
+
+        async def recovered(outputs):
+            return engine.switch_info
+
+        switch.recover_output = recovered
+        await engine.recover_connection()
+        assert not engine.state()["reconnect_required"] and engine.error is None
+        assert len(engine._tasks) == 5 and not any(task.done() for task in engine._tasks)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.anyio
 async def test_the_command_budget_holds_while_an_effect_runs():
     sim = SimulatedTransport(latency=0)
     engine = Engine(EtherlightSwitch(sim), fps=30, max_commands=20, effect="rainbow", effect_params={"speed": 2})
@@ -307,10 +434,10 @@ async def test_a_busy_switch_gets_fewer_commands():
     await engine.start()
     try:
         for _ in range(40):
-            if engine.throttle < 1.0:
+            if engine.budget.value < 30:
                 break
             await asyncio.sleep(0.1)
-        assert engine.throttle < 1.0
+        assert engine.budget.value < 30
         assert engine.state()["stats"]["switch_cpu_idle"] < 0.3
     finally:
         await engine.stop()

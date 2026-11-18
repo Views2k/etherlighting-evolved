@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 import uuid
 from pathlib import Path
 from threading import RLock
+
+from .storage import atomic_write_json as write_json
+from .storage import quarantine, read_json
 
 _NAME_RE = re.compile(r"^[\w .\-]{1,64}$")
 
@@ -17,22 +19,6 @@ class ProfileStoreError(OSError):
     """Existing profiles could not be read or a change could not be saved."""
 
     code = "profile_storage_unavailable"
-
-
-def write_json(path: Path, data) -> None:
-    """Write through a temporary file so a crash never leaves half a file behind."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
-    os.replace(tmp, path)
-
-
-def read_json(path: Path, default):
-    try:
-        data = json.loads(Path(path).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
-    return data if isinstance(data, type(default)) else default
 
 
 class ProfileConflict(ValueError):
@@ -183,6 +169,10 @@ class SceneStore:
         write_json(self.path, scene)
 
 
+class UnusableSceneError(ValueError):
+    """The saved scene file is damaged or belongs to another device or port layout."""
+
+
 class DeviceSceneStore(SceneStore):
     """A scene explicitly assigned to an authenticated device and qualified port layout."""
 
@@ -191,13 +181,31 @@ class DeviceSceneStore(SceneStore):
         self.identity = identity
 
     def load(self) -> dict | None:
-        if not self.path.exists():
+        """The saved scene, or None when there is none.
+
+        An unusable file raises UnusableSceneError and stays where it is: the caller decides whether to set it aside
+        and start over, because a scene saved to the switch may still depend on it.
+        """
+        try:
+            envelope = json.loads(self.path.read_text("utf-8"))
+        except FileNotFoundError:
             return None
-        envelope = read_json(self.path, {})
-        if (envelope.get("version") != 1 or envelope.get("identity") != self.identity
+        except OSError as exc:
+            raise ValueError("The saved lighting for this switch could not be read.") from exc
+        except ValueError as exc:
+            raise UnusableSceneError("The saved lighting for this switch could not be verified.") from exc
+        version = envelope.get("version") if isinstance(envelope, dict) else None
+        if type(version) is int and version > 1:
+            raise ValueError("The saved lighting for this switch was saved by a newer version of EE. "
+                             "Update EE to use it.")
+        if (version != 1 or envelope.get("identity") != self.identity
                 or not isinstance(envelope.get("scene"), dict) or not envelope["scene"]):
-            raise ValueError("The saved lighting for this switch could not be verified.")
+            raise UnusableSceneError("The saved lighting for this switch could not be verified.")
         return envelope["scene"]
+
+    def set_aside(self) -> None:
+        """Move an unusable file aside under a dated name, so a new setup can be saved without losing it."""
+        quarantine(self.path, "The saved lighting for this switch could not be verified")
 
     def save(self, scene: dict) -> None:
         write_json(self.path, {"version": 1, "identity": self.identity, "scene": scene})

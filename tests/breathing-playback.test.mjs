@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import { CATALOG } from '../src/catalog.mjs';
 import { defaultConfig,effectById,effectColor,effectConfigForSelection,paramsAfterChange,shareBreathingPace,
   resolvedColorParams,previewPhase,speedParam,speedParamValue,speedSliderValue,speedText,setEffectCatalog,breathingPeriod } from '../src/effects.mjs';
-import { createState,sanitizeConfig,snapshot,applySnapshot } from '../src/state.mjs';
-import { effectControls } from '../src/views.mjs';
 
 test('old Breathing scenes remain Custom while a new supported selection uses shared synchronized pace',() => {
-  const state = createState();state.mode = 'live';
-  assert.equal(sanitizeConfig({id:'breathing',params:{period:7.5}}).params.playback,'custom');
+  const state = {mode:'live',zones:[{id:'all',ports:[1,2,3,4,5,6,7,8],effect:{id:'gradient',params:{}}}]};
   assert.equal(effectConfigForSelection('breathing',state).params.playback,'custom');
   state.switch = {native_breathing:true};
   assert.equal(effectConfigForSelection('breathing',state).params.playback,'synchronized');
@@ -23,39 +20,15 @@ test('old Breathing scenes remain Custom while a new supported selection uses sh
   finally {setEffectCatalog(CATALOG);}
 });
 
-test('playback controls preserve chosen colors and inactive Custom settings through scene save',() => {
-  const state = createState();state.config = defaultConfig('breathing');
-  Object.assign(state.config.params,{color:'#2468AC',brightness_color:35,period:7.5,floor:.25,ripple:true,random_color:true,color_transition:11});
-  const before = structuredClone(state.config.params);
-  state.config.params = paramsAfterChange(state.config,'playback','synchronized',state.zones);
-  state.config.params = paramsAfterChange(state.config,'pace',3,state.zones);
-  state.zones[0].effect = structuredClone(state.config);
-  const restored = createState();applySnapshot(restored,snapshot(state));
-  restored.config.params = paramsAfterChange(restored.config,'playback','custom');
-  assert.deepEqual(restored.config.params,{...before,pace:3});
-});
-
-test('synchronized controls show fixed color, own brightness and shared speed without inactive options',() => {
-  const state = createState();state.mode = 'live';state.switch = {native_breathing:true};state.config = defaultConfig('breathing');
-  Object.assign(state.config.params,{playback:'synchronized',random_color:true});
-  const html = effectControls(state);
-  assert.match(html,/value="synchronized" selected>Synchronized/);
-  assert.match(html,/data-param="color"/);assert.match(html,/data-param="brightness_color"/);
-  assert.doesNotMatch(html.match(/<input id="param-color"[^>]*>/)[0],/disabled/);
-  assert.match(html,/data-speed="pace" type="range" min="1" max="3" step="1"/);
-  assert.match(html,/>Shared speed</);assert.match(html,/One speed for all synchronized groups/);
-  assert.doesNotMatch(html,/data-param="(?:period|floor|ripple|color_transition)"|data-key="(?:ripple|random_color)"/);
-  state.config.params.playback = 'custom';
-  const custom = effectControls(state);
-  assert.match(custom,/data-speed="period"/);assert.match(custom,/data-param="floor"/);
-  assert.match(custom,/data-key="ripple"/);assert.match(custom,/data-key="random_color"/);
-  assert.match(custom,/data-param="color_transition"/);assert.doesNotMatch(custom,/data-speed="pace"/);
-  state.switch.native_breathing = false;
-  assert.doesNotMatch(effectControls(state),/data-param="playback"/);
-  state.config.params.playback = 'synchronized';
-  const recovery = effectControls(state);
-  assert.match(recovery,/value="synchronized" selected disabled>Synchronized/);
-  assert.doesNotMatch(recovery.match(/<option value="custom"[^>]*>/)[0],/disabled/);
+test('playback controls preserve chosen colors and inactive Custom settings',() => {
+  const config = defaultConfig('breathing');
+  Object.assign(config.params,{color:'#2468AC',brightness_color:35,period:7.5,floor:.25,ripple:true,random_color:true,color_transition:11});
+  const before = structuredClone(config.params);
+  const zones = [{id:'all',ports:[1,2,3,4,5,6,7,8],effect:{id:'gradient',params:{}}}];
+  config.params = paramsAfterChange(config,'playback','synchronized',zones);
+  config.params = paramsAfterChange(config,'pace',3,zones);
+  config.params = paramsAfterChange(config,'playback','custom');
+  assert.deepEqual(config.params,{...before,pace:3});
 });
 
 test('all three synchronized speeds increase left to right and use their nominal preview periods',() => {

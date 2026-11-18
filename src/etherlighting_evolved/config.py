@@ -13,6 +13,9 @@ from pathlib import Path
 
 from .guard import LOOPBACK_BINDS
 
+# Switch hosts that log in to the built-in simulator instead of a switch.
+DEMO_HOSTS = {"demo", "simulator", "sim"}
+
 EXAMPLE_CONFIG = """\
 # Etherlighting Evolved (EE) - optional advanced settings. Everything here has a sensible default;
 # day-to-day you just log in from the UI with the switch IP, SSH username and password.
@@ -43,7 +46,6 @@ host = "127.0.0.1"          # network access requires an API token of at least 3
 port = 8787
 token = ""                  # bearer token; required for network access; or set EE_API_TOKEN
 cors_origins = []           # other sites allowed to use the API, e.g. a UI dev server: ["http://localhost:5173"]
-static_dir = "web"          # the web UI build (index.html) served at /
 """
 
 
@@ -77,6 +79,9 @@ class EngineConfig:
     effect_params: dict = field(default_factory=lambda: {"color": "#ffffff"})
 
     def __post_init__(self) -> None:
+        if self.dimming not in ("level", "rgb"):
+            raise ValueError("dimming must be 'level' or 'rgb'")
+        # Older configurations chose "level"; output always carries brightness in RGB now.
         if self.dimming == "level":
             self.dimming = "rgb"
 
@@ -87,7 +92,6 @@ class ApiConfig:
     port: int = 8787
     token: str = ""
     cors_origins: list = field(default_factory=list)
-    static_dir: str = "web"
 
     def validate(self) -> None:
         if not isinstance(self.host, str) or not self.host or self.host != self.host.strip():
@@ -97,6 +101,10 @@ class ApiConfig:
         if self.host not in LOOPBACK_BINDS and len(self.token) < 32:
             raise ValueError("Network access requires an API token of at least 32 characters; "
                              "set EE_API_TOKEN or api.token")
+        if "*" in self.cors_origins and len(self.token) < 32:
+            raise ValueError('api.cors_origins = ["*"] lets every website use the API, so it requires an API token '
+                             "of at least 32 characters; set EE_API_TOKEN or api.token, or list the allowed "
+                             "origins instead")
 
 
 @dataclass
@@ -104,12 +112,7 @@ class Config:
     switch: SwitchConfig = field(default_factory=SwitchConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
-    base_dir: Path = field(default_factory=Path.cwd)
     data_dir: Path = field(default_factory=data_dir)
-
-    def resolve(self, value: str) -> Path:
-        path = Path(value).expanduser()
-        return path if path.is_absolute() else self.base_dir / path
 
 
 def _section(cls, data: dict, name: str):
@@ -122,19 +125,17 @@ def _section(cls, data: dict, name: str):
 
 def load_config(path: str | Path | None = None) -> Config:
     data: dict = {}
-    base = Path.cwd()
     if path:
-        p = Path(path).expanduser()
-        data = tomllib.loads(p.read_text("utf-8"))
-        base = p.resolve().parent
+        data = tomllib.loads(Path(path).expanduser().read_text("utf-8"))
     unknown = set(data) - {"switch", "engine", "api"}
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
+    # Earlier example configs set api.static_dir for a web interface the server no longer serves.
+    api = {key: value for key, value in data.get("api", {}).items() if key != "static_dir"}
     cfg = Config(
         switch=_section(SwitchConfig, data.get("switch", {}), "switch"),
         engine=_section(EngineConfig, data.get("engine", {}), "engine"),
-        api=_section(ApiConfig, data.get("api", {}), "api"),
-        base_dir=base,
+        api=_section(ApiConfig, api, "api"),
     )
     env = os.environ
     cfg.switch.host = env.get("EE_HOST", cfg.switch.host)

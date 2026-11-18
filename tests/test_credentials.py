@@ -5,7 +5,7 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
-from etherlighting_evolved import credentials
+from etherlighting_evolved import credentials, storage
 from etherlighting_evolved.api import create_app
 from etherlighting_evolved.credentials import CredentialStoreError, SavedLogin
 from etherlighting_evolved.session import SessionManager
@@ -70,11 +70,11 @@ def test_failed_atomic_replace_preserves_previous_login_and_removes_temp_file(tm
     def fail(*args, **kwargs):
         raise PermissionError("fixture failure")
 
-    monkeypatch.setattr(credentials.os, "replace", fail)
+    monkeypatch.setattr(storage.os, "replace", fail)
     with pytest.raises(CredentialStoreError, match="Could not save"):
         store.save(**{**FIXTURE, "password": "different-fixture"})
     assert store.path.read_bytes() == original
-    assert not list(tmp_path.glob(".login-*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @windows

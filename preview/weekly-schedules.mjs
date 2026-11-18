@@ -1,11 +1,8 @@
 import {confirmAction} from './confirmation.mjs';
 import {scheduleClockLabel} from './schedule-clock.mjs';
+import {field,input,node,select} from './dom.mjs';
 
 const days=['mon','tue','wed','thu','fri','sat','sun'];
-const node=(tag,className='',text)=>{const el=document.createElement(tag);el.className=className;if(text!==undefined)el.textContent=text;return el;};
-const input=(value,type='text')=>{const el=node('input');el.type=type;el.value=value;return el;};
-const field=(label,el)=>{const wrap=node('label','field');wrap.append(node('span','',label),el);return wrap;};
-const select=(values,value)=>{const el=node('select');for(const [key,label] of values){const option=node('option','',label);option.value=key;el.append(option);}el.value=value??values[0]?.[0]??'';return el;};
 const check=(label,checked)=>{const el=input('','checkbox');el.checked=checked;const wrap=node('label','check');wrap.append(el,node('span','',label));return {el,wrap};};
 export function scheduleConflicts(draft,schedules){return schedules.filter(item=>item.id!==draft.id&&item.enabled&&draft.enabled&&item.at===draft.at&&item.days.some(day=>draft.days.includes(day))&&!item.needs_device_confirmation);}
 export function scheduleDraftError(draft){if(!draft.name.trim())return 'Enter a schedule name.';if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.at))return 'Choose a valid time.';if(!draft.days.length)return 'Choose at least one day.';if(draft.action.type==='preset'&&!draft.action.profile_id)return 'Choose a saved profile.';return '';}

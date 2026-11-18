@@ -7,8 +7,9 @@ import pytest
 from test_controller import FakeClient
 from test_controller_reconnect import Store
 
-from etherlighting_evolved.controller import ControllerError, ControllerManager
+from etherlighting_evolved.controller import ControllerError
 from etherlighting_evolved.controller_api import ControllerIntegration, ControllerLogin
+from etherlighting_evolved.controller_manager import ControllerManager
 
 OLD_URL = "https://current.invalid"
 NEW_URL = "https://candidate.invalid"
@@ -50,7 +51,7 @@ async def test_site_prompt_preserves_active_telemetry_and_cancel_discards_only_c
         "sites": [{"id": "north", "name": "North"}, {"id": "south", "name": "South"}]}
     assert manager._client is old and old.authenticated and old.password == "current-secret"
     assert manager.enrich_ports([{"port": 1}], HOST) == original_ports
-    assert manager.diagnostics(HOST)["available"]
+    assert manager.status()["connected"]
     assert not manager.can_save_login(HOST)
     with pytest.raises(ControllerError, match="Connect your controller"):
         await manager.login_for_saving(HOST)

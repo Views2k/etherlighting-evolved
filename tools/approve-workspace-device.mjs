@@ -1,15 +1,27 @@
-import {createHash, randomUUID} from 'node:crypto';
-import {lstat, open, readFile, rename, unlink} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {lstat, readFile, unlink} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {pathToFileURL} from 'node:url';
 import {canonicalTailnetAddress, matchesApprovedNode, MAX_APPROVED_DEVICES, parseApprovedDevices} from '../preview/approved-device.mjs';
-import {runInstalledTailscale} from '../preview/tailscale-cli.mjs';
+import {isEntryScript} from '../preview/entry-script.mjs';
+import {writeOwnedFile} from '../preview/settings-file.mjs';
+import {createTailscaleRunner} from '../preview/tailscale-cli.mjs';
 
 class ApprovalError extends Error {}
 function fail(message) { throw new ApprovalError(message); }
+
+// Full status lists every peer, which outgrows the gateway's 64 KB output limit on a tailnet of a few dozen devices.
+const runTailscale = createTailscaleRunner({maxBuffer: 4 * 1024 * 1024});
+
+async function readStatus(run) {
+  try { return JSON.parse(await run(['status', '--json'])); }
+  catch (error) {
+    if (error.code === 'tailscale_output_too_large') fail('Tailscale returned more device data than EE can read.');
+    throw error;
+  }
+}
 
 function dnsName(input) {
   if (typeof input !== 'string' || input.length > 254) return '';
@@ -61,7 +73,7 @@ function selectPeer(status, request) {
 }
 
 async function makeApproval(directory, request, run) {
-  const status = JSON.parse(await run(['status', '--json']));
+  const status = await readStatus(run);
   const hostStableID = approvedHost(status, await readRecord(path.join(directory, 'private-access.json')));
   const peer = selectPeer(status, request);
   if (peer.ID === hostStableID || peer.Expired === true || peer.InNetworkMap === false
@@ -102,7 +114,7 @@ async function lockApprovals(directory) {
   }
 }
 
-async function saveDevices(directory, file, hostStableID, devices) {
+async function saveDevices(file, hostStableID, devices) {
   if (!devices.length) {
     await unlink(file);
     return;
@@ -111,22 +123,16 @@ async function saveDevices(directory, file, hostStableID, devices) {
   if (!parseApprovedDevices(record, hostStableID)) fail('The device identity or addresses conflict with a saved approval.');
   const contents = JSON.stringify(record) + '\n';
   if (Buffer.byteLength(contents) > 4096) fail('The saved device list is full. Revoke an unused approval and try again.');
-  const temporary = path.join(directory, '.ee-approval-' + randomUUID() + '.tmp');
-  const out = await open(temporary, 'wx', 0o600);
-  try {
-    try { await out.writeFile(contents); await out.sync(); }
-    finally { await out.close(); }
-    await rename(temporary, file);
-  } catch (error) { await unlink(temporary); throw error; }
+  await writeOwnedFile(file, contents);
 }
 
-export async function manageApproval(action, directory, request, run = runInstalledTailscale) {
+export async function manageApproval(action, directory, request, run = runTailscale) {
   if (!['approve', 'revoke', 'status'].includes(action)) fail('Choose approve, status, or revoke.');
   const file = path.join(directory, 'approved-device.json');
   const approval = action === 'approve' ? await makeApproval(directory, request, run) : null;
   let selected = approval?.device.deviceStableID;
   if (!approval && request && !request.all) {
-    selected = request.deviceStableID ?? selectPeer(JSON.parse(await run(['status', '--json'])), request).ID;
+    selected = request.deviceStableID ?? selectPeer(await readStatus(run), request).ID;
     if (typeof selected !== 'string' || !/^[!-~]{1,256}$/.test(selected)) fail('Enter a valid device identity.');
   }
   if (action === 'revoke' && !selected && !request?.all) fail('Select the device to revoke, or explicitly choose --all.');
@@ -148,7 +154,7 @@ export async function manageApproval(action, directory, request, run = runInstal
     if (action === 'revoke') {
       if (index < 0) return 'This device has no saved approval.';
       devices.splice(index, 1);
-      await saveDevices(directory, file, hostStableID, devices);
+      await saveDevices(file, hostStableID, devices);
       return 'Device approval removed.';
     }
     if (index >= 0) {
@@ -158,7 +164,7 @@ export async function manageApproval(action, directory, request, run = runInstal
       return 'This device is already approved.';
     }
     if (devices.length >= MAX_APPROVED_DEVICES) fail('The saved device list is full. Revoke an unused approval and try again.');
-    await saveDevices(directory, file, hostStableID, [...devices, approval.device]);
+    await saveDevices(file, hostStableID, [...devices, approval.device]);
     return 'Device approved for this EE workspace.';
   } finally { if (release) await release(); }
 }
@@ -176,7 +182,7 @@ async function readSelection() {
   return {dnsName: selection.dnsName, deviceStableID: selection.deviceStableID};
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isEntryScript(import.meta.url)) {
   try {
     const [action, selection, ...rest] = process.argv.slice(2);
     if (process.platform !== 'win32' || !path.isAbsolute(process.env.LOCALAPPDATA ?? '')) {

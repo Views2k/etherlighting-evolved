@@ -33,7 +33,7 @@ a = Analysis(
     pathex=[str(root / "src")],
     datas=[(str(root / "src/etherlighting_evolved/resident"), "etherlighting_evolved/resident")],
     hiddenimports=collect_submodules("uvicorn"),
-    excludes=["tkinter", "pytest", "_pytest", "IPython", "webview", "pystray"],
+    excludes=["tkinter", "pytest", "_pytest", "IPython"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(

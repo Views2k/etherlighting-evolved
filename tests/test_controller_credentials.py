@@ -66,7 +66,7 @@ def test_protection_failure_preserves_existing_record(tmp_path, monkeypatch):
     with pytest.raises(CredentialStoreError):
         store.save(RECORD)
     assert store.path.read_bytes() == b"existing encrypted data"
-    assert not list(tmp_path.glob(".controller-login-*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @windows
@@ -78,11 +78,11 @@ def test_atomic_failure_keeps_previous_record_and_removes_encrypted_temp(tmp_pat
     def failed(*args):
         raise PermissionError("fixture")
 
-    monkeypatch.setattr(storage.os, "replace", failed)
+    monkeypatch.setattr("etherlighting_evolved.storage.os.replace", failed)
     with pytest.raises(CredentialStoreError):
         store.save({**RECORD, "password": "replacement"})
     assert store.path.read_bytes() == previous
-    assert not list(tmp_path.glob(".controller-login-*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @windows

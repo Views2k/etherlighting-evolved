@@ -39,7 +39,7 @@ async def test_two_animated_sfp_ports_do_not_wait_for_eight_unchanged_refreshes(
     start = clock.now
     while clock.now - start < 12:
         frame_start = clock.now
-        await switch.write(copper, sfp=engine.sfp_outputs(), max_commands=30)
+        await switch.write(copper, sfp=engine.sfp_indicators.outputs(), max_commands=30)
         clock.now = max(clock.now, frame_start + 1 / 25)
     assert all(b[0] - a[0] >= 1 / 30 - 1e-8 for a, b in zip(writes, writes[1:], strict=False))
     for port in (9, 10):

@@ -275,7 +275,7 @@ public static class Effects
                 Js.Str(Js.Get(effect, "description")) ?? "",
             };
             var chosen = custom ?? fallback;
-            var name = Js.Str(Js.Get(effect, "name")) is { } named ? ReplaceFirst(named, "Colour", "Color") : null;
+            var name = Js.Str(Js.Get(effect, "name"));
             effect["name"] = name is not null ? JsonValue.Create(name) : Js.Clone(id);
             effect["category"] = chosen[0];
             effect["icon"] = chosen[1];
@@ -283,12 +283,6 @@ public static class Effects
             effect["description"] = chosen[4];
             effect["supportsPreview"] = custom is not null;
             return effect;
-        }
-
-        static string ReplaceFirst(string text, string find, string replace)
-        {
-            var at = text.IndexOf(find, StringComparison.Ordinal);
-            return at < 0 ? text : text[..at] + replace + text[(at + find.Length)..];
         }
 
         /// <summary>setEffectCatalog(catalog): replaces the effects with the engine's catalog.</summary>

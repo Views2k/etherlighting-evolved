@@ -41,9 +41,9 @@ def test_invalid_output_values_do_not_change_settings(value):
 
 def test_requested_large_budget_still_starts_at_thirty_and_shell_cannot_ramp_above_it():
     engine = make_engine(max_commands=200)
-    assert engine.max_commands == 200 and engine.command_budget == 30
+    assert engine.max_commands == 200 and engine.budget.value == 30
     engine.set_output(max_commands=200)
-    assert engine.command_budget == 30
+    assert engine.budget.value == 30
 
 
 @pytest.mark.parametrize("port", [0, 65, 1.2, True, "1;reboot", float("nan")])
@@ -292,7 +292,7 @@ async def test_changed_host_key_is_rejected_before_authentication(monkeypatch, t
     import asyncssh
 
     store = HostKeyStore(tmp_path / "keys.json")
-    store.verify_or_pin("switch.invalid", 22, "SHA256:original")
+    store.accept("switch.invalid", 22, "SHA256:original")
     authenticated = False
 
     async def connect(**kwargs):
@@ -307,9 +307,10 @@ async def test_changed_host_key_is_rejected_before_authentication(monkeypatch, t
 
     monkeypatch.setattr(asyncssh, "connect", connect)
     transport = SSHTransport("switch.invalid", host_keys=store, username="test", password="fixture")
-    with pytest.raises(HostKeyMismatchError):
+    with pytest.raises(HostKeyMismatchError) as error:
         await transport.connect()
     assert not authenticated and not transport.connected
+    assert error.value.presented == "SHA256:replacement" and error.value.pinned == "SHA256:original"
 
 
 @pytest.mark.anyio
@@ -348,11 +349,11 @@ def test_animation_slows_under_cpu_backoff_without_changing_clock_based_effects(
     engine.compose()
     clock[0] += 1
     engine.compose()
-    assert engine._animation_time == 101
-    engine._adjust_throttle(0.05)
+    assert engine.budget.animation_time == 101
+    engine.budget.adjust(0.05)
     clock[0] += 1
     engine.compose()
-    assert engine._animation_time == pytest.approx(101.5)
+    assert engine.budget.animation_time == pytest.approx(101.5)
     engine.set_effect("daylight")
     noon = datetime(2026, 1, 1, 12)
     evening = datetime(2026, 1, 1, 20)
@@ -365,7 +366,7 @@ def test_large_switch_motion_uses_the_same_number_of_samples(monkeypatch):
     engine = Engine(EtherlightSwitch(SimulatedTransport(), num_ports=64), rules=[])
     clock[0] += 64 / 30
     engine.compose()
-    assert engine._animation_time - 100 == pytest.approx(8 / 30)
+    assert engine.budget.animation_time - 100 == pytest.approx(8 / 30)
 
 
 def test_effect_color_parameter_crossfades_and_manual_color_remains_instant(monkeypatch):
@@ -415,12 +416,14 @@ async def test_real_ssh_handshake_checks_key_before_password(tmp_path):
     server = await asyncssh.create_server(Server, "127.0.0.1", 0, server_host_keys=[key])
     port = server.get_port()
     try:
+        # The first connection to an address without a saved key logs in and saves the key.
         for _ in range(2):
             transport = SSHTransport("127.0.0.1", port=port, host_keys=store,
                                      username="fixture", password="fixture")
             await transport.connect()
             await transport.close()
         assert len(authentications) == 2
+        assert store.get("127.0.0.1", port) == key.get_fingerprint("sha256")
     finally:
         server.close()
         await server.wait_closed()
@@ -496,11 +499,11 @@ def test_data_effect_uses_wall_time_while_decorative_clock_slows(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(engine_module.timing, "monotonic", lambda: clock[0])
     engine = make_engine(effect="traffic")
-    engine._set_command_budget(7.5)
+    engine.budget.set(7.5)
     times = []
     engine.zones[0].effect.render = lambda t, ctx: times.append(t) or [WHITE] * 8
     engine.compose()
     clock[0] += 2
     engine.compose()
     assert times == [0, 2]
-    assert engine._animation_time == 100.5
+    assert engine.budget.animation_time == 100.5

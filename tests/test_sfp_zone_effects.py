@@ -30,9 +30,9 @@ def test_catalog_renders_each_optical_member_at_its_own_group_position(effect_id
         expected = reference.render(t, RenderContext(3, now=now))
         colors, copper = engine.compose(t=t, now=now)
         assert colors[1] == expected[0] and colors[6] == expected[1]
-        assert engine._sfp_color(10, t) == (expected[2], 100)
-        assert len(copper) == 8 and set(engine.sfp_outputs()) == {10}
-    assert [item["effect_zone"] for item in engine.sfp_state()] == [None, "mixed"]
+        assert engine.sfp_indicators.color(10, t) == (expected[2], 100)
+        assert len(copper) == 8 and set(engine.sfp_indicators.outputs()) == {10}
+    assert [item["effect_zone"] for item in engine.sfp_indicators.state()] == [None, "mixed"]
 
 
 def test_activity_uses_the_selected_optical_ports_own_counters_and_link():
@@ -43,8 +43,8 @@ def test_activity_uses_the_selected_optical_ports_own_counters_and_link():
     engine.compose(t=0)
     copper, _ = engine.compose(t=10)
     assert copper[3] == Color(64, 64, 64)
-    assert engine.sfp_outputs()[9].color == BLACK
-    assert engine.sfp_outputs()[10].color == Color(255, 255, 255)
+    assert engine.sfp_indicators.outputs()[9].color == BLACK
+    assert engine.sfp_indicators.outputs()[10].color == Color(255, 255, 255)
 
 
 def test_optical_zone_assignment_roundtrips_and_dormant_settings_resume_on_removal():
@@ -62,17 +62,17 @@ def test_optical_zone_assignment_roundtrips_and_dormant_settings_resume_on_remov
     assert engine.validate_snapshot(saved) == saved
     assert engine.apply_snapshot(saved, preserve_unchanged=True) == set()
     engine.compose(t=0)
-    assert engine._sfp_color(9, 0) == (Color(255, 0, 0), 10)
-    assert engine._sfp_color(10, 0) == (Color(255, 0, 0), 32)
+    assert engine.sfp_indicators.color(9, 0) == (Color(255, 0, 0), 10)
+    assert engine.sfp_indicators.color(10, 0) == (Color(255, 0, 0), 32)
     with pytest.raises(ValueError, match="effect group"):
         engine.set_sfp(9, {"mode": "color"})
     engine.set_rules([{"name": "Selected", "ports": [10], "conditions": [],
                        "look": {"style": "solid", "color": "#123456", "brightness": 50}}])
-    assert engine._sfp_color(10, 0) == (Color.parse("#123456"), 40)
+    assert engine.sfp_indicators.color(10, 0) == (Color.parse("#123456"), 40)
     assert engine.apply_snapshot(original, preserve_unchanged=True) == {9, 10}
-    assert engine._sfp_color(10, 0)[0] == BLACK
+    assert engine.sfp_indicators.color(10, 0)[0] == BLACK
     engine.set_sfp_sync({"mode": "independent"})
-    assert engine._sfp_color(10, 0) == (Color(0, 0, 255), 32)
+    assert engine.sfp_indicators.color(10, 0) == (Color(0, 0, 255), 32)
 
 
 def test_optical_only_group_samples_synchronized_breathing_without_copper_commands():
@@ -81,12 +81,12 @@ def test_optical_only_group_samples_synchronized_breathing_without_copper_comman
     engine.connected = True
     engine.set_zones([group([2], "breathing", playback="synchronized")])
     first = engine.compose(t=0)
-    initial = engine.sfp_outputs()[2]
+    initial = engine.sfp_indicators.outputs()[2]
     second = engine.compose(t=0.45)
-    later = engine.sfp_outputs()[2]
+    later = engine.sfp_indicators.outputs()[2]
     assert first == second == ([], [])
     assert initial != later and initial.breath is None and later.breath is None
-    assert set(engine.sfp_outputs()) == {2}
+    assert set(engine.sfp_indicators.outputs()) == {2}
 
 
 def test_zone_requires_a_qualified_output_and_does_not_widen_manual_override_scope():
@@ -118,7 +118,7 @@ async def test_direct_zone_api_waits_for_output_and_restores_indicator_on_group_
             response = await asyncio.wait_for(request, 2)
             assert response.status_code == 200, response.text
             assert engine.switch.sfp_applied[10].color == Color(255, 0, 0)
-            assert engine._sfp_acknowledged[10] == engine._sfp_revisions[10]
+            assert engine.sfp_indicators.acknowledged[10] == engine.sfp_indicators.revisions[10]
             response = await client.put("/api/effect", json={"id": "static", "params": {"color": "blue"}})
             assert response.status_code == 200, response.text
             assert response.json()["zones"][0]["ports"] == [*range(1, 9), 10]
@@ -126,7 +126,7 @@ async def test_direct_zone_api_waits_for_output_and_restores_indicator_on_group_
             assert 9 not in engine.switch.sfp_applied
             response = await client.put("/api/zones", json={"zones": [group([3])]})
             assert response.status_code == 200 and 10 not in engine.switch.sfp_applied
-            assert engine._sfp_acknowledged[10] == engine._sfp_revisions[10]
+            assert engine.sfp_indicators.acknowledged[10] == engine.sfp_indicators.revisions[10]
     finally:
         engine.switch.write_gate.set()
         await engine.stop()
@@ -167,7 +167,7 @@ async def test_first_write_after_enrollment_during_release_contains_the_new_grou
     async def capture(copper, **kwargs):
         frames.append(kwargs["sfp"])
         if len(frames) == 1:
-            engine._sfp_release_ports.add(10)
+            engine.set_sfp(10, {"mode": "unmanaged"})
         else:
             engine._stopping = True
         return 0

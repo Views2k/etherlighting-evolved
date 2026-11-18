@@ -1,6 +1,5 @@
-import {constants} from 'node:fs';
-import {lstat,open} from 'node:fs/promises';
 import {isIP} from 'node:net';
+import {readOwnedFile} from './settings-file.mjs';
 
 const MAX_RECORD_BYTES=4096;
 const MAX_WHOIS_BYTES=65536;
@@ -61,20 +60,10 @@ export function matchesApprovedNode(node,expectedStableID,sourceIp){
 }
 
 async function approvedPeer(configPath,hostStableID,sourceIp){
-  const entry=await lstat(configPath);
-  if(!entry.isFile()||entry.size===0||entry.size>MAX_RECORD_BYTES)return null;
-  const flags=constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0);
-  const file=await open(configPath,flags);
-  try{
-    const info=await file.stat();
-    if(!info.isFile()||info.ino!==entry.ino||info.dev!==entry.dev||info.size===0||info.size>MAX_RECORD_BYTES)return null;
-    if(process.platform!=='win32'&&(info.uid!==process.getuid()||(info.mode&0o077)!==0))return null;
-    const buffer=Buffer.alloc(MAX_RECORD_BYTES+1);
-    const {bytesRead}=await file.read(buffer,0,buffer.length,0);
-    if(bytesRead!==info.size)return null;
-    const devices=parseApprovedDevices(JSON.parse(buffer.toString('utf8',0,bytesRead)),hostStableID);
-    return devices?.find(device=>device.addresses.includes(sourceIp))?.deviceStableID??null;
-  }finally{await file.close();}
+  const text=await readOwnedFile(configPath,MAX_RECORD_BYTES);
+  if(text===null)return null;
+  const devices=parseApprovedDevices(JSON.parse(text),hostStableID);
+  return devices?.find(device=>device.addresses.includes(sourceIp))?.deviceStableID??null;
 }
 
 export function createApprovedDeviceVerifier({configPath,hostStableID,runTailscale}){

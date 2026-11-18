@@ -129,7 +129,8 @@ def test_unwritable_schedule_storage_preserves_saved_and_memory_state(tmp_path, 
         assert store.path.read_bytes() == original
 
 
-def test_failed_profile_schedule_records_failure_and_does_not_skip_other_due_actions(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_failed_profile_schedule_records_failure_and_does_not_skip_other_due_actions(tmp_path, monkeypatch):
     store = ScheduleStore(tmp_path / "schedules.json")
     for name, action in [("Broken profile", {"type": "preset", "preset": "Evening"}),
                          ("Brightness", {"type": "brightness", "value": 20})]:
@@ -149,6 +150,12 @@ def test_failed_profile_schedule_records_failure_and_does_not_skip_other_due_act
         def schedule_identity(self):
             return "demo"
 
+        def sfp_revisions(self):
+            return {}
+
+        async def confirm_sfp_output(self, expected):
+            return None
+
         def set_brightness(self, value):
             self.values.append(value)
 
@@ -156,13 +163,14 @@ def test_failed_profile_schedule_records_failure_and_does_not_skip_other_due_act
             raise AssertionError("A profile with unreadable storage must not be applied")
     session = Session()
     scheduler = Scheduler(store, presets, session)
-    assert len(scheduler.tick(datetime(2026, 10, 31, 12, 0))) == 2
+    assert len(await scheduler.tick_confirmed(datetime(2026, 10, 31, 12, 0))) == 2
     assert session.values == [20]
     assert scheduler.history[0]["result"] == "ok"
     assert scheduler.history[1]["result"].startswith("failed:")
 
 
-def test_failed_resume_schedule_records_failure_and_continues_due_actions(tmp_path):
+@pytest.mark.anyio
+async def test_failed_resume_schedule_records_failure_and_continues_due_actions(tmp_path):
     store = ScheduleStore(tmp_path / "schedules.json")
     for action in ({"type": "resume"}, {"type": "brightness", "value": 20}):
         store.add({"at": "12:00", "action": action, "device_binding": "demo"})
@@ -171,7 +179,7 @@ def test_failed_resume_schedule_records_failure_and_continues_due_actions(tmp_pa
     engine._reconnect_blocked = True
     sessions = SimpleNamespace(engine=engine, schedule_identity=lambda: "demo")
     scheduler = Scheduler(store, PresetStore(tmp_path / "presets.json"), sessions)
-    assert len(scheduler.tick(datetime(2026, 10, 31, 12, 0))) == 2
+    assert len(await scheduler.tick_confirmed(datetime(2026, 10, 31, 12, 0))) == 2
     assert engine.brightness == 20
     assert scheduler.history[0]["result"] == "ok"
     assert scheduler.history[1]["result"].startswith("failed:")

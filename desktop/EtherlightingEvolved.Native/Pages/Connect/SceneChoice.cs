@@ -7,7 +7,8 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Ui;
-using static EtherlightingEvolved.Native.Pages.Connect.Connections;
+using static EtherlightingEvolved.Native.Pages.Connections;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Connect;
 
@@ -49,16 +50,16 @@ public static class SceneChoice
         var done = new TaskCompletionSource<JsonObject?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var heading = new TextBlock { Text = "Choose lighting for this switch", Classes = { "h2" }, FontSize = 18, LineHeight = 26, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 16) };
-        var intro = ConnectionUi.HelpText("Choose which lighting to start on this switch.");
+        var intro = UiKit.HelpText("Choose which lighting to start on this switch.");
         intro.Margin = default;
-        var useSaved = ConnectionUi.Button("Use saved lighting", "primary");
-        var startNew = ConnectionUi.Button("Start new setup");
+        var useSaved = UiKit.Button("Use saved lighting", "primary");
+        var startNew = UiKit.Button("Start new setup");
         useSaved.HorizontalAlignment = startNew.HorizontalAlignment = HorizontalAlignment.Stretch;
-        var savedSection = new StackPanel { Spacing = 7, Children = { useSaved, ConnectionUi.Small("Start with the saved colors, effects, and automations.") } };
-        var newSection = new StackPanel { Spacing = 7, Children = { startNew, ConnectionUi.Small("Start with the default lighting for this switch.") } };
+        var savedSection = new StackPanel { Spacing = 7, Children = { useSaved, UiKit.Small("Start with the saved colors, effects, and automations.") } };
+        var newSection = new StackPanel { Spacing = 7, Children = { startNew, UiKit.Small("Start with the default lighting for this switch.") } };
         var choices = new StackPanel { Spacing = 18, Margin = new Thickness(0, 22, 0, 0), Children = { savedSection, newSection } };
-        var message = new Notice();
-        var cancel = ConnectionUi.Button("Cancel", "quiet");
+        var message = new Notice(connection: true);
+        var cancel = UiKit.Button("Cancel", "quiet");
         var footer = new Border
         {
             BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 15, 0, 0), Margin = new Thickness(0, 20, 0, 0),
@@ -181,7 +182,7 @@ public static class SceneChoice
                     ["invalid_saved_scene"] = "Saved lighting could not be used. Start a new setup or cancel.",
                     ["output_recovery_required"] = Messages["output_recovery_required"],
                 };
-                var code = (error as ApiException)?.Code ?? (error as CodedException)?.Code ?? "";
+                var code = (error as ApiException)?.Code ?? "";
                 if (code == "invalid_saved_scene") invalidSaved = true;
                 if (code == "output_recovery_required") recoveryRequired = true;
                 try

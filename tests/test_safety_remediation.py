@@ -140,6 +140,13 @@ async def test_permanent_reconnect_failure_stops_and_requires_manual_connection(
 
 
 @pytest.mark.anyio
+async def test_reconnect_refused_for_a_changed_key_explains_the_next_step():
+    engine = Engine(ReconnectSwitch([HostKeyMismatchError("fixture")]), rules=[])
+    await engine._keep_connected()
+    assert engine.error == engine_module.HOST_KEY_CHANGED_ERROR
+
+
+@pytest.mark.anyio
 async def test_removed_rgb_capability_does_not_initialize_or_retry():
     switch = ReconnectSwitch([], supported=False)
     engine = Engine(switch, rules=[])
@@ -219,7 +226,7 @@ def test_existing_frames_include_shared_health_without_switch_reads(monkeypatch)
     simulator = SimulatedTransport(latency=0)
     engine = Engine(EtherlightSwitch(simulator), rules=[])
     monkeypatch.setattr(engine_module.timing, "monotonic", lambda: 100.0)
-    engine.cpu_idle, engine.cpu_load, engine._cpu_updated_at = 0.8, 0.2, 97.0
+    engine.cpu_idle, engine.cpu_load, engine.budget.cpu_updated_at = 0.8, 0.2, 97.0
     engine.error, engine._reconnect_blocked = "Reconnect your switch", True
     state, frame = engine.state(), engine.frame_message()
     assert frame["stats"] == state["stats"]

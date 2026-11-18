@@ -19,7 +19,7 @@ from etherlighting_evolved.api import create_app
 
 @pytest.mark.parametrize("headers,query,allowed", [
     ({"Authorization": "Bearer native-test-token"}, "", True),
-    ({}, "?token=native-test-token", True),
+    ({}, "?token=native-test-token", False),
     ({}, "", False),
     ({"Authorization": "Bearer wrong"}, "?token=native-test-token", False),
 ])

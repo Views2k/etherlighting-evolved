@@ -139,6 +139,40 @@ test('a host started before Tailscale restores its saved address without changin
   assert.ok(calls.every(args=>args[0]==='status'||args.join(' ')==='serve status --json'));
 });
 
+test('a host started before Tailscale adds its own route back after a clean stop',async t=>{
+  const parent=path.resolve('outputs');
+  await mkdir(parent,{recursive:true});
+  const directory=await mkdtemp(path.join(parent,'private-access-retry-route-'));
+  t.after(async()=>{assert.equal(path.dirname(directory),parent);await rm(directory,{recursive:true,force:true});});
+  const identity={BackendState:'Running',Self:{Online:true,ID:'fixture-device',UserID:42,DNSName:'fixture.fixture-tailnet.ts.net.'},
+    User:{42:{ID:42,LoginName:'owner@example.invalid'}}};
+  const route={},calls=[];
+  const runTailscale=async args=>{
+    calls.push([...args]);
+    if(args[0]==='status')return JSON.stringify(identity);
+    if(args.join(' ')==='serve status --json')return JSON.stringify(route);
+    const port=Number(args.find(arg=>arg.startsWith('--https='))?.slice(8)),authority=`fixture.fixture-tailnet.ts.net:${port}`;
+    if(args.includes('off')){delete route.TCP[port];delete route.Web[authority];return '';}
+    route.TCP??={};route.TCP[port]={HTTPS:true};
+    route.Web??={};route.Web[authority]={Handlers:{'/':{Proxy:args.at(-1)}}};
+    return '';
+  };
+  const options={configPath:path.join(directory,'private-access.json'),runTailscale,
+    startListener:async(_gate,port)=>({port:port||52001}),stopListener:async()=>{}};
+  const first=createPrivateAccessManager(options);
+  assert.equal((await first.configure(true)).ready,true);
+  assert.equal((await first.shutdown()).route,'removed');
+
+  identity.BackendState='Starting';calls.length=0;
+  const manager=createPrivateAccessManager(options),clock=timers(),restored=[];
+  const retry=keepPrivateAccessAvailable({manager,restored:value=>restored.push(value),setTimer:clock.setTimer,clearTimer:clock.clearTimer});
+  assert.equal(retry.observe(await manager.initialize()).error.code,'tailscale_not_running');
+  identity.BackendState='Running';
+  await clock.fire();
+  assert.equal(manager.status().ready,true);assert.deepEqual(restored,[{attempts:1}]);assert.equal(clock.pending.length,0);
+  assert.deepEqual(calls.filter(args=>args[0]==='serve'&&args[1]!=='status'),[['serve','--bg','--https=8444','http://127.0.0.1:52001']]);
+});
+
 test('a restored address is recorded with its attempt count and nothing else',async t=>{
   const parent=path.resolve('outputs');
   await mkdir(parent,{recursive:true});

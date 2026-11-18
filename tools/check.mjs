@@ -4,7 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const files = ['server.mjs'];
+const files = [];
 async function collect(directory) {
   for (const entry of await readdir(path.join(root, directory), {withFileTypes: true})) {
     const relative = path.join(directory, entry.name);

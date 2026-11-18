@@ -1,0 +1,152 @@
+name: EE Release
+
+# A pushed version tag (v<major>.<minor>.<patch>) builds the Windows installer and the macOS and Linux client
+# archives and attaches them to a draft GitHub Release. The owner reviews and publishes the draft.
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: ee-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version-file: .python-version
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Check that the tag names the application version
+        run: |
+          $version = python -c "import pathlib, runpy; print(runpy.run_path('tools/check-repository.py')['check_versions'](pathlib.Path('.')))"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "The tag $env:GITHUB_REF_NAME does not match version $version." }
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip install --no-deps --no-build-isolation -e .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip check
+      - name: Restore the desktop program's locked packages
+        env:
+          AVALONIA_TELEMETRY_OPTOUT: '1'
+        run: |
+          dotnet restore desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj --locked-mode
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Prepare pinned installer compiler
+        run: .\tools\ci-inno.ps1
+      - name: Build and verify the installer
+        run: |
+          & .\packaging\build.ps1 -PythonExe @(Get-Command python -CommandType Application)[0].Source -NodeExe @(Get-Command node -CommandType Application)[0].Source -CompilerExe $env:EE_CI_COMPILER -OutputRoot '.\outputs\release'
+          New-Item -ItemType Directory -Path '.\outputs\release-files' | Out-Null
+          Copy-Item -Path '.\outputs\release\dist\EtherlightingEvolved-Setup-*.exe', '.\outputs\release\package-verification.json' -Destination '.\outputs\release-files'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-windows
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+          path: outputs/release-files/*
+
+  clients:
+    name: Desktop client (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
+    env:
+      AVALONIA_TELEMETRY_OPTOUT: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version-file: .python-version
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Install pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
+          dotnet restore desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj --configfile desktop/NuGet.Config --locked-mode
+      - name: Package both supported architectures
+        shell: pwsh
+        run: |
+          $platform = if ($IsMacOS) { 'osx' } else { 'linux' }
+          ./desktop/publish.ps1 -Runtime @("$platform-x64", "$platform-arm64") -PythonExe "$PWD/.venv/bin/python"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ matrix.runner }}
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            outputs/native/EtherlightingEvolved-*-osx-*.zip
+            outputs/native/EtherlightingEvolved-*-linux-*.tar.gz
+
+  draft:
+    name: Draft release
+    needs: [windows, clients]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: release
+        run: sha256sum EtherlightingEvolved-* > SHA256SUMS
+      # Build provenance attestations are available to public repositories.
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: release/EtherlightingEvolved-*
+      - name: Create the draft release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          notes="Built from $GITHUB_SHA. SHA256SUMS lists the checksum of each file."
+          if [[ "$PRIVATE" != true ]]; then
+            notes+=" Check a download's build provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Etherlighting Evolved ${GITHUB_REF_NAME#v}" --notes "$notes" \
+            EtherlightingEvolved-* package-verification.json SHA256SUMS

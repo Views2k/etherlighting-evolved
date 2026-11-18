@@ -10,6 +10,8 @@ using Avalonia.Threading;
 using EtherlightingEvolved.Native.Core;
 using EtherlightingEvolved.Native.Theme;
 using EtherlightingEvolved.Native.Shell;
+using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Settings;
 
@@ -21,22 +23,25 @@ static class Registration
 
 /// <summary>
 /// Port of renderSettings (preview/secondary.mjs): connection status and handoff, switch health, the UniFi Network
-/// controller, mobile and remote access, the last session, appearance and about, with a section list on the left
+/// controller, Tailscale and LAN access, the last session, appearance and about, with a section list on the left
 /// that scrolls the pane on the right.
 /// </summary>
 public sealed class SettingsPage : Page
 {
-    readonly Send request;
-    readonly OperationGate gate;
-    readonly NoticeBox notice = new();
+    const string ReleasesUrl = "https://github.com/Views2k/etherlighting-evolved/releases";
+    const string SshKeyHelp = "EE saved this key for the switch and sends your password only to a switch that presents it. An SSH client that connects to the switch shows the same fingerprint for the same key type.";
+    readonly Func<string, string, JsonNode?, Task<JsonNode?>> request;
+    readonly Core.Model.OperationGate gate;
+    readonly Notice notice = new();
     readonly Border savingLine = new() { Height = 2, VerticalAlignment = VerticalAlignment.Bottom, IsVisible = false, IsHitTestVisible = false };
     readonly StackPanel content = new() { Spacing = 18 };
     readonly Control contentPanel;
     readonly Border health;
-    readonly TextBlock healthStatus = SettingsKit.HelpText();
+    readonly TextBlock healthStatus = UiKit.HelpText();
     readonly DetailsList healthDetails = new();
     readonly Panel controllerHost = new();
     readonly Connect.PrivateAccessPanel privateAccess;
+    readonly Connect.LanAccessPanel lanAccess;
     readonly LastSession lastSession;
     readonly ThemeSettings themeSettings;
     readonly Control appearance;
@@ -55,10 +60,9 @@ public sealed class SettingsPage : Page
 
     public SettingsPage(AppShell shell) : base(shell)
     {
-        var send = Workspace.WorkspaceRequest();
-        request = (path, method, body) => send(path, method, body);
+        request = Workspace.WorkspaceRequest();
         Styles.Add(SettingsKit.PageStyles());
-        gate = new OperationGate(SetBusy, error => Status(error.Message is { Length: > 0 } text ? text : "The change could not be completed. Try again.", true));
+        gate = Core.Model.SecondaryModel.CreateOperationGate(SetBusy, error => Status(error.Message is { Length: > 0 } text ? text : "The change could not be completed. Try again.", true));
 
         // Header (frame): title, description and Refresh connection, with the saving line along its bottom edge.
         var refresh = SettingsKit.ActionButton("Refresh connection", Reload);
@@ -75,7 +79,7 @@ public sealed class SettingsPage : Page
         var (healthFrame, healthBody) = SettingsKit.AutomationSection();
         health = healthFrame;
         healthBody.Children.Add(SettingsKit.SectionHeading("Switch health"));
-        healthBody.Children.Add(SettingsKit.HelpText("Lighting command activity, CPU, memory, temperature, and storage readings."));
+        healthBody.Children.Add(UiKit.HelpText("Lighting command activity, CPU, memory, temperature, and storage readings."));
         healthBody.Children.Add(healthStatus);
         healthBody.Children.Add(healthDetails);
 
@@ -83,15 +87,21 @@ public sealed class SettingsPage : Page
         var aboutBody = new StackPanel { Spacing = 12 };
         aboutBody.Children.Add(SettingsKit.H2("Etherlighting Evolved", "accent", 15));
         aboutBody.Children.Add(SettingsKit.P("Open-source UniFi Etherlighting controller.", "muted"));
-        aboutBody.Children.Add(SettingsKit.P("Unofficial community project. Not affiliated with Ubiquiti.", "muted"));
+        var versions = new DetailsList();
+        versions.Set([("App version", App.Version), ("Service version", Workspace.About.Str("version") ?? "Unknown")]);
+        aboutBody.Children.Add(versions);
+        aboutBody.Children.Add(SettingsKit.P(Workspace.Disclaimer, "muted"));
         aboutBody.Children.Add(SettingsKit.ActionButton("Open help", () => Shell.Navigate("Help"), "quiet"));
+        aboutBody.Children.Add(SettingsKit.ActionButton("Releases", () => Connect.ConnectionUi.OpenLink(this, ReleasesUrl), "quiet"));
         if (shell.OpenWorkspaceAddress is not null)
             aboutBody.Children.Add(SettingsKit.ActionButton("Change workspace address", shell.ChooseWorkspaceAddress, "quiet"));
         about = SettingsKit.Panel(aboutBody, maxWidth: 720);
         about.Margin = new Thickness(0, 20, 0, 0);
 
         // Remote, Last session and Appearance
-        privateAccess = new Connect.PrivateAccessPanel((path, method, body) => request(path, method, body));
+        privateAccess = new Connect.PrivateAccessPanel(request);
+        lanAccess = new Connect.LanAccessPanel(request, (title, text, accept) => Shell.Overlay.Confirm(title, text, accept, this), Workspace.Remote, Workspace.Lan);
+        var remoteAccess = new StackPanel { Spacing = 20, Children = { privateAccess, lanAccess } };
         lastSession = new LastSession(request);
         themeSettings = new ThemeSettings();
         appearance = SettingsKit.Panel(themeSettings, maxWidth: 960);
@@ -106,12 +116,11 @@ public sealed class SettingsPage : Page
         Avalonia.Automation.AutomationProperties.SetName(navigation, "Settings sections");
         foreach (var (section, label) in new (Control, string)[]
                  {
-                     (contentPanel, "Connection"), (health, "Health"), (controllerHost, "UniFi"), (privateAccess, "Remote"), (lastSession, "Last session"), (appearance, "Appearance"),
+                     (contentPanel, "Connection"), (health, "Health"), (controllerHost, "UniFi"), (remoteAccess, "Remote"), (lastSession, "Last session"), (appearance, "Appearance"),
                      (about, "About"),
                  })
         {
-            var button = SettingsKit.Button(label, "quiet settings-nav");
-            button.HorizontalAlignment = HorizontalAlignment.Stretch;
+            var button = UiKit.Button(label, "quiet settings-nav");
             var target = section;
             button.Click += (_, _) => ScrollTo(target);
             sections.Add((section, button));
@@ -202,17 +211,19 @@ public sealed class SettingsPage : Page
     {
         try
         {
-            var sessionTask = request("/api/session");
-            var stateTask = request("/api/state");
-            var capabilitiesTask = Capabilities();
-            await Task.WhenAll(sessionTask, stateTask, capabilitiesTask);
+            var sessionTask = request("/api/session", "GET", null);
+            var stateTask = request("/api/state", "GET", null);
+            await Task.WhenAll(sessionTask, stateTask);
             var session = await sessionTask;
             var state = await stateTask;
-            var capabilities = await capabilitiesTask;
             if (!gate.Active) return;
             var simulated = session.Truthy("simulated");
+            // A window on another device cannot forget the saved switch login or set up UniFi Network.
+            var remote = Workspace.Remote;
             health.IsVisible = !simulated;
-            sections[1].Button.IsVisible = sections[2].Button.IsVisible = !simulated;
+            sections[1].Button.IsVisible = !simulated;
+            sections[2].Button.IsVisible = !simulated && !remote;
+            controllerHost.IsVisible = !remote;
             UpdateHealth(state);
             content.Children.Clear();
             switchState = new StateLine();
@@ -222,20 +233,26 @@ public sealed class SettingsPage : Page
             if (simulated) content.Children.Add(SettingsKit.P("Use this preview to review the lighting workspace, effects, rules, and profiles.", "muted"));
             else
             {
-                if (session.At("offline_lighting_error") is { } offline && offline.Truthy()) content.Children.Add(SettingsKit.HelpText(offline.Str() ?? offline.ToJsonString()));
+                if (session.At("offline_lighting_error") is { } offline && offline.Truthy()) content.Children.Add(UiKit.HelpText(offline.Str() ?? offline.ToJsonString()));
+                if (SshHostKey.From(session) is { } key)
+                {
+                    content.Children.Add(SettingsKit.P(key.KeyType is { } type ? $"SSH key fingerprint ({type})" : "SSH key fingerprint", "muted"));
+                    content.Children.Add(Connect.HostKeyReview.Fingerprint(key.Fingerprint));
+                    content.Children.Add(UiKit.HelpText(SshKeyHelp));
+                }
                 Button? handoff = null;
                 handoff = SettingsKit.ActionButton("Handoff to UniFi", () => gate.Run(async () =>
                 {
-                    var unsaved = controller?.HasChanges == true || privateAccess.HasChanges;
-                    var message = "Stop EE lighting and its switch helpers, close the SSH connection, and return lighting control to UniFi. Saved logins, profiles, and your lighting setup are kept. EE will wait until you connect again." +
-                                  (unsaved ? " Unapplied connection changes will be discarded." : "");
+                    var unsaved = controller?.HasChanges == true || privateAccess.HasChanges || lanAccess.HasChanges;
+                    var message = Connections.HandoffConfirmation(state.Bool("fans.supported") == true, unsaved, remote && !Connections.RemoteCanRestore(session));
                     if (!await Confirm("Handoff to UniFi?", message, "Handoff to UniFi") || !gate.Active) return;
                     handoff!.SetLabel("Handing off…");
                     Status("Handing lighting back to UniFi…");
                     try
                     {
                         if (await Connections.RequestHandoff(request, () => gate.Active) is not { } result) return;
-                        Status(result.Error ?? "Lighting returned to UniFi.", result.Error is not null);
+                        var fans = result.Error is null ? Connections.HandoffFans(result.Session) : null;
+                        Status(result.Error ?? string.Join(" ", new[] { "Lighting returned to UniFi.", fans?.Message }.OfType<string>()), result.Error is not null || fans?.Error == true);
                         if (result.Session?.Bool("logged_in") == false)
                         {
                             await Shell.AcceptSession(result.Session);
@@ -247,27 +264,27 @@ public sealed class SettingsPage : Page
                         if (gate.Active) handoff!.SetLabel("Handoff to UniFi");
                     }
                 }));
-                content.Children.Add(SettingsKit.HelpText("Return lighting control to UniFi and keep your EE setup for next time."));
+                content.Children.Add(UiKit.HelpText("Return lighting control to UniFi and keep your EE setup for next time."));
                 content.Children.Add(handoff);
-                if (session.Truthy("has_saved_login"))
+                if (session.Truthy("has_saved_login") && !remote)
                 {
                     Button? forget = null;
                     forget = SettingsKit.ActionButton("Forget saved switch login", () => gate.Run(async () =>
                     {
                         if (!await Confirm("Forget saved switch login?", "Remove the saved SSH login from this PC. The current switch connection stays open.", "Forget login") || !gate.Active) return;
-                        await request("/api/session/forget", "POST");
+                        await request("/api/session/forget", "POST", null);
                         content.Children.Remove(forget!);
                         Status("Saved switch login removed.");
                     }), "quiet");
                     content.Children.Add(forget);
                 }
-                if (controller is null)
+                if (controller is null && !remote)
                 {
                     controller = new ControllerConnection(request, _ => Workspace.Refresh(false));
                     controllerHost.Children.Add(SettingsKit.LeftMax(controller, 720));
                 }
             }
-            var (copper, sfp) = PortTopology.LightingPorts(state);
+            var (copper, sfp) = Core.Model.PortTopology.LightingPorts(state);
             var details = new DetailsList();
             details.Set([
                 ("Lighting", state.Str("mode") == "released" ? "Controlled by UniFi" : "Controlled by EE"),
@@ -275,14 +292,13 @@ public sealed class SettingsPage : Page
                 ("SFP lights", sfp.Count.ToString()),
             ]);
             content.Children.Add(details);
+            if (Shell.OpenInBrowser is { } openInBrowser)
+            {
+                content.Children.Add(UiKit.HelpText("Open this workspace in the default browser on this computer, with the same Tailscale and LAN access settings."));
+                content.Children.Add(SettingsKit.ActionButton("Open in browser", openInBrowser, "quiet"));
+            }
             Status();
             Dispatcher.UIThread.Post(UpdateSection, DispatcherPriority.Background);
-            if (capabilities.Bool("can_close_workspace") == true)
-                content.Children.Add(SettingsKit.ActionButton("Close web session", () => gate.Run(async () =>
-                {
-                    if (await Confirm("Close web session?", "This releases the switch connection and closes the web service. Your saved setup is preserved.", "Close web session") && gate.Active)
-                        await Shell.CloseWorkspace();
-                }), "quiet"));
         }
         catch (Exception)
         {
@@ -290,12 +306,6 @@ public sealed class SettingsPage : Page
             throw;
         }
     });
-
-    async Task<JsonNode?> Capabilities()
-    {
-        try { return await request("/api/private-access"); }
-        catch (Exception) { return new JsonObject { ["can_close_workspace"] = false }; }
-    }
 
     async Task<bool> Confirm(string title, string message, string accept) => !closed && await Shell.Overlay.Confirm(title, message, accept);
 
@@ -350,12 +360,13 @@ public sealed class SettingsPage : Page
         if (Workspace.State["controller"] is { } value && value.Truthy()) controller?.Update(value, unavailable);
     }
 
-    public override bool HasChanges => controller?.HasChanges == true || privateAccess.HasChanges;
+    public override bool HasChanges => controller?.HasChanges == true || privateAccess.HasChanges || lanAccess.HasChanges;
 
     public override async Task<bool> CanLeave()
     {
         await gate.Settle();
         await privateAccess.CanLeave();
+        await lanAccess.CanLeave();
         if (!gate.Active) return false;
         if (HasChanges && !await Confirm("Leave connection settings?", "Your unapplied connection changes will be discarded.", "Leave")) return false;
         return gate.Active && (controller is null || await controller.CanLeave());
@@ -367,6 +378,7 @@ public sealed class SettingsPage : Page
         scrollAnimation?.Stop();
         controller?.Close();
         privateAccess.Close();
+        lanAccess.Close();
         lastSession.Close();
         themeSettings.Close();
         gate.Close();

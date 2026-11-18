@@ -93,6 +93,33 @@ def test_corrupt_storage_is_not_overwritten_and_does_not_stop_frames(client, con
     assert store.path("demo").read_text() == "{broken"
 
 
+def test_unversioned_names_are_read_and_saved_with_a_version(tmp_path):
+    store = PortNameStore(tmp_path)
+    legacy = {"revision": "a" * 32, "use_unifi": False, "names": {"1": "Desk"}}
+    store.path("demo").write_text(json.dumps(legacy), "utf-8")
+    assert store.get("demo") == legacy
+    saved = store.put("demo", {"expected_revision": legacy["revision"], "use_unifi": False,
+                               "names": {"2": "Dock"}}, {1, 2})
+    assert saved["names"] == {"1": "Desk", "2": "Dock"} and "version" not in saved
+    assert json.loads(store.path("demo").read_text("utf-8")) == {"version": 1, **saved}
+    assert PortNameStore(tmp_path).get("demo") == saved
+
+
+def test_names_from_a_newer_release_are_refused_and_never_overwritten(client):
+    store = client.app.state.controller.port_names
+    path = store.path("demo")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps({"version": 2, "revision": "a" * 32, "use_unifi": False, "names": {}, "icons": {}})
+    path.write_text(content, "utf-8")
+    response = client.get("/api/port-names")
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"code": "port_names_unavailable", "message":
+                                         "Port names were saved by a newer version of EE. Update EE to use them."}
+    assert save(client, {"1": "Lost"}, revision="a" * 32).status_code == 503
+    assert client.get("/api/ports").status_code == 200
+    assert path.read_text("utf-8") == content
+
+
 def test_failed_write_keeps_saved_names_and_memory(client, monkeypatch):
     save(client, {"1": "Original"})
     store = client.app.state.controller.port_names

@@ -34,7 +34,8 @@ public sealed class FansPage : Page
         [("switch", "Switch control"), ("curve", "Curve"), ("manual", "Manual"), ("target", "Thermal target")];
     static readonly string[] CurveOrder = ["low", "medium", "high", "max"];
     const string Footer = "Every mode speeds the fans up when the CPU passes 85 °C, the SFP sensor passes 65 °C or a port chip passes 100 °C. "
-                          + "Fan control runs on the switch and continues while EE is closed. A switch restart returns the fans to the switch’s own control until EE connects again.";
+                          + "EE saves the fan mode for each switch; a switch EE has not controlled before starts in Switch control. "
+                          + "Fan control runs on the switch and continues while EE is closed. Handoff to UniFi and a switch restart return the fans to the switch’s own control until EE connects again.";
 
     readonly Dictionary<string, Button> modeButtons = [];
     readonly Dictionary<string, Button> curveButtons = [];
@@ -56,13 +57,28 @@ public sealed class FansPage : Page
     {
         debounce.Tick += (_, _) => { debounce.Stop(); Send(); };
         SizeChanged += (_, e) => { if (e.WidthChanged) Arrange(e.NewSize.Width); };
-        AttachedToVisualTree += (_, _) =>
-        {
-            if (TopLevel.GetTopLevel(this) is { } top) top.PropertyChanged += (_, e) => { if (e.Property == TopLevel.ClientSizeProperty) Fit(); };
-            Fit();
-        };
         Build();
         Update();
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        if (e.Root is TopLevel top) top.PropertyChanged += OnTopLevelChanged;
+        Fit();
+    }
+
+    // The window outlives this page, so its handler is removed when the page leaves. The page no longer reaches the
+    // window through its own tree at this point, only through the event's root.
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        if (e.Root is TopLevel top) top.PropertyChanged -= OnTopLevelChanged;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    void OnTopLevelChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == TopLevel.ClientSizeProperty) Fit();
     }
 
     /// <summary>The page lays itself out: it scrolls in a normal window and fills a rack window without scrolling.</summary>
@@ -177,7 +193,7 @@ public sealed class FansPage : Page
         right.Children.Add(ModeBar());
         right.Children.Add(details);
         right.Children.Add(error);
-        right.Children.Add(SettingsKit.HelpText(Footer));
+        right.Children.Add(U.HelpText(Footer));
         columns = new Grid();
         columns.Children.Add(left);
         columns.Children.Add(right);
@@ -269,7 +285,7 @@ public sealed class FansPage : Page
                 }
                 var panel = new StackPanel { Spacing = 8 };
                 panel.Children.Add(grid);
-                panel.Children.Add(SettingsKit.HelpText("The fan speed follows the CPU temperature along the selected curve. Higher curves run the fans faster and the switch cooler."));
+                panel.Children.Add(U.HelpText("The fan speed follows the CPU temperature along the selected curve. Higher curves run the fans faster and the switch cooler."));
                 return panel;
             }
             case "manual":
@@ -281,7 +297,7 @@ public sealed class FansPage : Page
                 return rack
                     ? new TextBlock { Text = "The switch’s own fan controller sets the speed. EE does not change the fans.", FontSize = 16, LineHeight = 23, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center }
                         .Bind(TextBlock.ForegroundProperty, "muted")
-                    : SettingsKit.HelpText("The switch’s own fan controller sets the speed. EE does not change the fans.");
+                    : U.HelpText("The switch’s own fan controller sets the speed. EE does not change the fans.");
         }
     }
 
@@ -297,7 +313,7 @@ public sealed class FansPage : Page
             row.Children.Add(slider);
             var panel = new StackPanel { Spacing = 4 };
             panel.Children.Add(row);
-            panel.Children.Add(SettingsKit.HelpText(help));
+            panel.Children.Add(U.HelpText(help));
             return panel;
         }
         // Large controls for the rack's touch screen: the value, then − slider + with the slider drawn at twice the size.
@@ -355,9 +371,16 @@ public sealed class FansPage : Page
         if (!ReferenceEquals(Content, page)) Content = page;
         var settings = Settings;
         var mode = settings.Str("mode") ?? "switch";
+        // While EE leaves running fan control alone, the saved mode is not what runs, so no mode shows as selected.
+        // A mode chosen here shows at once.
+        var held = fans.Str("hold") is not null && chosen is null;
+        // The service refuses every change while a newer EE's fan file is in place, since it never overwrites that file.
+        var locked = fans.Str("hold") == "settings_newer";
         syncing = true;
         try
         {
+            (manual.Minimum, manual.Maximum) = Limit(fans, "manual_percent", 30, 100);
+            (target.Minimum, target.Maximum) = Limit(fans, "target_celsius", 45, 85);
             // A value being chosen is in chosen, so this never moves a slider out from under a finger or the mouse.
             manual.Value = settings.Int("manual_percent") ?? 60;
             target.Value = settings.Int("target_celsius") ?? 55;
@@ -367,26 +390,30 @@ public sealed class FansPage : Page
         targetValue.Text = $"{(int)target.Value} °C";
         foreach (var (key, button) in modeButtons)
         {
-            button.Classes.Set("selected", key == mode);
-            AutomationProperties.SetHelpText(button, key == mode ? "Selected" : "");
+            button.Classes.Set("selected", key == mode && !held);
+            AutomationProperties.SetHelpText(button, key == mode && !held ? "Selected" : "");
+            button.IsEnabled = !locked;
         }
         var curves = fans["curves"] as JsonObject;
         foreach (var (name, button) in curveButtons)
         {
-            button.Classes.Set("selected", mode == "curve" && settings.Str("curve") == name);
+            button.Classes.Set("selected", !held && mode == "curve" && settings.Str("curve") == name);
             button.Content = CurveLabel(name, curves?[name] as JsonObject);
         }
-        if (shownMode != mode)
+        var shown = held ? "held" : mode;
+        if (shownMode != shown)
         {
-            shownMode = mode;
-            details.Content = Details(mode);
+            shownMode = shown;
+            details.Content = held ? null : Details(mode);
         }
-        var problem = fans.Str("error");
+        // settings_error stays set until a new mode is saved, so a lost fan choice remains visible after the switch
+        // takes the fans back and error clears.
+        var problem = fans.Str("error") is { Length: > 0 } failure ? failure : fans.Str("settings_error");
         error.Text = sending || chosen is not null ? "" : problem ?? "";
         error.IsVisible = error.Text.Length > 0;
         chart.Curves = curves;
-        chart.IsVisible = mode == "curve";
-        chart.Selected = mode == "curve" ? settings.Str("curve") : null;
+        chart.IsVisible = !held && mode == "curve";
+        chart.Selected = !held && mode == "curve" ? settings.Str("curve") : null;
         Frame();
     }
 
@@ -412,6 +439,15 @@ public sealed class FansPage : Page
         if (sending || chosen is not null) return "Sending the new setting to the switch…";
         var reading = fans["reading"] as JsonObject;
         if (reading is null) return "Waiting for a reading from the switch.";
+        switch (fans.Str("hold"))
+        {
+            case "other_installation":
+                return "Fan control on this switch was not started from the fan settings saved on this PC, for example by EE on another PC with release 0.6.0 or later. EE leaves it running until you choose a mode here.";
+            case "settings_unreadable":
+                return "EE could not load the fan mode saved for this switch, so it does not change fan control that is running. Choose a mode to save it again.";
+            case "settings_newer":
+                return "The fan mode for this switch was saved by a newer version of EE. This version does not change fan control that is running and cannot change the mode. Handoff to UniFi in Settings still returns the fans to the switch’s own controller.";
+        }
         var mode = settings.Str("mode");
         if (mode == "switch")
             return reading.Str("daemon") == "paused" ? "The switch’s fan controller is paused by another tool." : "The switch’s own fan controller sets the speed.";
@@ -430,9 +466,13 @@ public sealed class FansPage : Page
 
     static string Title(string? name) => name is { Length: > 0 } ? char.ToUpperInvariant(name[0]) + name[1..] : "";
 
+    /// <summary>The range the service allows for a setting, or this version's range when it sends none.</summary>
+    static (double Min, double Max) Limit(JsonObject fans, string key, double min, double max) =>
+        fans.Arr("limits." + key) is [var low, var high] && low.Num() is { } first && high.Num() is { } last && first < last ? (first, last) : (min, max);
+
     Control CurveLabel(string name, JsonObject? curve)
     {
-        var points = (curve?["points"] as JsonArray)?.Select(p => (T: p?[0]?.GetValue<int>() ?? 0, D: p?[1]?.GetValue<int>() ?? 0)).ToList() ?? [];
+        var points = FanCurveChart.Points(curve);
         var full = points.FirstOrDefault(p => p.D >= 100);
         var text = points.Count < 2 ? "" : $"{points[0].D}% at {points[0].T} °C, 100% at {full.T} °C";
         var body = new StackPanel { Spacing = rack ? 3 : 1, VerticalAlignment = VerticalAlignment.Center };
@@ -452,7 +492,7 @@ public sealed class FansPage : Page
         var change = new JsonObject { ["mode"] = mode };
         if (mode == "manual" && Settings.Str("mode") != "manual"
             && (Fans?["reading"]?["fans"] as JsonArray) is { Count: > 0 } fans && fans[0].Int("percent") is { } percent)
-            change["manual_percent"] = Math.Clamp(percent, 30, 100);
+            change["manual_percent"] = Math.Clamp(percent, (int)manual.Minimum, (int)manual.Maximum);
         return change;
     }
 
@@ -562,6 +602,11 @@ internal sealed class FanCurveChart : Control
     public string? Selected { set { if (selected != value) { selected = value; InvalidateVisual(); } } }
     public Point? Marker { set { if (marker != value) { marker = value; InvalidateVisual(); } } }
 
+    /// <summary>A curve's (temperature, fan speed) points; a point that is not two numbers is skipped.</summary>
+    internal static List<(double T, double D)> Points(JsonNode? curve) =>
+        curve.Arr("points").Where(point => point.Num("0") is not null && point.Num("1") is not null)
+            .Select(point => (point.Num("0")!.Value, point.Num("1")!.Value)).ToList();
+
     public override void Render(DrawingContext context)
     {
         var bounds = new Rect(Bounds.Size).Deflate(new Thickness(34, 8, 8, 20));
@@ -579,13 +624,12 @@ internal sealed class FanCurveChart : Control
         if (curves is not null)
             foreach (var (name, curve) in curves)
             {
-                if ((curve?["points"] as JsonArray) is not { Count: >= 2 } points) continue;
+                if (Points(curve) is not { Count: >= 2 } points) continue;
                 var geometry = new StreamGeometry();
                 using (var g = geometry.Open())
                 {
-                    var first = points[0]!;
-                    g.BeginFigure(Map(MinT, first[1]!.GetValue<int>()), false);
-                    foreach (var point in points) g.LineTo(Map(point![0]!.GetValue<int>(), point[1]!.GetValue<int>()));
+                    g.BeginFigure(Map(MinT, points[0].D), false);
+                    foreach (var (t, d) in points) g.LineTo(Map(t, d));
                     g.LineTo(Map(MaxT, 100));
                     g.EndFigure(false);
                 }

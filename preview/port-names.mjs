@@ -1,6 +1,5 @@
 import {portLabel} from './port-map.mjs';
-
-const node=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el;};
+import {node} from './dom.mjs';
 
 export function openPortNames({ports,getState,request,onRefresh,onSaved}){
   const dialog=node('dialog','dialog port-names');dialog.setAttribute('aria-label','Port names');

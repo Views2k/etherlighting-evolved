@@ -86,15 +86,34 @@ public static class Ui
         return column;
     }
 
-    /// <summary>The browser workspace's .field: a muted label above its control, 7px apart.</summary>
+    /// <summary>1ch of the 13px workspace font, for the browser's text measures such as max-width: 64ch.</summary>
+    public const double Ch = 6.99;
+
+    /// <summary>The browser workspace's .field: a muted 13px label above its control, 7px apart, and optional help text.</summary>
     public static StackPanel Field(string label, Control control, string? hint = null)
     {
         var field = new StackPanel { Spacing = 7, Classes = { "field" } };
-        field.Children.Add(Text(label, "muted"));
+        field.Children.Add(new TextBlock { Text = label, FontSize = 13, LineHeight = 18, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted"));
         field.Children.Add(control);
-        if (hint is not null) field.Children.Add(Text(hint, "faint small", wrap: true));
+        if (hint is not null) field.Children.Add(Small(hint));
         return field;
     }
+
+    /// <summary>A &lt;small&gt; in a field: 13px faint text at 1.45 line height.</summary>
+    public static TextBlock Small(string text = "") =>
+        new TextBlock { Text = text, FontSize = 13, LineHeight = 18.85, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "faint");
+
+    /// <summary>
+    /// p.help-text: 13px muted text, 64ch wide at most, 5px below the previous block. Its 1.55 line height is rounded
+    /// down to 20px because layout rounds each text block up to whole pixels.
+    /// </summary>
+    public static TextBlock HelpText(string text = "") =>
+        new TextBlock
+            {
+                Text = text, FontSize = 13, LineHeight = 20, TextWrapping = TextWrapping.Wrap, MaxWidth = 64 * Ch, HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 5, 0, 0),
+            }
+            .Bind(TextBlock.ForegroundProperty, "muted");
 
     public static CheckBox Check(string label, bool value = false, Action<bool>? changed = null)
     {
@@ -103,9 +122,9 @@ public static class Ui
         return box;
     }
 
-    public static TextBox Input(string? value = null, string? placeholder = null, Action<string>? changed = null)
+    public static TextBox Input(string? value = null, string? placeholder = null, Action<string>? changed = null, int maxLength = 0)
     {
-        var box = new TextBox { Text = value ?? "", Watermark = placeholder };
+        var box = new TextBox { Text = value ?? "", Watermark = placeholder, MaxLength = maxLength };
         if (changed is not null) box.PropertyChanged += (_, change) =>
         {
             if (change.Property == TextBox.TextProperty) changed(box.Text ?? "");

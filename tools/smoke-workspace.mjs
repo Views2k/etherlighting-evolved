@@ -4,7 +4,9 @@ import {checkThemeWorkflows} from './theme-workspace-checks.mjs';
 import {checkTopologyWorkflows} from './topology-workspace-checks.mjs';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import {randomBytes} from 'node:crypto';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -17,8 +19,10 @@ const port = Number(args.port ?? 4198), url = `http://127.0.0.1:${port}/`;
 await mkdir(output, {recursive: true});
 const env = {...process.env};
 for (const key of Object.keys(env)) if (key.startsWith('EE_') || key.startsWith('PYTHON') || key === 'NODE_OPTIONS') delete env[key];
+// The script holds the administration key as the desktop app does, so it can request a browser link.
+const adminKey = randomBytes(32).toString('hex');
 Object.assign(env, {EE_PREVIEW_LIVE: '0', EE_DESKTOP_HOST: '1', EE_PREVIEW_PORT: String(port),
-  EE_WORKSPACE_DATA_DIR: path.join(output, 'demo')});
+  EE_WORKSPACE_DATA_DIR: path.join(output, 'demo'), EE_ADMIN_KEY: adminKey});
 if (args.python) env.EE_PREVIEW_PYTHON = path.resolve(args.python);
 let gatewayText = '', browser, socket, session, sequence = 0;
 const pending = new Map(), report = {passed: false, pages: [], sizes: [], errors: []};
@@ -55,6 +59,36 @@ async function screenshot(name) {
   await evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})))');
   const result = await send('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
   await writeFile(path.join(output, name + '.png'), Buffer.from(result.data, 'base64'));
+}
+// Evaluates while a navigation may replace the page; a destroyed context reads as not ready yet.
+async function settled(expression) {
+  try { return await evaluate(expression); }
+  catch (error) {
+    if (/execution context was destroyed|cannot find (?:default )?(?:execution )?context/i.test(error.message)) return false;
+    throw error;
+  }
+}
+const CLOSE_HELP = 'To close the web session, choose Open in browser in the EE tray menu, or quit EE. If EE runs from source, use the administration link it printed when it started.';
+async function closeControls() {
+  await evaluate(`document.querySelector('[data-page="Settings"]').click()`);
+  return until(() => settled(`(() => {
+    const content = document.querySelector('.settings-content');
+    if (!content?.querySelector('.settings-details')) return null;
+    return {button: [...content.querySelectorAll('button')].some(item => item.textContent === 'Close web session'),
+      help: [...content.querySelectorAll('p')].some(item => item.textContent === ${JSON.stringify(CLOSE_HELP)})};
+  })()`), 'Settings connection details');
+}
+function requestAdminLink() {
+  return new Promise((resolve, reject) => {
+    const request = http.request({host: '127.0.0.1', port, path: '/api/workspace/admin-link', method: 'POST', headers: {'X-EE-Admin-Key': adminKey}}, response => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', data => text += data);
+      response.on('end', () => response.statusCode === 200 ? resolve(JSON.parse(text).code) : reject(new Error(`Administration link: ${response.statusCode}`)));
+    });
+    request.on('error', reject);
+    request.end();
+  });
 }
 async function bounds(selector) {
   return evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};})()`);
@@ -191,6 +225,10 @@ async function checkPhoneFooter(width, height, bottomInset) {
     assert.equal(idle.normal, 0, 'An optional disconnected controller does not add a status row');
     assert.ok(Math.abs(idle.safeBottom) <= 1, `Idle port map leaves ${idle.safeBottom}px below its scroller`);
     assert.ok(Math.abs(idle.errorInset - bottomInset) <= 1, 'Reported errors clear the home indicator');
+    // On a phone the status row covers the bottom of the port map while it shows an error or a connection change.
+    // A slow runner can still be showing one from an earlier step, so the edge probe waits for the row to close.
+    await until(() => evaluate(`!document.querySelector('.app-shell > .statusbar :is(#status.error, .connection-state:is(.error, .waiting):not([hidden]))')`),
+      'the phone status row to close');
     const edge = await evaluate(`(() => {
       const scroller = document.querySelector('.studio-content');
       document.querySelector('#select-none').click();
@@ -202,11 +240,12 @@ async function checkPhoneFooter(width, height, bottomInset) {
       scroller.scrollTop = scroller.scrollHeight;
       const last = document.querySelectorAll('.port-tile.sfp');
       const port = last[last.length - 1];
-      return {midScroll, maxScroll, edgeHitsMap: Boolean(hit?.closest('.canvas-area')),
+      const edgeHit = hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + [...hit.classList].map(name => '.' + name).join('') : 'nothing';
+      return {midScroll, maxScroll, edgeHitsMap: Boolean(hit?.closest('.canvas-area')), edgeHit,
         lastPort: port.dataset.port, clearance: visualViewport.height - port.getBoundingClientRect().bottom};
     })()`);
     assert.ok(edge.midScroll > 0 && edge.midScroll < edge.maxScroll, 'Exercise the edge while the port list is between scroll limits');
-    assert.ok(edge.edgeHitsMap, 'The last pixel of the visible viewport belongs to the scrolling port map');
+    assert.ok(edge.edgeHitsMap, `The last pixel of the visible viewport belongs to the scrolling port map, not ${edge.edgeHit} (${width}x${height})`);
     assert.ok(edge.clearance >= bottomInset - 1, 'The last SFP port scrolls completely above the home indicator');
     const opticalPort = `.port-tile.sfp[data-port="${edge.lastPort}"]`;
     await tap(opticalPort, true);
@@ -356,6 +395,19 @@ try {
     await until(() => evaluate(`document.querySelector('[data-page="${page}"]').getAttribute('aria-current') === 'page'`), page);
     report.pages.push(page);
   }
+  // A tab opened at the bare address cannot close the web session. A link from the key holder gives the browser the
+  // administration cookies through the service worker, and the redirect removes the code from the address bar.
+  report.administration = {plain: await closeControls()};
+  assert.deepEqual(report.administration.plain, {button: false, help: true}, 'A tab without administration access shows where to close the web session');
+  const plainDocument = await evaluate('performance.timeOrigin');
+  await send('Page.navigate', {url: `${url}?admin_code=${await requestAdminLink()}`});
+  // The workspace adds its page to the address as a hash, so the check is that the address has no query left.
+  await until(() => settled(`performance.timeOrigin !== ${plainDocument} && location.origin + location.pathname + location.search === ${JSON.stringify(url)}
+    && !!document.querySelector('[data-page="Settings"]')`), 'workspace opened with an administration link');
+  report.administration.linked = await closeControls();
+  assert.deepEqual(report.administration.linked, {button: true, help: false}, 'A browser opened with an administration link can close the web session');
+  await evaluate(`document.querySelector('[data-page="Lighting"]').click()`);
+  await until(() => evaluate(`document.querySelector('[data-page="Lighting"]').getAttribute('aria-current') === 'page'`), 'Lighting');
   await evaluate('document.querySelector("#browse-effects").click()');
   await until(() => evaluate('!!document.querySelector("[data-effect=traffic] .effect-card-open")'), 'Live Traffic preview');
   await evaluate('document.querySelector("[data-effect=traffic] .effect-card-open").click()');
@@ -531,15 +583,8 @@ try {
   await until(() => evaluate('document.querySelector("#draft-actions").hidden && !document.querySelector("#undo-last").disabled'), 'Apply confirmed in workspace');
   const previousDocument = await evaluate('performance.timeOrigin');
   await send('Page.reload', {ignoreCache: true});
-  await until(async () => {
-    try {
-      return await evaluate(`performance.timeOrigin !== ${previousDocument} &&
-        document.querySelectorAll(".port-socket-rim").length === 10 && !!document.querySelector('[data-port="9"]')`);
-    } catch (error) {
-      if (/execution context was destroyed|cannot find (?:default )?(?:execution )?context/i.test(error.message)) return false;
-      throw error;
-    }
-  }, 'port 9 in the reloaded lighting workspace');
+  await until(() => settled(`performance.timeOrigin !== ${previousDocument} &&
+    document.querySelectorAll(".port-socket-rim").length === 10 && !!document.querySelector('[data-port="9"]')`), 'port 9 in the reloaded lighting workspace');
   await evaluate(`document.querySelector('[data-port="9"]').click()`);
   const restore = `[...document.querySelectorAll('#inspector button')].find(button => button.textContent === 'Return to SFP lighting')`;
   await until(() => evaluate(`!!(${restore})`), 'restore SFP control');

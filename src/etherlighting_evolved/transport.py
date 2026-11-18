@@ -10,19 +10,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import random
 import re
 import secrets
 import time
 from abc import ABC, abstractmethod
 
+from .storage import NewerFormatError, atomic_write_json, check_version
+
+log = logging.getLogger(__name__)
+
 SSH_CLOSE_TIMEOUT = 3.0
+HOST_KEY_FORMAT_VERSION = 1
 READ_PORTS = "swctrl port show"
 READ_POE = "swctrl poe show 2>/dev/null"
 READ_CPU = 'read -r a < /proc/stat; echo "$a"; read -r b < /proc/loadavg; echo "$b"'
 # Status polls refused in a row because an earlier status shell has not exited. At the limit the connection is
 # dropped, so the engine reconnects and shows the error instead of driving lighting from frozen status values.
 UNFINISHED_PORT_READ_LIMIT = 3
+MAX_RESPONSE = 262144
 
 
 class TransportError(RuntimeError):
@@ -46,19 +53,57 @@ class UnreachableError(TransportError):
 
 
 class HostKeyMismatchError(TransportError):
-    """The switch's SSH host key differs from the one pinned at first login (possible impersonation)."""
+    """The switch presented an SSH host key that differs from the saved key (a reset, a replacement or another device).
+
+    `presented` and `presented_type` describe the key the switch presented, `pinned` the saved key. Either
+    fingerprint is None when it is not known.
+    """
+
+    def __init__(self, message: str = "The switch's SSH host key differs from the saved key.", *,
+                 presented: str | None = None, presented_type: str | None = None, pinned: str | None = None) -> None:
+        super().__init__(message)
+        self.presented = presented
+        self.presented_type = presented_type
+        self.pinned = pinned
+
+
+class HostKeyStoreError(TransportError):
+    """The saved SSH host keys could not be read or saved, or a newer EE saved them. The message names no host."""
+
+
+KEY_TYPE = re.compile(r"[A-Za-z0-9@._+-]{1,64}")
+# A fingerprint as `ssh-keygen -l` prints it. The API and eectl both take one back to accept a changed key, so both
+# use this pattern; it is anchored for Pydantic, which searches rather than matches.
+SSH_FINGERPRINT = r"^SHA256:[A-Za-z0-9+/]{43}$"
+# Addresses whose changed key is kept for review. A client that probes many addresses cannot grow it further.
+PRESENTED_LIMIT = 32
+UNREADABLE_HOST_KEYS = "The saved SSH host keys in known_switches.json could not be read. Check the EE data folder."
+
+
+def _key_type(key) -> str | None:
+    """The key's algorithm name for display, or None when it is unavailable or not a plain name."""
+    try:
+        algorithm = key.get_algorithm()
+    except Exception:
+        # The type is shown next to the fingerprint only. Approval and comparison use the fingerprint alone.
+        return None
+    return algorithm if isinstance(algorithm, str) and KEY_TYPE.fullmatch(algorithm) else None
 
 
 class HostKeyStore:
-    """Trust-on-first-use pinning of switch SSH host keys, kept in a small JSON file.
+    """The saved SSH host key fingerprint of each switch address, kept in a small JSON file.
 
-    The first successful login to an address pins its key fingerprint; later logins must present the same key.
+    The first key an address presents is saved after the login succeeds (trust on first use). A key that differs from
+    the saved one ends the connection during the key exchange, before any username or password is sent, and is kept
+    in memory. The user can then accept it with `replace`, and only a key that EE itself saw at that address can be
+    accepted.
     """
 
     def __init__(self, path) -> None:
         from pathlib import Path
 
         self.path = Path(path)
+        self._presented: dict[str, str] = {}
 
     def _load(self) -> dict[str, str]:
         try:
@@ -66,50 +111,86 @@ class HostKeyStore:
         except FileNotFoundError:
             return {}
         except (OSError, json.JSONDecodeError) as exc:
-            raise TransportError("Could not read the saved SSH host keys") from exc
+            raise HostKeyStoreError(UNREADABLE_HOST_KEYS) from exc
         if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                              for k, v in data.items()):
-            raise TransportError("The saved SSH host keys have an invalid format")
+            raise HostKeyStoreError(UNREADABLE_HOST_KEYS)
+        # Releases up to 0.5.1 saved no version, which is format version 1. The version is a string, beside the
+        # "host:port" keys, because those releases accept only string values in this file.
+        version = data.pop("version", str(HOST_KEY_FORMAT_VERSION))
+        try:
+            check_version(int(version) if version.isdecimal() else None, HOST_KEY_FORMAT_VERSION, "SSH host keys")
+        except (NewerFormatError, ValueError) as exc:
+            raise HostKeyStoreError(str(exc)) from exc
         return data
 
     def _save(self, data: dict[str, str]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), "utf-8")
-        temporary.replace(self.path)
+        atomic_write_json(self.path, {**data, "version": str(HOST_KEY_FORMAT_VERSION)})
 
     @staticmethod
-    def _key(host: str, port: int) -> str:
+    def address_key(host: str, port: int) -> str:
         return f"{host.strip().lower()}:{port}"
 
     def get(self, host: str, port: int) -> str | None:
-        return self._load().get(self._key(host, port))
+        return self._load().get(self.address_key(host, port))
 
-    def verify_or_pin(self, host: str, port: int, fingerprint: str) -> bool:
-        """Returns True when the key was pinned now (first use). Raises HostKeyMismatchError on a changed key."""
+    def accept(self, host: str, port: int, fingerprint: str) -> bool:
+        """Save the first key of an address, returning whether it was written. A different saved key is never
+        overwritten here."""
         data = self._load()
-        key = self._key(host, port)
+        key = self.address_key(host, port)
         pinned = data.get(key)
-        if pinned is None:
-            data[key] = fingerprint
-            self._save(data)
-            return True
-        if pinned != fingerprint:
-            raise HostKeyMismatchError(
-                f"The SSH key of {host} changed (was {pinned}, now {fingerprint}). If you reset or replaced the "
-                "switch, forget the old key and log in again; otherwise something may be impersonating it."
-            )
-        return False
+        if pinned == fingerprint:
+            return False
+        if pinned is not None:
+            raise HostKeyMismatchError(f"{key} already has a different saved SSH key.", presented=fingerprint,
+                                       pinned=pinned)
+        data[key] = fingerprint
+        self._save(data)
+        return True
+
+    def replace(self, host: str, port: int, previous: str, fingerprint: str) -> None:
+        """Replace the saved key only while it is still `previous`."""
+        data = self._load()
+        key = self.address_key(host, port)
+        pinned = data.get(key)
+        if pinned == fingerprint:
+            return
+        if pinned != previous:
+            raise HostKeyMismatchError(f"The saved SSH key of {key} is no longer the key to replace.",
+                                       presented=fingerprint, pinned=pinned)
+        data[key] = fingerprint
+        self._save(data)
 
     def forget(self, host: str, port: int = 22) -> bool:
         data = self._load()
-        removed = data.pop(self._key(host, port), None) is not None
+        removed = data.pop(self.address_key(host, port), None) is not None
         if removed:
             self._save(data)
         return removed
 
+    def note_presented(self, host: str, port: int, fingerprint: str) -> None:
+        key = self.address_key(host, port)
+        self._presented.pop(key, None)
+        self._presented[key] = fingerprint
+        while len(self._presented) > PRESENTED_LIMIT:
+            del self._presented[next(iter(self._presented))]
+
+    def presented(self, host: str, port: int) -> str | None:
+        """The changed key the switch at this address presented last, while it waits for review."""
+        return self._presented.get(self.address_key(host, port))
+
+    def clear_presented(self, host: str, port: int) -> None:
+        self._presented.pop(self.address_key(host, port), None)
+
 
 class Transport(ABC):
+    # Set on SSH connections: the authenticated host key and its algorithm, and the lease that lets desktop output
+    # override the switch-resident player while that player is installed.
+    host_key_fingerprint: str | None = None
+    host_key_type: str | None = None
+    desktop_output = None
+
     def revoke_lighting_profile(self) -> None:
         return None
 
@@ -184,8 +265,8 @@ class _Channel:
 
 
 def _process_exited(process) -> bool:
-    status = getattr(process, "exit_status", None)
-    return isinstance(status, int) and status >= 0 or getattr(process, "exit_signal", None) is not None
+    status = process.exit_status
+    return isinstance(status, int) and status >= 0 or process.exit_signal is not None
 
 
 class SSHTransport(Transport):
@@ -213,9 +294,6 @@ class SSHTransport(Transport):
         self.key_file = key_file or None
         self.host_keys = host_keys
         self.connect_timeout = connect_timeout
-        self.desktop_output = None
-        self.host_key_fingerprint: str | None = None
-        self.host_key_pinned_now = False
         self._conn = None
         self._channels: dict[str, _Channel] = {}
         self._prior_port_reader: _Channel | None = None
@@ -388,24 +466,31 @@ class SSHTransport(Transport):
         except ImportError as exc:  # pragma: no cover
             raise TransportError("asyncssh is not installed: pip install asyncssh") from exc
         transport = self
-        mismatch = None
+        store = self.host_keys
+        # Read before any network I/O, so an unreadable store ends the attempt before the switch is contacted.
+        pinned = store.get(self.host, self.port) if store is not None else None
+        rejection: TransportError | None = None
 
         class PinnedHostClient(asyncssh.SSHClient):
             def validate_host_public_key(self, host, addr, port, key):
-                nonlocal mismatch
+                nonlocal rejection
                 fingerprint = key.get_fingerprint("sha256")
-                pinned = transport.host_keys.get(transport.host, transport.port) if transport.host_keys else None
-                if pinned is not None and pinned != fingerprint:
-                    mismatch = HostKeyMismatchError(
-                        "The switch's SSH host key changed. Verify the device before forgetting its saved key."
-                    )
+                if store is None:
+                    # Without a store the key could be neither checked nor saved.
+                    rejection = TransportError("EE has no place to save SSH host keys, so it did not connect.")
                     return False
-                return True
+                if pinned is None or pinned == fingerprint:
+                    store.clear_presented(transport.host, transport.port)
+                    return True
+                rejection = transport._changed_key(fingerprint, _key_type(key), pinned)
+                return False
 
-        # An empty trusted-key set enables the validation callback during the handshake, before credentials.
-        # A new key is saved only after successful authentication.
+        # An empty trusted-key set makes asyncssh call the validation callback during the key exchange, before the
+        # userauth request that carries the username and password. An address without a saved key passes it and
+        # its key is saved after the login; any other key must be the saved one. GSS key exchange is off because
+        # it would authenticate the server without this callback.
         kwargs: dict = {"host": self.host, "port": self.port, "known_hosts": ([], [], []),
-                        "client_factory": PinnedHostClient, "config": None}
+                        "client_factory": PinnedHostClient, "config": None, "gss_kex": False, "gss_auth": False}
         if self.username:
             kwargs["username"] = self.username
         if self.password:
@@ -419,7 +504,13 @@ class SSHTransport(Transport):
         try:
             conn = await asyncio.wait_for(asyncssh.connect(**kwargs), self.connect_timeout)
         except asyncssh.HostKeyNotVerifiable as exc:
-            raise mismatch or HostKeyMismatchError("The switch's SSH host key could not be verified") from exc
+            if rejection is not None:
+                raise rejection from exc
+            # asyncssh refused the key without asking EE, for example a host certificate.
+            message = "The switch's SSH host key could not be verified."
+            if pinned is None:
+                raise TransportError(message) from exc
+            raise HostKeyMismatchError(message, pinned=pinned) from exc
         except asyncssh.PermissionDenied as exc:
             raise AuthenticationError("SSH login failed: wrong username or password") from exc
         except (TimeoutError, OSError) as exc:
@@ -432,9 +523,23 @@ class SSHTransport(Transport):
             raise TransportError("the SSH session closed while connecting")
         try:
             key = conn.get_server_host_key()
-            self.host_key_fingerprint = key.get_fingerprint("sha256") if key else None
-            if self.host_keys is not None and self.host_key_fingerprint:
-                self.host_key_pinned_now = self.host_keys.verify_or_pin(self.host, self.port, self.host_key_fingerprint)
+            if key is None or store is None:
+                raise TransportError("The switch's SSH host key could not be read after the login.")
+            fingerprint, key_type = key.get_fingerprint("sha256"), _key_type(key)
+            # Saves the key of an address that has none. The saved key can also change during the handshake (another
+            # EE window, eectl): a different key saved meanwhile is kept, and this connection is refused.
+            try:
+                saved_now = store.accept(self.host, self.port, fingerprint)
+            except HostKeyMismatchError as exc:
+                raise self._changed_key(fingerprint, key_type, exc.pinned, f"The saved SSH key for {self.host}:"
+                                        f"{self.port} changed while EE was connecting. Connect again.") from exc
+            except OSError as exc:
+                raise HostKeyStoreError("The switch's SSH key could not be saved in known_switches.json. Check the EE "
+                                        "data folder and try again.") from exc
+            if saved_now:
+                log.info("saved the %s SSH key %s of %s:%s at the first connection", key_type or "unknown",
+                         fingerprint, self.host, self.port)
+            self.host_key_fingerprint, self.host_key_type = fingerprint, key_type
         except Exception:
             conn.close()
             try:
@@ -449,28 +554,60 @@ class SSHTransport(Transport):
         self._unfinished_port_reads = 0
         self._rgb_checked = self._rgb_failed = False
 
+    def _changed_key(self, presented: str, presented_type: str | None, pinned: str | None,
+                     message: str | None = None) -> HostKeyMismatchError:
+        """The error for a key that is not the saved one. The presented key is kept so the user can accept it."""
+        if self.host_keys is not None:
+            self.host_keys.note_presented(self.host, self.port, presented)
+        return HostKeyMismatchError(
+            message or f"The SSH key of {self.host}:{self.port} changed. Saved key: {pinned}. Presented key: "
+            f"{presented}. If you did not reset or replace the switch, another device may be using this address.",
+            presented=presented, presented_type=presented_type, pinned=pinned)
+
+    async def _open_shell(self, conn, name: str) -> _Channel:
+        """Start the `sh` for a channel. Its tag lets helper recovery find and stop exactly this shell."""
+        import asyncssh
+
+        self._opening_started(conn)
+        try:
+            tag = 'ee_' + secrets.token_hex(16)
+            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
+            self._process_tags[id(process)] = tag
+            if self._conn is not conn:
+                self._retire_process(conn, process)
+                raise TransportError("the SSH session closed while opening a channel")
+            channel = self._channels[name] = _Channel(process)
+            return channel
+        finally:
+            self._opening_finished(conn)
+
+    async def _exchange(self, channel: _Channel, command: str, *, prefix: str = "__EE_DONE_",
+                        limit: int = MAX_RESPONSE, own_line: bool = False) -> str:
+        """Send a command and a unique end marker, and return the output written before the marker."""
+        self._seq += 1
+        marker = f"{prefix}{self._seq}__"
+        # With own_line the marker starts on its own line even when the output does not end with one.
+        end = f"printf '\\n%s\\n' {marker}" if own_line else f"echo {marker}"
+        channel.process.stdin.write(f"{command}\n{end}\n")
+        lines, size = [], 0
+        while True:
+            line = await channel.process.stdout.readline()
+            if line == "":
+                raise TransportError("the switch closed the shell")
+            if line.strip() == marker:
+                output = "".join(lines)
+                return output[:-1] if own_line and output.endswith("\n") else output
+            size += len(line)
+            if size > limit:
+                raise TransportError("the switch returned an oversized response")
+            lines.append(line)
+
     async def _channel(self, name: str, *, connection=None) -> _Channel:
         async with self._channel_lock:
             conn = self._conn if connection is None else connection
             if conn is None or self._conn is not conn:
                 raise TransportError("the SSH session closed before opening a channel")
-            channel = self._channels.get(name)
-            if channel is None:
-                import asyncssh
-
-                self._opening_started(conn)
-                try:
-                    tag = 'ee_' + secrets.token_hex(16)
-                    process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                    self._process_tags[id(process)] = tag
-                    if self._conn is not conn:
-                        self._retire_process(conn, process)
-                        raise TransportError("the SSH session closed while opening a channel")
-                    channel = _Channel(process)
-                    self._channels[name] = channel
-                finally:
-                    self._opening_finished(conn)
-            return channel
+            return self._channels.get(name) or await self._open_shell(conn, name)
 
     async def _port_channel(self, conn) -> _Channel:
         previous = self._channels.get("links")
@@ -524,29 +661,16 @@ class SSHTransport(Transport):
             await self._close_failed_connection(conn)
             raise TransportError(f"could not open a shell on the switch: {exc}") from exc
         async with ch.lock:
-            self._seq += 1
-            marker = f"__EE_DONE_{self._seq}__"
             try:
                 async with asyncio.timeout(timeout):
                     if self._conn is not conn:
                         raise TransportError("the SSH session closed before sending a command")
                     if ch.sample_failed:
                         raise TransportError("the switch status shell is finishing")
-                    ch.process.stdin.write(f"{command}\necho {marker}\n")
-                    lines: list[str] = []
-                    size = 0
-                    while True:
-                        line = await ch.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the switch closed the shell")
-                        if line.strip() == marker:
-                            if port_sample:
-                                self._unfinished_port_reads = 0
-                            return "".join(lines)
-                        size += len(line)
-                        if size > 262144:
-                            raise TransportError("the switch returned an oversized response")
-                        lines.append(line)
+                    output = await self._exchange(ch, command)
+                if port_sample:
+                    self._unfinished_port_reads = 0
+                return output
             except (asyncio.CancelledError, TransportError) as exc:
                 await self._command_failed(conn, ch, port_sample, exc)
                 raise
@@ -577,37 +701,8 @@ class SSHTransport(Transport):
                 async with asyncio.timeout(timeout):
                     if self._conn is not conn:
                         raise TransportError("the SSH session changed before the command")
-                    shell = self._channels.get(channel)
-                    if shell is None:
-                        import asyncssh
-                        self._opening_started(conn)
-                        try:
-                            tag = 'ee_' + secrets.token_hex(16)
-                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                            self._process_tags[id(process)] = tag
-                            if self._conn is not conn:
-                                self._retire_process(conn, process)
-                                raise TransportError("the SSH session changed while opening a shell")
-                            shell = _Channel(process)
-                            self._channels[channel] = shell
-                        finally:
-                            self._opening_finished(conn)
-                    self._seq += 1
-                    marker = f"__EE_DONE_{self._seq}__"
-                    # The marker starts on its own line even when the output does not end with one.
-                    shell.process.stdin.write(f"{command}\nprintf '\\n%s\\n' {marker}\n")
-                    lines, size = [], 0
-                    while True:
-                        line = await shell.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the switch closed the shell")
-                        if line.strip() == marker:
-                            output = "".join(lines)
-                            return output[:-1] if output.endswith("\n") else output
-                        size += len(line)
-                        if size > 262144:
-                            raise TransportError("the switch returned an oversized response")
-                        lines.append(line)
+                    shell = self._channels.get(channel) or await self._open_shell(conn, channel)
+                    return await self._exchange(shell, command, own_line=True)
             except (Exception, asyncio.CancelledError) as exc:
                 if shell is not None:
                     if self._channels.get(channel) is shell:
@@ -631,35 +726,10 @@ class SSHTransport(Transport):
                 async with self._health_lock:
                     if self._conn is not conn:
                         raise TransportError("the connection changed before the health probe")
-                    channel = self._channels.get("health")
-                    if channel is None:
-                        import asyncssh
-                        self._opening_started(conn)
-                        try:
-                            tag = 'ee_' + secrets.token_hex(16)
-                            process = await conn.create_process('sh -s ' + tag, stderr=asyncssh.STDOUT)
-                            self._process_tags[id(process)] = tag
-                            if self._conn is not conn:
-                                self._retire_process(conn, process)
-                                raise TransportError("the connection changed while opening the health probe")
-                            channel = _Channel(process)
-                            self._channels["health"] = channel
-                        finally:
-                            self._opening_finished(conn)
-                    self._seq += 1
-                    marker = f"__EE_HEALTH_DONE_{self._seq}__"
-                    channel.process.stdin.write(f"{HEALTH_COMMAND}\necho {marker}\n")
-                    lines, size = [], 0
-                    while True:
-                        line = await channel.process.stdout.readline()
-                        if line == "":
-                            raise TransportError("the health shell closed")
-                        if line.strip() == marker:
-                            return "".join(lines)
-                        size += len(line)
-                        if size > MAX_HEALTH_RESPONSE:
-                            raise TransportError("the health response exceeded its limit")
-                        lines.append(line)
+                    channel = self._channels.get("health") or await self._open_shell(conn, "health")
+                    # The probe prints __EE_HEALTH_DONE__ itself; the numbered marker ends the exchange.
+                    return await self._exchange(channel, HEALTH_COMMAND, prefix="__EE_HEALTH_DONE_",
+                                                limit=MAX_HEALTH_RESPONSE)
         except (Exception, asyncio.CancelledError) as exc:
             if channel is not None:
                 if self._channels.get("health") is channel:

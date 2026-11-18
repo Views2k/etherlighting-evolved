@@ -1,17 +1,22 @@
-"""Compare a Windows workspace package with this checkout."""
+"""Compare a Windows workspace package, or the folder it was installed to, with this checkout."""
 
 import argparse
+import configparser
 import hashlib
 import json
 import marshal
-import re
 import runpy
 import subprocess
-import sys
-import tomllib
 from pathlib import Path
 
 from PyInstaller.archive.readers import CArchiveReader
+
+ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY = runpy.run_path(str(ROOT / 'tools' / 'check-repository.py'))
+# The programs EE installs on the switch, as PyInstaller places the engine's data files.
+RESIDENT = 'engine/_internal/etherlighting_evolved/resident'
+# The full-size image that packaging/make_icons.py reads. The app uses the sizes made from it.
+SOURCE_ONLY = {'assets/logo.png'}
 
 
 def digest(path):
@@ -19,9 +24,7 @@ def digest(path):
 
 
 def check_contents(app):
-    private = {'private-access.json', 'approved-device.json', 'ee.toml', 'known_hosts', '.env', 'desktop.json', 'handoff.md',
-               'agents.md', 'claude.md', 'login.json', 'scene.json', 'scene-demo.json', 'presets.json',
-               'known_switches.json', 'port_led_fw.bin'}
+    private = {name.lower() for name in REPOSITORY['PRIVATE_NAMES']}
     for item in app.rglob('*'):
         if item.name.lower() in private:
             raise ValueError('Private state or analysis artifact is included in the package.')
@@ -30,73 +33,78 @@ def check_contents(app):
         if not (app / name).is_file() or not (app / name).stat().st_size:
             raise ValueError(f'Missing notice: {name}')
     for name in ['EtherlightingEvolved.exe', 'libSkiaSharp.dll', 'libHarfBuzzSharp.dll', 'av_libglesv2.dll',
-                 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html', 'tools/approve-workspace-device.mjs']:
+                 'engine/EEEngine.exe', 'runtime/node.exe', 'preview/index.html', 'tools/approve-workspace-device.mjs',
+                 'tools/private-access-cleanup.mjs', f'{RESIDENT}/fans.sh', f'{RESIDENT}/player.sh',
+                 f'{RESIDENT}/frames.awk']:
         path = app / name
         if not path.is_file() or not path.stat().st_size:
             raise ValueError(f'Missing application file: {name}')
 
 
-def verify(root, app, node, installer=None):
-    version = runpy.run_path(str(root / 'src/etherlighting_evolved/__init__.py'))['__version__']
-    if json.loads((root / 'package.json').read_text('utf-8'))['version'] != version:
-        raise ValueError('JavaScript and Python versions differ.')
-    if tomllib.loads((root / 'pyproject.toml').read_text('utf-8'))['project']['version'] != version:
-        raise ValueError('Python package versions differ.')
-    native = (root / 'desktop/EtherlightingEvolved.Native/EtherlightingEvolved.Native.csproj').read_text('utf-8')
-    if re.search(r'<Version>([^<]+)</Version>', native).group(1) != version:
-        raise ValueError('Desktop program and Python versions differ.')
+def verify(root, app, node, installer=None, compiler_record=None):
+    version = REPOSITORY['check_versions'](root)
     try:
         CArchiveReader(str(app / 'EtherlightingEvolved.exe'))
     except Exception:
         pass  # Not a PyInstaller program: the native desktop program.
     else:
         raise ValueError('The desktop program is the earlier Python build.')
-    modules, sources = {}, {}
-    for relative, entry in [('engine/EEEngine.exe', 'native_service')]:
-        executable = CArchiveReader(str(app / relative))
-        archive = executable.open_embedded_archive('PYZ.pyz')
-        checked = []
-        for name in archive.toc:
-            if name != 'etherlighting_evolved' and not name.startswith('etherlighting_evolved.'):
-                continue
-            source = (root / 'src').joinpath(*name.split('.')).with_suffix('.py')
-            if not source.is_file():
-                source = (root / 'src').joinpath(*name.split('.'), '__init__.py')
-            packaged = archive.extract(name)
-            if packaged != compile(source.read_bytes(), packaged.co_filename, 'exec'):
-                raise ValueError(f'Packaged module differs: {name}')
-            sources[source.relative_to(root).as_posix()] = digest(source)
-            checked.append(name)
-        required = 'etherlighting_evolved.engine'
-        if required not in checked:
-            raise ValueError(f'Required module missing: {required}')
-        modules[relative] = sorted(checked)
-        source = root / 'packaging' / f'{entry}.py'
-        packaged = marshal.loads(executable.extract(entry))
+    sources = {}
+    executable = CArchiveReader(str(app / 'engine/EEEngine.exe'))
+    archive = executable.open_embedded_archive('PYZ.pyz')
+    modules = []
+    for name in archive.toc:
+        if name != 'etherlighting_evolved' and not name.startswith('etherlighting_evolved.'):
+            continue
+        source = (root / 'src').joinpath(*name.split('.')).with_suffix('.py')
+        if not source.is_file():
+            source = (root / 'src').joinpath(*name.split('.'), '__init__.py')
+        packaged = archive.extract(name)
         if packaged != compile(source.read_bytes(), packaged.co_filename, 'exec'):
-            raise ValueError(f'Packaged entry differs: {entry}')
+            raise ValueError(f'Packaged module differs: {name}')
+        sources[source.relative_to(root).as_posix()] = digest(source)
+        modules.append(name)
+    required = 'etherlighting_evolved.engine'
+    if required not in modules:
+        raise ValueError(f'Required module missing: {required}')
+    source = root / 'packaging/native_service.py'
+    packaged = marshal.loads(executable.extract('native_service'))
+    if packaged != compile(source.read_bytes(), packaged.co_filename, 'exec'):
+        raise ValueError('Packaged entry differs: native_service')
+    sources[source.relative_to(root).as_posix()] = digest(source)
+
+    resident = root / 'src/etherlighting_evolved/resident'
+    programs = sorted(path.name for path in resident.iterdir() if path.is_file())
+    if sorted(path.name for path in (app / RESIDENT).iterdir()) != programs:
+        raise ValueError('Packaged switch programs differ from the source folder.')
+    for name in programs:
+        source = resident / name
+        if digest(app / RESIDENT / name) != digest(source):
+            raise ValueError(f'Packaged switch program differs: {name}')
         sources[source.relative_to(root).as_posix()] = digest(source)
 
     assets = 0
     for folder in ['preview', 'src', 'assets']:
         for source in (root / folder).iterdir():
             extensions = {'.mjs', '.css', '.html', '.png', '.svg', '.ico', '.webmanifest'}
-            if not source.is_file() or source.suffix not in extensions:
-                continue
             relative = source.relative_to(root)
+            if (not source.is_file() or source.suffix not in extensions or source.name.endswith('.test.mjs')
+                    or relative.as_posix() in SOURCE_ONLY):
+                continue
             packaged = app / relative
             if digest(source) != digest(packaged):
                 raise ValueError(f'Packaged asset differs: {relative.as_posix()}')
-            markers = r'ChatGPT|OpenAI|Codex|Claude|Generated with|Co-Authored-By|C:\\Users'
-            if (source.suffix in {'.mjs', '.css', '.html', '.svg', '.webmanifest'}
-                    and re.search(markers, packaged.read_text('utf-8'), re.I)):
-                raise ValueError(f'Unexpected authoring metadata: {relative.as_posix()}')
+            if source.suffix in {'.mjs', '.css', '.html', '.svg', '.webmanifest'}:
+                text = packaged.read_text('utf-8')
+                if REPOSITORY['AI_MARKER'].search(text) or REPOSITORY['HOME_PATH'].search(text):
+                    raise ValueError(f'Unexpected authoring metadata: {relative.as_posix()}')
             sources[relative.as_posix()] = digest(source)
             assets += 1
-    helper = 'tools/approve-workspace-device.mjs'
-    sources[helper] = digest(root / helper)
-    if digest(app / helper) != sources[helper]:
-        raise ValueError('Bundled device approval tool differs from the checked source.')
+    for helper, name in [('tools/approve-workspace-device.mjs', 'device approval tool'),
+                         ('tools/private-access-cleanup.mjs', 'private access cleanup tool')]:
+        sources[helper] = digest(root / helper)
+        if digest(app / helper) != sources[helper]:
+            raise ValueError(f'Bundled {name} differs from the checked source.')
     check_contents(app)
     if digest(app / 'runtime/node.exe') != digest(node):
         raise ValueError('Bundled Node differs from the selected runtime.')
@@ -107,29 +115,31 @@ def verify(root, app, node, installer=None):
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ValueError('Source Git provenance could not be verified.') from exc
     result = {'passed': True, 'version': version, 'git_revision': revision, 'working_tree_dirty': dirty,
-              'modules_match_source': modules, 'web_assets_match_source': assets,
+              'modules_match_source': {'engine/EEEngine.exe': sorted(modules)},
+              'resident_files_match_source': programs, 'web_assets_match_source': assets,
               'desktop_sha256': digest(app / 'EtherlightingEvolved.exe'),
               'engine_sha256': digest(app / 'engine/EEEngine.exe'), 'node_sha256': digest(node),
               'source_hashes': dict(sorted(sources.items()))}
     if installer:
-        result.update(installer_sha256=digest(installer), installer_bytes=installer.stat().st_size)
+        # packaging/installer.iss accepts any Inno Setup 6.7 release, so the record names the one that built it.
+        compiler = configparser.ConfigParser()
+        compiler.read_string(compiler_record.read_text('ascii'))
+        result.update(installer_sha256=digest(installer), installer_bytes=installer.stat().st_size,
+                      installer_compiler='Inno Setup ' + compiler['Compiler']['Release'])
     return result
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
-    parser.add_argument('--node', type=Path)
+    parser.add_argument('--node', type=Path, required=True)
     parser.add_argument('--installer', type=Path)
-    parser.add_argument('--output', type=Path)
-    parser.add_argument('--check-contents', action='store_true')
+    parser.add_argument('--compiler-record', type=Path, help='the Inno Setup release file that installer.iss writes')
+    parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.check_contents:
-        check_contents(args.app.resolve())
-        sys.exit(0)
-    if not args.node or not args.output:
-        parser.error('--node and --output are required for release verification')
-    result = verify(Path(__file__).resolve().parents[1], args.app.resolve(), args.node.resolve(), args.installer)
+    if args.installer and not args.compiler_record:
+        parser.error('--installer requires --compiler-record')
+    result = verify(ROOT, args.app.resolve(), args.node.resolve(), args.installer, args.compiler_record)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({key: value for key, value in result.items() if key != 'source_hashes'}, indent=2))

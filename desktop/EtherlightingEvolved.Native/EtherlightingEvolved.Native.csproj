@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>12</LangVersion>
@@ -11,7 +11,7 @@
     <Company>Views2k</Company>
     <Authors>Views2k</Authors>
     <Description>Lighting controls for UniFi switches</Description>
-    <Version>0.5.1</Version>
+    <Version>0.6.0</Version>
     <ApplicationIcon>../../src/etherlighting_evolved/assets/ee.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
@@ -44,6 +44,7 @@
     <EmbeddedResource Include="../../preview/theme-catalog.mjs" LogicalName="theme-catalog.mjs" />
     <EmbeddedResource Include="../../src/icons.mjs" LogicalName="icons.mjs" />
     <EmbeddedResource Include="../../src/catalog.mjs" LogicalName="catalog.mjs" />
-    <AvaloniaResource Include="../../assets/logo.png" Link="Assets/logo.png" />
+    <!-- The app decodes the logo at 104 px or less, so the 256 px copy is enough. -->
+    <AvaloniaResource Include="../../assets/logo-256.png" Link="Assets/logo-256.png" />
   </ItemGroup>
 </Project>

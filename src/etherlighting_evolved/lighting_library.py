@@ -10,7 +10,8 @@ from threading import RLock
 from fastapi import Body, HTTPException
 
 from .effects import create_effect
-from .presets import PresetStore, write_json
+from .presets import PresetStore
+from .storage import atomic_write_json as write_json
 
 
 class LibraryStoreError(OSError):

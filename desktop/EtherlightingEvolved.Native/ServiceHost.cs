@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using System.Text.Json;
+using System.Security.Cryptography;
+using EtherlightingEvolved.Native.Core;
 
 namespace EtherlightingEvolved.Native;
 
@@ -14,9 +16,10 @@ public sealed class ServiceHost
     readonly string node, script, root, dataDirectory;
     readonly bool packaged, demo;
     readonly object stopLock = new();
+    // The service's last output lines, kept for desktop.log when it fails to start or stops on its own.
+    readonly ConcurrentQueue<string> output = new();
     Task<bool>? stopping, forcing;
     Process? process;
-    TaskCompletionSource<Uri>? ready;
 
     internal ServiceHost(string node, string script, string root, bool packaged, bool demo, string dataDirectory)
     {
@@ -25,7 +28,16 @@ public sealed class ServiceHost
 
     public Uri? Address { get; private set; }
 
+    /// <summary>
+    /// The gateway's administration key for this launch, which Tailscale settings, closing the workspace and browser
+    /// links require. Only this program and the gateway it started hold it.
+    /// </summary>
+    internal string? AdminKey { get; private set; }
+
     public bool Running => process is { HasExited: false };
+
+    /// <summary>The started service exited without being asked to; the argument is its exit code. Raised on a worker thread.</summary>
+    public event Action<int>? Stopped;
 
     /// <summary>The bundled service next to the application, or the source checkout it was built from.</summary>
     public static ServiceHost? Locate(string appDirectory, bool demo, string dataDirectory)
@@ -48,6 +60,49 @@ public sealed class ServiceHost
 
     public async Task<Uri> StartAsync(CancellationToken token)
     {
+        Process running;
+        Task<Uri> ready;
+        try { (running, ready) = Launch(); }
+        catch (Exception error)
+        {
+            // The window says desktop.log holds the cause of a failed start, including one before the service runs.
+            DesktopLog.Error("service_start_failed", error);
+            throw;
+        }
+        try
+        {
+            running.BeginOutputReadLine();
+            running.BeginErrorReadLine();
+            var address = await ready.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
+            using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
+            var workspace = Json.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
+            if (workspace.Bool("live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
+            lock (stopLock)
+            {
+                if (running.HasExited) throw new InvalidOperationException("The EE service stopped while starting.");
+                Address = address;
+            }
+            return address;
+        }
+        catch
+        {
+            // Give the gateway its own cleanup first, in case its engine already connected to the switch.
+            try { EndUnstartedService(); } catch (Exception) { }
+            if (running.HasExited) await Drain(running).ConfigureAwait(false);
+            DesktopLog.Service("service_start_failed", running.HasExited ? running.ExitCode : null, output);
+            throw;
+        }
+
+        void EndUnstartedService()
+        {
+            try { running.StandardInput.Close(); } catch (Exception) { }
+            if (!running.WaitForExit(25000)) Kill();
+        }
+    }
+
+    /// <summary>Starts the gateway on a free local port. The task gives its address once it listens.</summary>
+    (Process Running, Task<Uri> Ready) Launch()
+    {
         Directory.CreateDirectory(dataDirectory);
         var port = FreePort(demo ? 4190 : 4180);
         var start = new ProcessStartInfo(node, [script])
@@ -55,49 +110,58 @@ public sealed class ServiceHost
             WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
+        // In a source checkout EE_PREVIEW_PYTHON chooses the Python that runs the engine, as it does for a gateway
+        // started by hand. tools/verify.ps1 sets it so the desktop check runs the simulator on the Python it checks.
+        start.Environment.TryGetValue("EE_PREVIEW_PYTHON", out var python);
         foreach (var key in start.Environment.Keys.ToList())
             if (key.StartsWith("EE_", StringComparison.OrdinalIgnoreCase) || key.StartsWith("PYTHON", StringComparison.OrdinalIgnoreCase)
                 || key is "NODE_OPTIONS" or "NODE_PATH")
                 start.Environment.Remove(key);
         if (packaged) start.Environment["EE_RUNTIME_MODE"] = "packaged";
+        else if (python is not null) start.Environment["EE_PREVIEW_PYTHON"] = python;
         start.Environment["EE_PREVIEW_LIVE"] = demo ? "0" : "1";
         start.Environment["EE_PREVIEW_PORT"] = port.ToString();
         start.Environment["EE_WORKSPACE_DATA_DIR"] = dataDirectory;
         // The gateway closes the workspace, confirming lighting cleanup, when this program's handle to it closes.
         start.Environment["EE_DESKTOP_HOST"] = "1";
-        ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Other Windows users cannot read this process's environment without administrator rights.
+        AdminKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        start.Environment["EE_ADMIN_KEY"] = AdminKey;
+        var ready = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"Browser preview: http://127.0.0.1:{port}";
-        process = new Process { StartInfo = start, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, line) =>
+        var running = new Process { StartInfo = start, EnableRaisingEvents = true };
+        running.OutputDataReceived += (_, line) =>
         {
             if (line.Data?.Trim() == expected) ready.TrySetResult(new Uri($"http://127.0.0.1:{port}/"));
         };
-        process.ErrorDataReceived += (_, _) => { };
-        process.Exited += (_, _) => ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
-        if (!process.Start()) throw new InvalidOperationException("The EE service could not start.");
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        try
+        running.ErrorDataReceived += (_, line) =>
         {
-            var address = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
-            using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
-            using var workspace = JsonDocument.Parse(await http.GetStringAsync(new Uri(address, "/api/workspace"), token).ConfigureAwait(false));
-            if (WorkspaceModel.Bool(workspace.RootElement, "live") != !demo) throw new InvalidOperationException("The EE workspace could not be verified.");
-            Address = address;
-            return address;
-        }
-        catch
+            if (line.Data is not { } text) return;
+            output.Enqueue(DesktopLog.Clean(text));
+            while (output.Count > 64) output.TryDequeue(out var _);
+        };
+        running.Exited += async (_, _) =>
         {
-            // Give the gateway its own cleanup first, in case its engine already connected to the switch.
-            try { EndUnstartedService(); } catch (Exception) { }
-            throw;
-        }
+            ready.TrySetException(new InvalidOperationException("The EE service stopped while starting."));
+            // Until Address is set StartAsync reports the failure, and a requested stop is expected.
+            lock (stopLock)
+                if (Address is null || stopping is not null || forcing is not null) return;
+            await Drain(running).ConfigureAwait(false);
+            DesktopLog.Service("service_stopped", running.ExitCode, output);
+            Stopped?.Invoke(running.ExitCode);
+        };
+        running.Start();
+        // Only a started process is kept: Running and Kill would throw for one that never ran.
+        process = running;
+        return (running, ready.Task);
+    }
 
-        void EndUnstartedService()
-        {
-            try { process?.StandardInput.Close(); } catch (Exception) { }
-            if (process is { } started && !started.WaitForExit(25000)) Kill();
-        }
+    /// <summary>Waits briefly for the last output lines of a service that has exited.</summary>
+    static async Task Drain(Process ended)
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try { await ended.WaitForExitAsync(limit.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
     }
 
     /// <summary>
@@ -136,16 +200,43 @@ public sealed class ServiceHost
             if (Address is { } address)
             {
                 using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false });
-                using var response = await http.PostAsync(new Uri(address, "/api/workspace/close"), null, deadline.Token).ConfigureAwait(false);
+                using var request = AdminRequest(address, "/api/workspace/close");
+                using var response = await http.SendAsync(request, deadline.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode) return false;
-                using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
-                if (WorkspaceModel.Bool(body.RootElement, "closed") != true) return false;
+                var body = Json.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+                if (body.Bool("closed") != true) return false;
             }
             running.StandardInput.Close();
             await running.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             return running.ExitCode == 0;
         }
         catch (Exception) { return false; }
+    }
+
+    HttpRequestMessage AdminRequest(Uri address, string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, new Uri(address, path));
+        request.Headers.Add("X-EE-Admin-Key", AdminKey);
+        return request;
+    }
+
+    /// <summary>The browser address that redeems an administration code, or null for anything but a code.</summary>
+    internal static Uri? BrowserLink(Uri address, string? code) =>
+        code is { Length: 64 } && code.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f') ? new Uri(address, "/?admin_code=" + code) : null;
+
+    /// <summary>
+    /// A single-use address that opens the workspace in a browser with the same Tailscale and close controls as this
+    /// window. The gateway lets the code expire after two minutes.
+    /// </summary>
+    internal async Task<Uri> BrowserLinkAsync(CancellationToken token)
+    {
+        if (!Running || Address is not { } address || AdminKey is null) throw new InvalidOperationException("The EE service is not running.");
+        using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
+        using var request = AdminRequest(address, "/api/workspace/admin-link");
+        using var response = await http.SendAsync(request, token).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var code = Json.Parse(await response.Content.ReadAsStringAsync(token).ConfigureAwait(false)).Str("code");
+        return BrowserLink(address, code) ?? throw new InvalidOperationException("The EE service returned an invalid browser link.");
     }
 
     async Task<bool> EndAsync()

@@ -2,25 +2,41 @@ import {canonicalTailnetAddress} from './approved-device.mjs';
 
 const SAFE_METHODS=new Set(['GET','HEAD','OPTIONS']);
 const LOOPBACK=new Set(['127.0.0.1','::1','::ffff:127.0.0.1']);
-const IDENTITY_HEADERS=new Set(['host','origin','x-forwarded-host','x-forwarded-proto','x-forwarded-for',
-  'tailscale-user-login','tailscale-funnel-request','authorization','forwarded']);
+const IDENTITY_HEADERS=new Map(['host','origin','x-forwarded-host','x-forwarded-proto','x-forwarded-for',
+  'tailscale-user-login','tailscale-funnel-request','authorization','forwarded','sec-fetch-site','sec-fetch-mode'].map(name=>[name,1024]));
+const SAME_SITE_FETCH=new Set(['same-origin','none']);
 export const ACCESS_AUDIENCES=Object.freeze(['owner','accounts']);
 const DENIED=Object.freeze({ok:false,status:403,code:'private_access_denied'});
 const ALLOWED=Object.freeze({ok:true});
 const DEVICE_ALLOWED=Object.freeze({ok:true,device:true});
 
-function singleHeaders(request){
+// The headers named in limits, by lowercase name, each at most its limit in length. A repeated header or a control
+// character gives null, because proxies and servers can disagree about which copy counts.
+export function singleHeaders(request,limits){
   if(!Array.isArray(request.rawHeaders)||request.rawHeaders.length%2)return null;
   const values=new Map();
   for(let i=0;i<request.rawHeaders.length;i+=2){
     const [rawName,value]=request.rawHeaders.slice(i,i+2);
     if(typeof rawName!=='string'||typeof value!=='string')return null;
-    const name=rawName.toLowerCase();
-    if(!IDENTITY_HEADERS.has(name))continue;
-    if(values.has(name)||value.length>1024||/[\x00-\x1f\x7f]/.test(value))return null;
+    const name=rawName.toLowerCase(),limit=limits.get(name);
+    if(limit===undefined)continue;
+    if(values.has(name)||value.length>limit||/[\x00-\x1f\x7f]/.test(value))return null;
     values.set(name,value);
   }
   return values;
+}
+
+// Changes and WebSockets must name the workspace origin. A simple cross-site GET, such as an <img> source on another
+// page, carries no Origin but still names its site in fetch metadata. Only a top-level navigation to a workspace page
+// may come from elsewhere, so links from other apps still open.
+export function sameOriginRequest({headers,method,url,origin,websocket}){
+  const supplied=headers.get('origin');
+  if(supplied!==undefined&&supplied!==origin)return false;
+  if(typeof method!=='string'||(!SAFE_METHODS.has(method)||websocket)&&supplied!==origin)return false;
+  if(typeof url!=='string'||!url.startsWith('/')||url.startsWith('//'))return false;
+  const site=headers.get('sec-fetch-site');
+  return site===undefined||SAME_SITE_FETCH.has(site)
+    ||!websocket&&method==='GET'&&headers.get('sec-fetch-mode')==='navigate'&&!url.startsWith('/api/');
 }
 
 function decodeLogin(value){
@@ -53,15 +69,12 @@ export function createTailnetAccess({origin,ownerLogin,audience='owner',verifyDe
   if(!ACCESS_AUDIENCES.includes(audience))throw new Error('Private access requires a known audience.');
   return Object.freeze({origin,authorize(request,{websocket=false}={}){
     if(!LOOPBACK.has(request?.socket?.remoteAddress))return DENIED;
-    const headers=singleHeaders(request);
+    const headers=singleHeaders(request,IDENTITY_HEADERS);
     if(!headers||headers.has('tailscale-funnel-request')||headers.has('authorization')||headers.has('forwarded'))return DENIED;
     const sourceIp=canonicalTailnetAddress(headers.get('x-forwarded-for'));
     if(headers.get('host')!==url.host||headers.get('x-forwarded-host')!==url.host
         ||headers.get('x-forwarded-proto')!=='https'||!sourceIp)return DENIED;
-    const suppliedOrigin=headers.get('origin');
-    if(suppliedOrigin!==undefined&&suppliedOrigin!==origin)return DENIED;
-    if(typeof request.method!=='string'||(!SAFE_METHODS.has(request.method)||websocket)&&suppliedOrigin!==origin)return DENIED;
-    if(typeof request.url!=='string'||!request.url.startsWith('/')||request.url.startsWith('//'))return DENIED;
+    if(!sameOriginRequest({headers,method:request.method,url:request.url,origin,websocket}))return DENIED;
     if(headers.has('tailscale-user-login')){
       const login=decodeLogin(headers.get('tailscale-user-login'));
       if(!login||/[\s\x00-\x1f\x7f]/u.test(login)||audience==='owner'&&login!==ownerLogin)return DENIED;

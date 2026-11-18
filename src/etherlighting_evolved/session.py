@@ -5,7 +5,8 @@ A previously bound device restores its scene. A new device waits for an explicit
 Logging in with the host "demo" uses the built-in simulator.
 
 Real scenes are bound to the authenticated device and qualified layout. The legacy scene remains unchanged.
-The simulator keeps its separate scene-demo.json.
+The simulator keeps its separate scene-demo.json. Fan settings are saved per device in device-fans/, under the
+identity of that device's scenes.
 """
 
 from __future__ import annotations
@@ -19,21 +20,22 @@ import secrets
 from dataclasses import dataclass, field
 
 from . import device_playback as playback
-from .config import Config
+from .config import DEMO_HOSTS, Config
 from .credentials import CredentialStoreError, SavedLogin
 from .engine import Engine
-from .fans import FanControl, FanStore, SimulatedFans, SwitchFans
+from .fans import DeviceFanStore, FanControl, FanStore, SimulatedFans, SwitchFans
 from .handoff import HandoffIntent
 from .hardware import PRO_XG8
 from .mailbox import Mailbox
 from .ownership import OutputJournal, OutputOwnershipError, device_identity
-from .presets import DeviceSceneStore, SceneStore
+from .presets import DeviceSceneStore, SceneStore, UnusableSceneError
 from .scene_history import SceneHistory
 from .switch import EtherlightSwitch
 from .transport import (
     AuthenticationError,
     HostKeyMismatchError,
     HostKeyStore,
+    HostKeyStoreError,
     SimulatedTransport,
     SSHTransport,
     Transport,
@@ -43,8 +45,29 @@ from .transport import (
 
 log = logging.getLogger(__name__)
 
-DEMO_HOSTS = {"demo", "simulator", "sim"}
 SCENE_CHOICE_TIMEOUT = 300.0
+HOST_KEY_STALE = ("The SSH key in this request is not the key EE last saw for this switch. Connect again to "
+                  "review it.")
+HOST_KEY_SAVE_FAILED = "The saved SSH keys could not be read or updated. Check the EE data folder and try again."
+
+# The expected failures of each login step, as (exception types, error code, HTTP status), most specific first.
+# Other exceptions keep their own type. OutputOwnershipError keeps its own code in the ownership and activate steps,
+# and a key the switch presented that differs from the saved one is reported with both fingerprints
+# (_host_key_failure).
+LOGIN_FAILURES = {
+    "connect": ((AuthenticationError, "auth_failed", 401), (UnreachableError, "unreachable", 502),
+                (HostKeyStoreError, "host_key_save_failed", 500), (TransportError, "ssh_error", 502)),
+    "profile": ((ValueError, "compatibility_verification_required", 422),),
+    "settings": (((ValueError, TypeError), "invalid_settings", 400),),
+    "scene": (((ValueError, TypeError, KeyError), "invalid_saved_scene", 422),),
+    "activate": ((CredentialStoreError, "saved_login_failed", 500), (TransportError, "output_unconfirmed", 409),
+                 ((ValueError, TypeError), "invalid_settings", 400)),
+}
+
+
+def _log_failure(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        log.error("%s stopped", task.get_name(), exc_info=task.exception())
 
 
 @dataclass(repr=False)
@@ -71,13 +94,20 @@ class PendingSceneChoice:
 
 
 class LoginError(Exception):
-    """A login attempt failed. `code` tells the UI what to show; `status` is the HTTP status to use."""
+    """A login attempt failed. `code` tells the UI what to show; `status` is the HTTP status to use.
 
-    def __init__(self, code: str, message: str, status: int) -> None:
+    `details` are extra fields of the error object, such as the fingerprints of a changed SSH key.
+    """
+
+    def __init__(self, code: str, message: str, status: int, **details) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.details = details
+
+    def detail(self) -> dict:
+        return {"code": self.code, "message": self.message, **self.details}
 
 
 class SessionManager:
@@ -117,19 +147,38 @@ class SessionManager:
         self._historic_handoff_unknown = self._handoff.state == "unconfirmed" and not self._playback.data
         self._handoff_task: asyncio.Task | None = None
         self._handoff_generation = 0
+        # The fan result of the last handoff since the last connection, kept in memory only.
+        self._fan_handoff: str | None = None
         self._cleanup_engines: list[Engine] = []
         self._owned_switches: set[EtherlightSwitch] = set()
         self._unsaved_scenes: dict[object, tuple[SceneStore, dict]] = {}
+        # info() runs on every notification, so it reports this summary instead of decrypting the saved login.
+        self._remembered: dict | None = None
+        self._saved_error: str | None = None
+        with contextlib.suppress(CredentialStoreError):
+            self._load_saved()
+
+    def _load_saved(self) -> dict | None:
+        try:
+            saved = self.saved.load()
+        except CredentialStoreError as exc:
+            self._remembered, self._saved_error = None, str(exc)
+            raise
+        self._set_remembered(saved)
+        return saved
+
+    def _set_remembered(self, saved: dict | None) -> None:
+        self._remembered = (None if saved is None else
+                            {"host": saved["host"], "port": saved.get("port", 22), "username": saved.get("username")})
+        self._saved_error = None
 
     # Info
 
     def info(self) -> dict:
-        saved, saved_error = None, None
-        try:
-            saved = self.saved.load()
-        except CredentialStoreError as exc:
-            saved_error = str(exc)
+        saved, saved_error = self._remembered, self._saved_error
         engine = self.engine
+        # The key of the connected switch, which is the saved key, so a user can compare it with what ssh shows.
+        transport = engine.switch.transport if engine and not self.simulated else None
         return {
             "logged_in": engine is not None,
             "connected": bool(engine and engine.connected),
@@ -140,10 +189,10 @@ class SessionManager:
             "simulated": self.simulated,
             "workspace_id": self.workspace_id(),
             "switch": engine.switch_info if engine else None,
+            "ssh_host_key": getattr(transport, "host_key_fingerprint", None),
+            "ssh_host_key_type": getattr(transport, "host_key_type", None),
             "error": (engine.error if engine and engine.error else None) or self.last_error,
-            "remembered": {"host": saved["host"], "port": saved.get("port", 22), "username": saved.get("username")}
-            if saved
-            else None,
+            "remembered": dict(saved) if saved else None,
             "has_saved_login": saved is not None or saved_error is not None,
             "saved_login_error": saved_error,
             "pending_scene_choice": self._pending.public() if self._pending and not self.handoff_pending else None,
@@ -151,8 +200,8 @@ class SessionManager:
             "handoff_state": self._handoff.state,
             "switch_playback": self._playback_status if self._playback.data else None,
             "offline_lighting_error": self._offline_error,
-            "can_save_to_switch": bool(engine and getattr(engine.switch.transport, "desktop_output", None)),
             "handed_off": self._handoff.state == "complete" and engine is None and not self._owned_switches,
+            "fan_handoff": self._fan_handoff,
         }
 
     def workspace_id(self) -> str | None:
@@ -173,6 +222,12 @@ class SessionManager:
     @property
     def handoff_pending(self) -> bool:
         return self._handoff.state in {"pending", "unconfirmed"}
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self):
+        """Hold off login, logout, scene choice and handoff until the block ends."""
+        async with self._lock:
+            yield
 
     # Notifications to websocket clients
 
@@ -217,7 +272,7 @@ class SessionManager:
         self._notify()
         try:
             try:
-                saved = self.saved.load()
+                saved = self._load_saved()
             except CredentialStoreError as exc:
                 raise self._fail("saved_login_unavailable", str(exc), 409) from exc
             if not saved:
@@ -295,48 +350,25 @@ class SessionManager:
                 auto_detect=not isinstance(transport, SimulatedTransport),
             )
             self._owned_switches.add(switch)
+            step = "connect"
             try:
                 await switch.connect()
                 info = await switch.probe()
-            except AuthenticationError as exc:
-                await self._close_switch(switch)
-                raise self._fail("auth_failed", str(exc), 401) from exc
-            except UnreachableError as exc:
-                await self._close_switch(switch)
-                raise self._fail("unreachable", str(exc), 502) from exc
-            except HostKeyMismatchError as exc:
-                await self._close_switch(switch)
-                raise self._fail("host_key_changed", str(exc), 409) from exc
-            except TransportError as exc:
-                await self._close_switch(switch)
-                raise self._fail("ssh_error", str(exc), 502) from exc
-            except BaseException:
-                with contextlib.suppress(Exception):
-                    await self._close_switch(switch)
-                raise
-            if switch.hardware_profile is not None and not switch.hardware_profile.output_verified:
-                with contextlib.suppress(Exception):
-                    await self._close_switch(switch)
-                raise self._fail("compatibility_verification_required",
-                                 "This switch was identified, but its lighting interface still needs "
-                                 "compatibility verification before EE can control it.", 422)
-            if not info.get("port_rgb"):
-                with contextlib.suppress(Exception):
-                    await self._close_switch(switch)
-                raise self._fail(
-                    "no_etherlighting",
-                    f"Logged in to {info.get('hostname') or host}, but it has no Etherlighting (etherlight.mcu "
-                    "port_rgb not found). EE needs a UniFi switch with Etherlighting.",
-                    422,
-                )
-            try:
+                step = "profile"
+                if switch.hardware_profile is not None and not switch.hardware_profile.output_verified:
+                    raise self._fail("compatibility_verification_required",
+                                     "This switch was identified, but its lighting interface still needs "
+                                     "compatibility verification before EE can control it.", 422)
+                if not info.get("port_rgb"):
+                    raise self._fail(
+                        "no_etherlighting",
+                        f"Logged in to {info.get('hostname') or host}, but it has no Etherlighting (etherlight.mcu "
+                        "port_rgb not found). EE needs a UniFi switch with Etherlighting.",
+                        422,
+                    )
                 switch.require_output_profile()
-            except ValueError as exc:
-                with contextlib.suppress(Exception):
-                    await self._close_switch(switch)
-                raise self._fail("compatibility_verification_required", str(exc), 422) from exc
-            e = self.config.engine
-            try:
+                step = "settings"
+                e = self.config.engine
                 engine = Engine(
                     switch,
                     fps=e.fps,
@@ -345,17 +377,13 @@ class SessionManager:
                     gamma=e.gamma,
                     link_poll=e.link_poll,
                     brightness=e.brightness,
-                    dimming=e.dimming,
                     effect=e.effect,
                     effect_params=e.effect_params,
                 )
-            except (ValueError, TypeError) as exc:
-                await self._close_switch(switch)
-                raise self._fail("invalid_settings", str(exc), 400) from exc
-            engine.switch_info, engine.connected = info, True  # already logged in and probed above
-            simulated = isinstance(transport, SimulatedTransport)
-            if not simulated:
-                try:
+                engine.switch_info, engine.connected = info, True  # already logged in and probed above
+                simulated = isinstance(transport, SimulatedTransport)
+                step = "ownership"
+                if not simulated:
                     if record:
                         if (device_identity(transport.host_key_fingerprint) != record.get("device")
                                 or not playback.supported(switch)):
@@ -367,21 +395,22 @@ class SessionManager:
                                          "Return switch playback to UniFi from the PC that saved it.", 409)
                     if not record:
                         await self._recover_retained_output(switch, host, port, transport.host_key_fingerprint)
-                except OutputOwnershipError as exc:
-                    await self._close_switch(switch)
-                    raise self._fail(exc.code, str(exc), 409) from exc
-                except BaseException:
-                    with contextlib.suppress(Exception):
-                        await self._close_switch(switch)
-                    raise
-            try:
+                step = "scene"
                 store = self.scenes[True] if simulated else self._device_store(switch)
-                scene = self._load_scene(store)
+                try:
+                    scene = self._load_scene(store)
+                except UnusableSceneError:
+                    # The switch player was built from this file, so only a login without one starts over.
+                    if record:
+                        raise
+                    store.set_aside()
+                    scene = None
                 candidate = PendingSceneChoice(
                     engine, store, host, port, username, password, remember, simulated,
-                    transport.lighting_generation, getattr(transport, "host_key_fingerprint", None))
+                    transport.lighting_generation, transport.host_key_fingerprint)
                 candidate.initial_scene = engine.snapshot()
                 if not simulated and scene is None:
+                    # The open switch waits in self._pending until the scene choice or its expiry.
                     _, candidate.legacy_revision, candidate.legacy_available = self._legacy_scene()
                     candidate.expires_at = asyncio.get_running_loop().time() + SCENE_CHOICE_TIMEOUT
                     self._pending = candidate
@@ -392,14 +421,39 @@ class SessionManager:
                     return self.info()
                 if scene:
                     engine.apply_snapshot(scene)
-            except (ValueError, TypeError, KeyError) as exc:
-                await self._close_switch(switch)
-                raise self._fail("invalid_saved_scene", str(exc), 422) from exc
-            except BaseException:
-                with contextlib.suppress(Exception):
-                    await self._close_switch(switch)
-                raise
+            except BaseException as exc:
+                failure = await self._failed_login(switch, step, exc, host=host, port=int(port))
+                if failure is None:
+                    raise
+                raise failure from exc
             return await self._activate(candidate)
+
+    async def _failed_login(self, switch: EtherlightSwitch, step: str, exc: BaseException, *, host: str,
+                            port: int) -> LoginError | None:
+        """Close the new connection after a failed login step.
+
+        Returns the login error for an expected failure of that step, or None when the caller should raise the
+        exception unchanged.
+        """
+        # A failed close keeps the switch in _owned_switches, which blocks the next login until handoff.
+        with contextlib.suppress(Exception):
+            await self._close_switch(switch)
+        if isinstance(exc, LoginError):
+            return None
+        if step == "connect" and isinstance(exc, HostKeyMismatchError):
+            return self._host_key_failure(exc, host, port)
+        if isinstance(exc, OutputOwnershipError) and step in {"ownership", "activate"}:
+            return self._fail(exc.code, str(exc), 409)
+        for kind, code, status in LOGIN_FAILURES.get(step, ()):
+            if isinstance(exc, kind):
+                return self._fail(code, str(exc), status)
+        return None
+
+    def _host_key_failure(self, exc: HostKeyMismatchError, host: str, port: int) -> LoginError:
+        """The switch presented a key that differs from the saved key. Only the SSH key exchange took place."""
+        return self._fail("host_key_changed", "The switch's SSH key changed. Check the new fingerprint before "
+                          "signing in.", 409, host=host, port=port, ssh_host_key=exc.presented,
+                          ssh_host_key_type=exc.presented_type, saved_ssh_host_key=exc.pinned)
 
     async def _recover_retained_output(self, switch: EtherlightSwitch, host: str, port: int,
                                        fingerprint: str) -> None:
@@ -536,8 +590,10 @@ class SessionManager:
                 raise self._fail("handoff_unconfirmed", "Finish the pending handoff before reconnecting.", 409)
             if candidate.remember is True and candidate.host.lower() not in DEMO_HOSTS:
                 self.saved.save(candidate.host, candidate.port, candidate.username, candidate.password)
+                self._set_remembered({"host": candidate.host, "port": candidate.port, "username": candidate.username})
             elif candidate.remember is False and candidate.host.lower() not in DEMO_HOSTS:
                 self.saved.clear()
+                self._set_remembered(None)
             if not candidate.simulated and not self._playback.data:
                 self.output_journal.check(candidate.host, candidate.port, candidate.fingerprint,
                                           current=self.engine.switch.output_lease if self.engine else None)
@@ -552,31 +608,17 @@ class SessionManager:
             for mailbox in self._listeners:
                 engine.attach(mailbox)
             await engine.start()
-        except CredentialStoreError as exc:
-            await self._close_switch(switch)
-            raise self._fail("saved_login_failed", str(exc), 500) from exc
-        except OutputOwnershipError as exc:
-            with contextlib.suppress(Exception):
-                await self._close_switch(switch)
-            raise self._fail(exc.code, str(exc), 409) from exc
-        except TransportError as exc:
-            with contextlib.suppress(Exception):
-                await self._close_switch(switch)
-            raise self._fail("output_unconfirmed", str(exc), 409) from exc
-        except (ValueError, TypeError) as exc:
-            with contextlib.suppress(Exception):
-                await self._close_switch(switch)
-            raise self._fail("invalid_settings", str(exc), 400) from exc
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._close_switch(switch)
-            raise
+        except BaseException as exc:
+            failure = await self._failed_login(switch, "activate", exc, host=candidate.host, port=candidate.port)
+            if failure is None:
+                raise
+            raise failure from exc
         self.engine = engine
         self.host, self.port, self.username = candidate.host, candidate.port, (candidate.username or None)
         self.simulated = candidate.simulated
         self._scene_store = candidate.store
         engine.attach_history(SceneHistory(self.config.data_dir / "scene-history.json"), self.schedule_identity())
-        engine.attach_fans(self._fan_control(engine.switch, candidate.simulated))
+        engine.attach_fans(self._fan_control(engine.switch, candidate.simulated, candidate.store))
         if self._handoff.state in {"pending", "unconfirmed"}:
             await self._disconnect_locked()
             raise self._fail("handoff_unconfirmed", "The switch connection was stopped for handoff.", 409)
@@ -588,21 +630,28 @@ class SessionManager:
                 raise self._fail("handoff_save_failed", "The connection preference could not be saved. "
                                  "Check the data folder and try again.", 409) from exc
         self.last_error = None
+        self._fan_handoff = None
         self._saved_revision = engine.revision
         self._autosave_task = asyncio.create_task(self._autosave(engine, candidate.simulated), name="ee-autosave")
         self._notify()
         return self.info()
 
-    def _fan_control(self, switch, simulated: bool) -> FanControl:
+    def _fan_control(self, switch, simulated: bool, store: SceneStore) -> FanControl:
+        """Fan control with the fan choice saved for this switch, under the identity of its saved lighting."""
         supported = getattr(switch, "hardware_profile", None) is PRO_XG8
-        backend = SimulatedFans() if simulated else SwitchFans(switch.transport)
-        store = FanStore(self.config.data_dir / ("fans-demo.json" if simulated else "fans.json"))
-        return FanControl(backend, store, supported=supported)
+        if simulated:
+            return FanControl(SimulatedFans(), FanStore(self.config.data_dir / "fans-demo.json"), supported=supported)
+        if not supported:
+            return FanControl(SwitchFans(switch.transport), None, supported=False)
+        fans = DeviceFanStore(self.config.data_dir / "device-fans" / f"{store.identity}.json", store.identity)
+        fans.adopt_legacy(self.config.data_dir / "fans.json")
+        return FanControl(SwitchFans(switch.transport), fans, supported=True)
 
-    def _fail(self, code: str, message: str, status: int) -> LoginError:
-        self.last_error = {"code": code, "message": message}
+    def _fail(self, code: str, message: str, status: int, **details) -> LoginError:
+        error = LoginError(code, message, status, **details)
+        self.last_error = error.detail()
         self._notify()
-        return LoginError(code, message, status)
+        return error
 
     async def disconnect(self, *, forget: bool = False) -> dict:
         async with self._lock:
@@ -618,11 +667,12 @@ class SessionManager:
                     self.saved.clear()
                 except CredentialStoreError as exc:
                     raise self._fail("saved_login_forget_failed", str(exc), 500) from exc
+                self._set_remembered(None)
             self._notify()
             return self.info()
 
     def _playback_switch(self, identity):
-        saved = self.saved.load()
+        saved = self._load_saved()
         if not saved:
             raise ValueError("Save the switch login before using switch playback.")
         host, port = saved["host"], saved.get("port", 22)
@@ -639,15 +689,6 @@ class SessionManager:
         if not playback.supported(switch):
             raise ValueError("The switch firmware needs playback verification.")
 
-    async def save_to_switch(self) -> dict:
-        """Compatibility with older clients. Saving does not change the workspace."""
-        async with self._lock:
-            engine = self.engine
-            if not engine or not getattr(engine.switch.transport, "desktop_output", None):
-                raise self._fail("playback_unavailable", "Connect the saved switch to apply lighting.", 409)
-            await self.sync_offline_lighting(engine)
-            return self.info()
-
     def _reserve_player_output(self, switch, owner):
         transport = switch.transport
         switch.output_lease = self.output_journal.player_lease(transport.host, transport.port,
@@ -662,7 +703,7 @@ class SessionManager:
                 or (record and record.get("device") != identity)):
             raise OutputOwnershipError("The connected switch does not match the saved lighting.")
         if record is None:
-            saved = self.saved.load()
+            saved = self._load_saved()
             pinned = self.host_keys.get(saved["host"], saved.get("port", 22)) if saved else None
             if not pinned or device_identity(pinned) != identity:
                 return
@@ -722,7 +763,7 @@ class SessionManager:
 
     async def sync_offline_lighting(self, engine):
         """Commit the same scene as the ordinary editor, with recovery after a lost acknowledgement."""
-        if not getattr(engine.switch.transport, "desktop_output", None):
+        if not engine.switch.transport.desktop_output:
             return
         async with self._offline_lock:
             if engine is not self.engine or self.handoff_pending or engine.revision == self._offline_revision:
@@ -762,63 +803,6 @@ class SessionManager:
             if self._offline_error:
                 self._offline_error = None
                 self._notify()
-
-    async def playback_effects(self, change=None):
-        """Edit the verified player's group effects without acquiring desktop output."""
-        async with self._lock:
-            record = self._playback.data
-            if self.engine is not None and change is not None:
-                raise self._fail("workspace_active", "Use Apply changes in the Lighting workspace.", 409)
-            if self.handoff_pending or not record or record.get("state") != "last_playing":
-                raise self._fail("playback_unavailable", "Check switch playback before editing effects.", 409)
-            try:
-                switch = self._playback_switch(record["device"])
-                try:
-                    await self._open_player(switch, record["device"])
-                    return await self._read_or_edit_effects(switch, record, change)
-                finally:
-                    await switch.close()
-            except (OSError, TransportError, ValueError, KeyError, CredentialStoreError) as exc:
-                raise self._fail("playback_edit_failed", "Could not confirm the switch scene. "
-                                 "Reopen the editor to check its current settings.", 409) from exc
-
-    async def _read_or_edit_effects(self, switch, record, change):
-        transport, owner = switch.transport, record["owner"]
-        if await playback.status(transport, owner) != "playing":
-            raise ValueError("player is not running")
-        current = await playback.edit_revision(transport, owner)
-        store = self._device_store(switch)
-        pending = record.get("pending_edit")
-        if pending:
-            self._reconcile_effect(store, pending, current)
-            record = {k: v for k, v in record.items() if k != "pending_edit"}
-            record["applied_edit"] = current
-            self._playback.save(record)
-        if current != record.get("applied_edit", "original"):
-            raise ValueError("switch scene changed")
-        snapshot = store.load()
-        if not snapshot:
-            raise ValueError("missing scene")
-        revision = hashlib.sha256((owner + current).encode("ascii")).hexdigest()
-        if change is None:
-            return {"revision": revision, "zones": snapshot["zones"]}
-        if change.expected_revision != revision:
-            raise self._fail("scene_changed", "The effect changed. Reopen the editor before applying.", 409)
-        # Construct a model for validation and compilation, without starting its output loop.
-        engine = Engine(switch, gamma=self.config.engine.gamma, max_commands=self.config.engine.max_commands)
-        engine.apply_snapshot(snapshot)
-        engine.set_effect(change.id, change.params, change.zone, clear_overrides=False)
-        config, palette = playback.compile_scene(engine)
-        content = f"{len(palette.splitlines())}\n{config}{palette}"
-        digest = hashlib.sha256(content.encode("ascii")).hexdigest()
-        updated = engine.snapshot()
-        self._playback.save({**record, "pending_edit": {"from": current, "to": digest, "scene": updated}})
-        await playback.edit_scene(transport, owner, content, current)
-        if await playback.edit_revision(transport, owner) != digest:
-            raise ValueError("update unconfirmed")
-        store.save(updated)
-        self._playback.save({**record, "applied_edit": digest})
-        return {"revision": hashlib.sha256((owner + digest).encode("ascii")).hexdigest(), "zones": updated["zones"]}
 
     @staticmethod
     def _reconcile_effect(store, pending, current):
@@ -860,7 +844,8 @@ class SessionManager:
 
     def _retry_playback_handoff(self):
         if not self._closing and (self._playback_retry is None or self._playback_retry.done()):
-            self._playback_retry = asyncio.create_task(self._retry_until_released())
+            self._playback_retry = asyncio.create_task(self._retry_until_released(), name="ee-playback-retry")
+            self._playback_retry.add_done_callback(_log_failure)
 
     async def _retry_until_released(self):
         while self._playback.data and self._playback.data.get("state") == "handoff":
@@ -873,13 +858,15 @@ class SessionManager:
         task = self._handoff_task
         if task is None or task.done():
             self._handoff_generation += 1
+            retry = self._handoff.state == "unconfirmed"
             self._handoff.state = "pending"
             self._notify()
-            task = asyncio.create_task(self._perform_handoff(), name="ee-handoff")
+            task = asyncio.create_task(self._perform_handoff(retry=retry), name="ee-handoff")
             self._handoff_task = task
         return await asyncio.shield(task)
 
-    async def _perform_handoff(self) -> dict:
+    async def _perform_handoff(self, *, retry: bool = False) -> dict:
+        """`retry` is a handoff that follows an unconfirmed one, which keeps the fan result of that handoff."""
         save_error = None
         try:
             self._handoff.save("pending")
@@ -896,6 +883,15 @@ class SessionManager:
                 await self._clear_pending_locked()
             except Exception as exc:
                 cleanup_error = exc
+            # The fan result is reported on its own and never makes the lighting handoff unconfirmed.
+            if self.engine is not None:
+                try:
+                    self._fan_handoff = await self.engine.release_fans()
+                except Exception:
+                    log.exception("the fan release during handoff failed")
+                    self._fan_handoff = "unconfirmed"
+            elif not retry:
+                self._fan_handoff = None
             try:
                 await self._disconnect_locked()
             except Exception as exc:
@@ -956,13 +952,99 @@ class SessionManager:
                 self.saved.clear()
             except CredentialStoreError as exc:
                 raise self._fail("saved_login_forget_failed", str(exc), 500) from exc
+            self._set_remembered(None)
             if self.last_error and self.last_error.get("code", "").startswith("saved_login_"):
                 self.last_error = None
             self._notify()
             return self.info()
 
+    # SSH host keys. The first key of an address is saved by the login itself. Replacing a changed key does not
+    # contact the switch: the next login checks the saved key during the key exchange.
+
+    async def replace_host_key(self, host: str, port: int, saved_key: str, fingerprint: str) -> dict:
+        """Replace the saved key of a reset or replaced switch with the key EE saw there.
+
+        The switch playback record of the replaced key is deleted, as a confirmed handoff does: that player ran in the
+        previous switch's memory, and connect refuses every other key while the record exists.
+        """
+        host = host.strip()
+        if not host:
+            raise LoginError("missing_host", "Enter the switch's IP address", 400)
+        async with self._lock:
+            pinned = self._saved_host_key(host, port)
+            if pinned == fingerprint:
+                return self.info()
+            if self._cleanup_engines or any(not isinstance(switch.transport, SimulatedTransport)
+                                            for switch in self._owned_switches):
+                raise LoginError("host_key_in_use", "Close the open switch connection before accepting a new SSH "
+                                 "key.", 409)
+            if (pinned is None or pinned != saved_key or saved_key == fingerprint
+                    or self.host_keys.presented(host, port) != fingerprint):
+                raise LoginError("host_key_stale", HOST_KEY_STALE, 409)
+            record = self._playback.data
+            if record:
+                if reason := self._playback_reservation(record, saved_key):
+                    raise LoginError("switch_playback_reserved", reason, 409)
+                try:
+                    self._playback.clear()
+                except OSError as exc:
+                    raise LoginError("host_key_save_failed", HOST_KEY_SAVE_FAILED, 500) from exc
+            try:
+                self.host_keys.replace(host, port, saved_key, fingerprint)
+            except HostKeyMismatchError as exc:
+                self._restore_playback(record)
+                raise LoginError("host_key_stale", HOST_KEY_STALE, 409) from exc
+            except (OSError, TransportError) as exc:
+                self._restore_playback(record)
+                raise LoginError("host_key_save_failed", HOST_KEY_SAVE_FAILED, 500) from exc
+            if record:
+                self._playback_status = None
+                self._offline_error = None
+            log.warning("replaced the saved SSH key for %s:%s (saved %s, new %s)%s", host, port, saved_key,
+                        fingerprint, "; cleared its switch playback record" if record else "")
+            return self._host_key_saved(host, port)
+
+    @staticmethod
+    def _playback_reservation(record: dict, saved_key: str) -> str | None:
+        """Why a playback record keeps the key from being replaced, or None when it belongs to the replaced key."""
+        if record.get("state") == "unreadable":
+            return "The saved switch playback record could not be read."
+        if record.get("state") == "handoff":
+            return ("Switch playback is waiting for a handoff to UniFi. Finish the handoff before accepting a new SSH "
+                    "key.")
+        if record.get("device") != device_identity(saved_key):
+            return "Switch playback is saved for another switch. Return it to UniFi before accepting a new SSH key."
+        return None
+
+    def _saved_host_key(self, host: str, port: int) -> str | None:
+        try:
+            return self.host_keys.get(host, port)
+        except TransportError as exc:
+            raise LoginError("host_key_save_failed", HOST_KEY_SAVE_FAILED, 500) from exc
+
+    def _restore_playback(self, record: dict | None) -> None:
+        """Put back the playback record a failed key replacement deleted, so the old pin keeps its record."""
+        if not record:
+            return
+        try:
+            self._playback.save(record)
+        except OSError:
+            # The old pin stays, so the next connection reviews the key again and a replacement then succeeds
+            # without the record.
+            log.exception("could not restore the switch playback record after a failed SSH key replacement")
+
+    def _host_key_saved(self, host: str, port: int) -> dict:
+        self.host_keys.clear_presented(host, port)
+        error = self.last_error
+        if (error and error.get("code") == "host_key_changed" and isinstance(error.get("host"), str)
+                and HostKeyStore.address_key(error["host"], error.get("port", 22))
+                == HostKeyStore.address_key(host, port)):
+            self.last_error = None
+        self._notify()
+        return self.info()
+
     async def _disconnect_locked(self) -> None:
-        if self.engine and not self.handoff_pending and getattr(self.engine.switch.transport, "desktop_output", None):
+        if self.engine and not self.handoff_pending and self.engine.switch.transport.desktop_output:
             with contextlib.suppress(TimeoutError, OSError, ValueError, TransportError):
                 await asyncio.wait_for(self.sync_offline_lighting(self.engine), timeout=5)
         engine, self.engine = self.engine, None
@@ -1006,6 +1088,10 @@ class SessionManager:
             del self._unsaved_scenes[store.path]
         return store.load()
 
+    def save_current_scene(self, engine: Engine) -> None:
+        """Save the scene now instead of at the next autosave; a failed write is kept for a later retry."""
+        self._save_scene(engine, self.simulated, retain_failure=True)
+
     def _save_scene(self, engine: Engine, simulated: bool, *, retain_failure: bool = False) -> None:
         store = self._scene_store or (self.scenes[True] if simulated else self._device_store(engine.switch))
         if engine.revision == self._saved_revision and store.path not in self._unsaved_scenes:
@@ -1023,7 +1109,7 @@ class SessionManager:
     async def _autosave(self, engine: Engine, simulated: bool, interval: float = 2.0) -> None:
         while True:
             await asyncio.sleep(interval)
-            if getattr(engine.switch.transport, "desktop_output", None) is not None and engine.connected:
+            if engine.switch.transport.desktop_output is not None and engine.connected:
                 try:
                     await engine.switch.transport.desktop_output.renew()
                     await self.sync_offline_lighting(engine)
@@ -1059,7 +1145,7 @@ class SessionManager:
                       "key_file": sw.key_file}
         else:
             try:
-                saved = self.saved.load()
+                saved = self._load_saved()
             except CredentialStoreError as exc:
                 self._fail("saved_login_unavailable", str(exc), 409)
                 log.warning("automatic login stopped because the saved login could not be unlocked")
@@ -1072,28 +1158,9 @@ class SessionManager:
             await self.connect(target["host"], target["username"], target["password"], port=target["port"],
                                key_file=target["key_file"], remember=None, automatic=True)
         except LoginError as exc:
-            log.warning("automatic login to %s failed: %s", target["host"], exc.message)
-
-    async def check_playback(self):
-        async with self._lock:
-            record = self._playback.data
-            if record and record.get("state") not in {"handoff", "unreadable"}:
-                try:
-                    switch = self._playback_switch(record["device"])
-                    try:
-                        await self._open_player(switch, record["device"])
-                        self._playback_status = await playback.status(switch.transport, record["owner"])
-                    finally:
-                        await switch.close()
-                except (OSError, TransportError, ValueError, CredentialStoreError):
-                    self._playback_status = "unreachable"
-            self._notify()
-            return self.info()
-
-    def forget_host_key(self, host: str, port: int = 22) -> bool:
-        if self._playback.data:
-            return False
-        return self.host_keys.forget(host, port)
+            # A setup without a browser or the desktop app finds a changed key to accept with eectl here.
+            presented = f" Presented key: {exc.details['ssh_host_key']}." if exc.details.get("ssh_host_key") else ""
+            log.warning("automatic login to %s failed: %s%s", target["host"], exc.message, presented)
 
     async def close(self) -> None:
         self._closing = True

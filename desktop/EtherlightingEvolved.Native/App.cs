@@ -14,9 +14,12 @@ using EtherlightingEvolved.Native.Theme;
 
 namespace EtherlightingEvolved.Native;
 
-public sealed record Options(bool Background, bool Demo, Uri? Url, string? Smoke, bool Quit)
+public sealed record Options(bool Background, bool Demo, Uri? Url, bool Quit)
 {
-    /// <summary>--shot DIR --page NAME [--theme ID] [--size 1440x900]: save a screenshot of one page, off screen.</summary>
+    /// <summary>
+    /// --shot DIR --page NAME [--theme ID] [--size 1440x900]: save a screenshot of one page from a window off screen,
+    /// keeping the run's data under DIR (development checks).
+    /// </summary>
     public string? Shot { get; init; }
 
     public string ShotPage { get; init; } = "Lighting";
@@ -25,37 +28,34 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, string? Smoke
 
     public PixelSize ShotSize { get; init; } = new(1440, 900);
 
-    /// <summary>--size was given, so --smoke measures at that window size instead of the default one.</summary>
-    public bool SizeGiven { get; init; }
+    /// <summary>A --url value the address dialog would refuse. The window then says so instead of opening a workspace.</summary>
+    public string? RejectedUrl { get; init; }
 
-    public static Options? Parse(string[] args)
+    /// <summary>
+    /// Reads the command line. --url takes precedence over EE_WORKSPACE_URL; an environment value that is not a
+    /// workspace address is ignored, since it may be left over from another setup.
+    /// </summary>
+    public static Options Parse(string[] args)
     {
-        Uri? url = null;
-        string? smoke = null;
-        var address = Environment.GetEnvironmentVariable("EE_WORKSPACE_URL");
-        for (var i = 0; i < args.Length; i++)
-        {
-            if (args[i] == "--url" && i + 1 < args.Length) address = args[++i];
-            else if (args[i] == "--smoke" && i + 1 < args.Length) smoke = Path.GetFullPath(args[++i]);
-        }
-        if (!string.IsNullOrWhiteSpace(address))
-        {
-            if (!Uri.TryCreate(address, UriKind.Absolute, out url) || url.Scheme is not ("http" or "https")) return null;
-        }
         string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        var requested = Arg("--url");
+        var url = requested is not null ? WorkspaceAddress.Parse(requested) : WorkspaceAddress.Parse(Environment.GetEnvironmentVariable("EE_WORKSPACE_URL"));
+        var rejected = requested is not null && url is null ? requested : null;
         var shot = Arg("--shot") is { } folder ? Path.GetFullPath(folder) : null;
         var size = Arg("--size")?.Split('x') is [var w, var h] && int.TryParse(w, out var width) && int.TryParse(h, out var height) ? new PixelSize(width, height) : new PixelSize(1440, 900);
-        return new Options(args.Contains("--background"), args.Contains("--demo") || smoke is not null || (shot is not null && url is null), url, smoke ?? shot, args.Contains("--quit"))
+        return new Options(args.Contains("--background"), args.Contains("--demo") || (shot is not null && requested is null && url is null), url, args.Contains("--quit"))
         {
-            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size, SizeGiven = Arg("--size") is not null,
+            Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size, RejectedUrl = rejected,
         };
     }
 }
 
 public sealed class App : Application
 {
-    public const string ThemeKey = "ee.theme.v1";
-    public static Options Options { get; set; } = new(false, false, null, null, false);
+    /// <summary>The program version (major.minor.patch).</summary>
+    public static string Version { get; } = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
+
+    public static Options Options { get; set; } = new(false, false, null, false);
     internal static SingleInstance? Instance { get; set; }
     internal static string DataDirectory { get; set; } = Locations.Workspace(false);
     AppHost? host;
@@ -69,9 +69,7 @@ public sealed class App : Application
             Source = new Uri("avares://Avalonia.Controls.ColorPicker/Themes/Fluent/Fluent.xaml"),
         });
         Styles.Add(Look.Styles());
-        string? theme = null;
-        try { theme = Preferences.GetItem(ThemeKey); } catch (Exception) { }
-        Look.Apply(this, theme ?? ThemeTokens.DefaultTheme);
+        Look.Apply(this, Preferences.GetItem(Pages.Settings.ThemeSettings.StorageKey) ?? ThemeTokens.DefaultTheme);
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -92,11 +90,12 @@ public sealed class App : Application
 /// </summary>
 sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLifetime desktop, Options options, SingleInstance instance, string dataDirectory)
 {
-    readonly string version = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "";
     ShellWindow? window;
     Workspace? workspace;
     ServiceHost? service;
     TrayIcon? tray;
+    NativeMenu? menu;
+    NativeMenuItem? browserItem;
     bool quitting, forceArmed;
     Task? quitTask;
 
@@ -107,46 +106,80 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         Dispatcher.UIThread.UnhandledException += (_, e) =>
         {
             e.Handled = true;
-            Trace.TraceError(e.Exception.ToString());
+            DesktopLog.Error("unhandled_error", e.Exception);
             try { window?.Shell.Notify(e.Exception.Message is { Length: > 0 } message ? message : "Could not confirm the change. Try again.", true); }
             catch (Exception) { }
         };
-        TaskScheduler.UnobservedTaskException += (_, e) => e.SetObserved();
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            DesktopLog.Error("unobserved_task_error", e.Exception);
+            e.SetObserved();
+        };
         desktop.ShutdownRequested += OnShutdownRequested;
         instance.Listen(command => Dispatcher.UIThread.InvokeAsync(() => HandleAsync(command)));
-        if (options.Smoke is null) CreateTray();
+        if (options.Shot is null) CreateTray();
         _ = ConnectAsync();
     }
 
     async Task ConnectAsync()
     {
+        if (options.RejectedUrl is { } rejected)
+        {
+            if (options.Shot is not null) { desktop.Shutdown(1); return; }
+            // The bundled service is not started in its place: the window says what was refused and lets the user
+            // choose another address.
+            Open(Locations.SavedWorkspace ?? DefaultAddress);
+            window!.Shell.ShowConnectionProblem($"EE cannot open {rejected}. {AppShell.AddressHelp}");
+            return;
+        }
         Uri address;
         try
         {
             if (options.Url is { } url) address = url;
             else if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is { } host)
             {
-                service = host;
-                address = await host.StartAsync(CancellationToken.None);
+                address = await StartServiceAsync(host);
+                AddBrowserItem();
             }
-            else address = Locations.SavedWorkspace ?? new Uri("http://127.0.0.1:4180/");
+            else address = Locations.SavedWorkspace ?? DefaultAddress;
         }
         catch (Exception)
         {
             if (quitting) return;
-            if (options.Smoke is not null) { desktop.Shutdown(1); return; }
+            if (options.Shot is not null) { desktop.Shutdown(1); return; }
             if (window is null) Open(new Uri("http://127.0.0.1:9/"));
-            window!.Shell.ShowServiceFailure("The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
+            window!.Shell.ShowServiceFailure(StartFailure, RetryServiceAsync);
             return;
         }
         if (quitting) return;
         Open(address);
         await window!.Shell.Start();
         if (options.Shot is { } shot) _ = ShotAsync(shot);
-        else if (options.Smoke is { } folder) _ = SmokeAsync(folder);
     }
 
-    /// <summary>Starts the bundled service again after a failed start and opens the workspace in a new window.</summary>
+    static readonly Uri DefaultAddress = new("http://127.0.0.1:4180/");
+
+    static string StartFailure => $"The EE service did not start. Close any other EE window, then try again. The cause is recorded in {DesktopLog.File}.";
+
+    Task<Uri> StartServiceAsync(ServiceHost host)
+    {
+        service = host;
+        host.Stopped += _ => Dispatcher.UIThread.Post(() => ServiceStopped(host));
+        return host.StartAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The bundled service ended on its own after it started. Reconnecting cannot succeed, so the window stops
+    /// trying and offers to start the service again. A service replaced by a retry or ended by Quit is ignored.
+    /// </summary>
+    void ServiceStopped(ServiceHost host)
+    {
+        if (quitting || host != service || window is null) return;
+        window.Shell.ShowServiceStopped($"The EE service stopped. Start it again to reconnect to the switch. The cause is recorded in {DesktopLog.File}.",
+            RetryServiceAsync);
+    }
+
+    /// <summary>Starts the bundled service again after it failed or stopped, and opens the workspace in a new window.</summary>
     async Task RetryServiceAsync()
     {
         if (quitting) return;
@@ -156,11 +189,12 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         {
             if (ServiceHost.Locate(AppContext.BaseDirectory, options.Demo, dataDirectory) is not { } host)
                 throw new InvalidOperationException("The EE service files are missing. Reinstall EE.");
-            service = host;
-            var address = await host.StartAsync(CancellationToken.None);
+            var address = await StartServiceAsync(host);
+            AddBrowserItem();
             if (quitting) return;
             if (previous is not null)
             {
+                await previous.Shell.Workspace.DisposeAsync();
                 previous.AllowClose = true;
                 previous.Close();
             }
@@ -171,26 +205,27 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         catch (Exception exception) when (!quitting)
         {
             window?.Shell.ShowServiceFailure(exception is InvalidOperationException { Message: { Length: > 0 } message } && message.Contains("Reinstall")
-                ? message : "The EE service did not start. Close any other EE window, then try again.", RetryServiceAsync);
+                ? message : StartFailure, RetryServiceAsync);
         }
     }
 
     void Open(Uri address)
     {
-        workspace = new Workspace(address);
+        // The administration key goes only to the gateway this program started, never to an address chosen by hand.
+        var owned = service is { Address: { } started } && started == address;
+        workspace = new Workspace(address, owned ? service!.AdminKey : null, DeviceKeys.Get(address));
         window = new ShellWindow(new AppShell(workspace)
         {
-            OpenWorkspaceAddress = service is null && options.Smoke is null ? ChangeWorkspace : null,
+            OpenWorkspaceAddress = service is null && options.Shot is null ? ChangeWorkspace : null,
+            OpenInBrowser = owned && OperatingSystem.IsWindows() && options.Shot is null ? OpenInBrowserAsync : null,
         });
-        PointerDiagnostics.Attach(window);
-        if (options.Smoke is not null)
+        if (options.Shot is not null)
         {
-            // Checks run in a real window placed off screen, so nothing appears on the desktop.
+            // Screenshots come from a real window placed off screen, so nothing appears on the desktop.
             window.WindowStartupLocation = WindowStartupLocation.Manual;
             window.Position = new PixelPoint(-20000, -20000);
             window.ShowInTaskbar = false;
             window.ShowActivated = false;
-            if (options.Shot is null && options.SizeGiven) { window.Width = options.ShotSize.Width; window.Height = options.ShotSize.Height; }
         }
         if (!options.Background) window.Show();
         else _ = window.Shell.SetHidden(true);
@@ -218,7 +253,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
 
     void CreateTray()
     {
-        var menu = new NativeMenu();
+        menu = new NativeMenu();
         var openItem = new NativeMenuItem("Open Etherlighting Evolved");
         openItem.Click += (_, _) => ShowWindow();
         menu.Add(openItem);
@@ -246,6 +281,41 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         tray = new TrayIcon { Icon = icon, ToolTipText = "Etherlighting Evolved", Menu = menu, IsVisible = true };
         tray.Clicked += (_, _) => ShowWindow();
         TrayIcon.SetIcons(app, [tray]);
+    }
+
+    /// <summary>
+    /// Adds Open in browser below Open Etherlighting Evolved once this program's own service has started. The link
+    /// it opens is put on the browser's command line, which other users can read on macOS and Linux, and their
+    /// gateways only run the demo, so the item is Windows only.
+    /// </summary>
+    void AddBrowserItem()
+    {
+        if (!OperatingSystem.IsWindows() || menu is null || browserItem is not null) return;
+        browserItem = new NativeMenuItem("Open in browser");
+        browserItem.Click += (_, _) => _ = OpenInBrowserAsync();
+        menu.Items.Insert(1, browserItem);
+    }
+
+    /// <summary>Opens the workspace in the default browser with a single-use administration link.</summary>
+    async Task OpenInBrowserAsync()
+    {
+        if (quitting || window is null) return;
+        if (service is not { Running: true } running)
+        {
+            ShowWindow();
+            window.Shell.Notify("The EE service is not running. Quit EE and open it again.", true);
+            return;
+        }
+        bool opened;
+        try { opened = await window.Launcher.LaunchUriAsync(await running.BrowserLinkAsync(CancellationToken.None)); }
+        catch (Exception error)
+        {
+            DesktopLog.Error("open_in_browser_failed", error);
+            opened = false;
+        }
+        if (opened || quitting) return;
+        ShowWindow();
+        window?.Shell.Notify("The browser workspace could not be opened. Try again.", true);
     }
 
     void ShowWindow()
@@ -306,7 +376,8 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         forceArmed = true;
         quitting = false;
         quitTask = null;
-        if (workspace is not null)
+        // After the service has stopped, reconnecting cannot succeed; the window keeps offering to start it again.
+        if (workspace is not null && service is { Running: true })
         {
             workspace.Closing = false;
             workspace.ConnectFrames();
@@ -375,118 +446,6 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         if (service is not null && !await service.StopAsync()) code = 1;
         await Finish(code);
     }
-
-    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-    static extern uint GetCurrentThreadId();
-
-    /// <summary>Exercises the real window off screen against the simulator, then quits through the normal path.</summary>
-    async Task SmokeAsync(string folder)
-    {
-        Directory.CreateDirectory(folder);
-        var result = new JsonObject { ["version"] = version };
-        var passed = false;
-        try
-        {
-            var shell = window!.Shell;
-            var started = Stopwatch.StartNew();
-            while (!shell.Workspace.Ready || shell.CurrentPage is null)
-            {
-                if (started.Elapsed > TimeSpan.FromSeconds(90)) throw new TimeoutException("The workspace did not open.");
-                await Task.Delay(200);
-            }
-            result["page"] = shell.PageName;
-            result["simulated"] = shell.Workspace.Session.Bool("simulated");
-            if (service is null || shell.Workspace.Options.Bool("live") != false || shell.Workspace.Session.Bool("simulated") != true)
-                throw new InvalidOperationException("This desktop check requires its own simulator.");
-            using var process = Process.GetCurrentProcess();
-            async Task<double> CpuAsync(int seconds)
-            {
-                process.Refresh();
-                var before = process.TotalProcessorTime;
-                var clock = Stopwatch.StartNew();
-                await Task.Delay(TimeSpan.FromSeconds(seconds));
-                process.Refresh();
-                return Math.Round((process.TotalProcessorTime - before).TotalSeconds / clock.Elapsed.TotalSeconds * 100, 2);
-            }
-            result["logical_processors"] = Environment.ProcessorCount;
-            result["cpu_initial_percent"] = await CpuAsync(10);
-            // A visible change through the workspace API: a rainbow on ports 1–4.
-            using (var api = new WorkspaceApi(shell.Workspace.Api.BaseUri))
-            {
-                var stateNode = await shell.Workspace.Request("/api/state");
-                using var document = System.Text.Json.JsonDocument.Parse(stateNode!.ToJsonString());
-                var lighting = LightingModel.State(document.RootElement, LightingState.Empty);
-                result["apply_effect"] = await api.ApplyEffectAsync(lighting, options.SizeGiven ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4], "rainbow", new JsonObject { ["speed"] = 0.5 }) ?? "ok";
-            }
-            await Task.Delay(3000);
-            // Which threads the visible cost is on: the interface thread (this one) or drawing and network threads.
-            var interfaceThread = OperatingSystem.IsWindows() ? (int)GetCurrentThreadId() : -1;
-            var threadsBefore = process.Threads.Cast<ProcessThread>().ToDictionary(thread => thread.Id, thread => { try { return thread.TotalProcessorTime; } catch (Exception) { return TimeSpan.Zero; } });
-            var threadClock = Stopwatch.StartNew();
-            result["cpu_visible_percent"] = await CpuAsync(20);
-            process.Refresh();
-            var threadSeconds = threadClock.Elapsed.TotalSeconds;
-            var busiest = new JsonArray();
-            foreach (var (id, percent) in process.Threads.Cast<ProcessThread>()
-                         .Select(thread => { try { return (thread.Id, (thread.TotalProcessorTime - threadsBefore.GetValueOrDefault(thread.Id)).TotalSeconds / threadSeconds * 100); } catch (Exception) { return (thread.Id, 0d); } })
-                         .OrderByDescending(item => item.Item2).Take(5))
-                busiest.Add(JsonValue.Create($"{(id == interfaceThread ? "interface" : "thread " + id)}: {percent:0.0}%"));
-            result["cpu_visible_threads"] = busiest;
-            var size = new PixelSize((int)Math.Max(1, window.Bounds.Width), (int)Math.Max(1, window.Bounds.Height));
-            using (var bitmap = new RenderTargetBitmap(size))
-            {
-                bitmap.Render(window);
-                bitmap.Save(Path.Combine(folder, "window.png"));
-            }
-            foreach (var theme in new[] { "silver", "evolved" })
-            {
-                Look.Apply(app, theme);
-                await Task.Delay(300);
-                using var bitmap = new RenderTargetBitmap(size);
-                bitmap.Render(window);
-                bitmap.Save(Path.Combine(folder, $"window-{theme}.png"));
-            }
-            foreach (var name in AppShell.PageNames)
-            {
-                await shell.Navigate(name);
-                if (shell.PageName != name || shell.CurrentPage is null)
-                    throw new InvalidOperationException($"The {name} page did not open.");
-                if (name == "Effects") result["cpu_effects_percent"] = await CpuAsync(12);
-                await Task.Delay(350);
-                using var bitmap = new RenderTargetBitmap(size);
-                bitmap.Render(window);
-                bitmap.Save(Path.Combine(folder, $"{name.ToLowerInvariant()}.png"));
-            }
-            await shell.Navigate("Effects");
-            window.Hide();
-            await Task.Delay(10000);
-            result["cpu_hidden_percent"] = await CpuAsync(30);
-            result["hidden_stream_paused"] = !shell.Workspace.StreamOpen;
-            process.Refresh();
-            result["memory_mb"] = process.PrivateMemorySize64 / 1048576;
-            result["working_set_mb"] = process.WorkingSet64 / 1048576;
-            passed = result["apply_effect"]?.GetValue<string>() == "ok" && !shell.Workspace.StreamOpen;
-        }
-        catch (Exception exception)
-        {
-            result["error"] = exception.Message;
-        }
-        var confirmed = false;
-        try
-        {
-            confirmed = service is null || await service.StopAsync();
-            result["service_stopped_cleanly"] = confirmed;
-            result["passed"] = passed && confirmed;
-            await File.WriteAllTextAsync(Path.Combine(folder, "smoke.json"), result.ToJsonString(new() { WriteIndented = true }));
-        }
-        catch (Exception exception)
-        {
-            // Without this the run would never end: nothing awaits this method.
-            passed = false;
-            try { await File.WriteAllTextAsync(Path.Combine(folder, "smoke-error.txt"), exception.ToString()); } catch (Exception) { }
-        }
-        await Finish(passed && confirmed ? 0 : 1);
-    }
 }
 
 internal static class Program
@@ -494,10 +453,10 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (Options.Parse(args) is not { } options) return 2;
+        var options = Options.Parse(args);
         if (options.Quit) return SingleInstance.QuitRunningCopy();
-        if (options.Smoke is { } output) Locations.TestDataDirectory = Path.Combine(output, "client");
-        var data = options.Smoke is { } smoke ? Path.Combine(smoke, "data") : Locations.Workspace(options.Demo);
+        if (options.Shot is { } output) Locations.TestDataDirectory = Path.Combine(output, "client");
+        var data = options.Shot is { } isolated ? Path.Combine(isolated, "data") : Locations.Workspace(options.Demo);
         // Development screenshots run beside the installed EE, so they never share its single-instance name.
         var suffix = options.Shot is { } shot ? SingleInstance.Suffix(true, shot) : SingleInstance.Suffix(options.Demo, data);
         using var instance = SingleInstance.TryAcquire(suffix);

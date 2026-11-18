@@ -6,8 +6,8 @@ using Avalonia.Media;
 namespace EtherlightingEvolved.Native.Shell;
 
 /// <summary>
-/// One of the title bar's window buttons: a 12px circle (close red, minimize amber, maximize green) whose glyph
-/// shows while the pointer is over the group, drawn as in style.css.
+/// One of the title bar's window buttons: a 12px circle (close red, minimize amber, maximize green) in the colors of
+/// the browser workspace's title bar dots (style.css). Its glyph shows while the pointer is over the group.
 /// </summary>
 public sealed class TrafficLight : Control
 {

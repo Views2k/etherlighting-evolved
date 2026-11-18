@@ -7,6 +7,8 @@ using Avalonia.Media;
 using EtherlightingEvolved.Native.Pages.Settings;
 using EtherlightingEvolved.Native.Shell;
 using EtherlightingEvolved.Native.Theme;
+using EtherlightingEvolved.Native.Ui;
+using UiKit = EtherlightingEvolved.Native.Ui.Ui;
 
 namespace EtherlightingEvolved.Native.Pages.Help;
 
@@ -25,7 +27,7 @@ public sealed class HelpPage : Page
 {
     public HelpPage(AppShell shell) : base(shell)
     {
-        var (copper, sfp) = PortTopology.LightingPorts(Workspace.State);
+        var (copper, sfp) = Core.Model.PortTopology.LightingPorts(Workspace.State);
         var sfpScope = sfp.Count > 0 ? $"SFP {string.Join(", ", sfp)}" : "the SFP indicators";
         var chapters = new List<(string Title, string[] Paragraphs)>
         {
@@ -42,7 +44,6 @@ public sealed class HelpPage : Page
                 "The port map previews those changes. Show applied lets you compare them with the applied lighting; Show preview returns to your edits.",
                 "Lighting previews stay available while you browse. Return to Lighting to continue editing, or save the preview as a profile. Apply changes sends it to the switch.",
                 "Undo last apply restores the setup from before the most recent lighting or profile apply. It is available in Lighting and Profiles while that setup is still current.",
-                "Refreshing the page restores your selection and pending lighting draft. Review the preview before applying it.",
                 "History in Workspace lists earlier lighting setups for this switch. Review an entry and choose Restore to apply it.",
                 "When another device changes the lighting, Review lighting changes shows both edits. Reapply compatible edits or choose which settings to keep.",
             ]),
@@ -91,15 +92,20 @@ public sealed class HelpPage : Page
                 "Open Fans to see the CPU, SFP and port chip temperatures and the speed of both fans. The readings refresh every 5 seconds.",
                 "Switch control leaves the fans to the switch’s own controller. Curve sets the fan speed from the CPU temperature: Low is the quietest and Max the coolest. Manual runs both fans at the speed you choose. Thermal target runs the fans as slowly as possible while keeping the CPU at or below the temperature you choose.",
                 "Every mode speeds the fans up near the switch’s temperature limits. If a sensor cannot be read or EE’s fan control stops, the switch’s own controller takes over.",
-                "Fan control runs on the switch and continues while EE is closed. After a switch restart the switch controls the fans until EE connects again and restores your choice.",
+                "EE saves the fan mode for each switch. A switch EE has not controlled before starts in Switch control. Fan control runs on the switch and continues while EE is closed. After a switch restart the switch controls the fans until EE connects again and restores the saved mode.",
+                "Handoff to UniFi returns the fans to the switch’s own controller. When EE connects to that switch again, it restores the fan mode saved for it.",
+                "If EE on another PC started fan control on the switch with release 0.6.0 or later, Fans says so and EE leaves it running. Choose a mode to control the fans from this PC.",
+                "The fan mode chosen in release 0.5.1 moves to the first USW-Pro-XG-8-PoE that EE connects to after the update, and EE restarts its fan control there once. On other switches, EE stops fan control that release 0.5.1 started, on this or another PC, and the switch’s own controller runs the fans until you choose a mode.",
+                "Uninstalling EE does not connect to the switch. Before you uninstall, connect to each switch whose fans EE controls and choose Handoff to UniFi in Settings or Switch control in Fans. Otherwise its fan mode keeps running until the switch restarts.",
             ]),
             ("Choose an app theme", [
                 "Open Settings, choose Appearance, then select a dark or light theme. The change appears immediately and is saved on this device.",
             ]),
             ("Connection and recovery", [
                 "Settings shows the current connection and which application controls the lighting. Refresh connection checks again. Last session shows the latest shutdown or cleanup result.",
-                "Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. Your saved logins, profiles, and lighting setup are kept. EE waits until you connect again.",
+                "Choose Handoff to UniFi in Settings to stop EE lighting and return control to UniFi. On a USW-Pro-XG-8-PoE this also returns the fans to the switch’s own controller. Your saved logins, profiles, lighting setup, and fan modes are kept. EE waits until you connect again.",
                 "When you want to resume EE, choose Connect with saved login or enter your SSH login. Choose Retry handoff when it is offered. If EE requests a recovery review, keep it disconnected until that review is complete.",
+                "The first time EE connects to a switch, it saves the switch’s SSH key. Settings shows its fingerprint while the switch is connected, so you can compare it with what an SSH client shows. If the switch later presents a different key, EE does not send your password and shows the saved and new fingerprints. Accept a new key only if you reset or replaced the switch, and only in EE on the computer that runs it. If the key changes while EE is connected, quit EE on that computer and open it again to review the new key.",
                 "Connect UniFi Network in Settings to display device names from your controller. Enter its HTTPS address and account details. If prompted, verify the controller certificate fingerprint before approving it.",
                 "To reconnect after restarting or updating EE, check Reconnect controller automatically and choose Connect and save login. For an already connected controller, choose Save reconnect preference. To remove its saved login, clear the checkbox and save the preference.",
                 "If applying lighting fails, keep your changes and retry after the connection returns. A saved profile gives you a known setup to apply.",
@@ -130,7 +136,7 @@ public sealed class HelpPage : Page
         row.Children.Add(chevron);
         row.Children.Add(heading);
         var summary = new Border { Child = row, Background = Brushes.Transparent };
-        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * SettingsKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
+        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(20, 14, 0, 0), MaxWidth = 76 * UiKit.Ch - 20, HorizontalAlignment = HorizontalAlignment.Left };
         // The steps are p elements, whose own 1.5 line height replaces the card's 1.65.
         foreach (var text in paragraphs)
             steps.Children.Add(new TextBlock { Text = text, FontSize = 13, LineHeight = 19.5, TextWrapping = TextWrapping.Wrap }.Bind(TextBlock.ForegroundProperty, "muted"));
