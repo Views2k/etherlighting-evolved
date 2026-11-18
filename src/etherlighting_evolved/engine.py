@@ -41,12 +41,13 @@ from .health import HEALTH_INTERVAL, HealthParseError
 from .identify import Identification
 from .links import PortLink, TrafficMeter
 from .mailbox import Mailbox
+from .ownership import OutputOwnershipError
 from .poe import PoePort, summarize_poe
 from .port_output import display_rgb, to_output
 from .rules import DEFAULT_RULES, FIELDS, PortFacts, Rule, first_match
 from .sfp import SfpLight, SfpSync
 from .sfp_indicators import SfpIndicators
-from .switch import EtherlightSwitch, PortOutput
+from .switch import EtherlightSwitch, LightingCapabilityError, PortOutput
 from .transport import (
     AuthenticationError,
     HostKeyMismatchError,
@@ -61,6 +62,13 @@ log = logging.getLogger(__name__)
 # Handoff to UniFi is not offered because it would have to reach the switch through the refused key.
 HOST_KEY_CHANGED_ERROR = ("The switch's SSH key changed. Quit EE on the computer that runs it, open it again, and "
                           "review the new key on the Connect page.")
+# The connection was lost while a lighting change was unconfirmed. The connection loop keeps running the recovery that
+# Reconnect switch runs until the switch answers.
+LOST_OUTPUT_ERROR = ("The switch connection was lost before EE could confirm its lighting. EE keeps trying to "
+                     "reconnect and will check the switch lighting when it answers.")
+# A restarting switch can accept SSH before its lighting service and MCU answer, which looks like missing capabilities.
+SWITCH_STARTING_ERROR = ("The switch answered, but its lighting is not ready yet. EE keeps trying for 10 minutes after "
+                         "a lost connection, which covers a switch restart.")
 
 
 class NotFound(KeyError):
@@ -126,7 +134,8 @@ def _slug(name: str, taken: set[str]) -> str:
 class Engine:
     MAX_INSTANT_RATE = 30.0
     SFP_FRAME_RATE = 50.0
-    MAX_RECONNECT_ATTEMPTS = 5
+    # How long after a lost connection a switch that lacks its lighting capabilities is treated as still starting.
+    STARTUP_GRACE = 600.0
 
     def __init__(
         self,
@@ -158,6 +167,13 @@ class Engine:
         self._reconnect_blocked = False
         self._loop_failed = False
         self._recovering = False
+        # A lost connection left output unconfirmed, so the connection loop recovers it (see _recover_automatically).
+        self._auto_recovery = False
+        # Lighting was running when output was blocked, so automatic recovery resumes it. release() clears this.
+        self._resume_after_recovery = False
+        self._automatic_attempt: asyncio.Task | None = None
+        # When the current outage began; None while connected and before the first connection.
+        self._lost_at: float | None = None
         self.budget = CommandBudget(switch, port_count=lambda: self.num_ports, fps=fps, max_commands=max_commands,
                                     on_reduced=self._budget_reduced)
         self._animation_origin = self.budget.animation_time
@@ -286,7 +302,13 @@ class Engine:
         self._error = message
 
     def _reconnect_required(self) -> bool:
-        return self._reconnect_blocked or self._loop_failed or self._native_blocked or self._output_uncertain()
+        # Output that a lost connection left unconfirmed is recovered by the connection loop and needs no Reconnect.
+        return (self._reconnect_blocked or self._loop_failed
+                or ((self._native_blocked or self._output_uncertain()) and not self._recovers_automatically()))
+
+    def _recovers_automatically(self) -> bool:
+        """Whether the connection loop runs the Reconnect switch recovery on its own."""
+        return self._auto_recovery and not (self._stopping or self._reconnect_blocked or self._loop_failed)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -747,10 +769,8 @@ class Engine:
                 await self.switch.release_sfp(port)
                 indicators.release_confirmed(port, revision)
             except (TransportError, asyncio.CancelledError) as exc:
-                self._native_blocked = True
-                self.mode = "released"
+                self._block_output()
                 self.error = str(exc) or "SFP release was interrupted before confirmation"
-                self._output_halt.set()
                 raise
             finally:
                 indicators.end_release(port)
@@ -835,6 +855,12 @@ class Engine:
     def release(self) -> None:
         """Halt new frames; wait_for_output_idle also ends any native animation."""
         self.mode = "released"
+        self._resume_after_recovery = False
+        if self._stopping and self._automatic_attempt is not None:
+            # stop() calls this first. Closing does not wait for an automatic recovery attempt, which can take the
+            # whole SSH connect timeout while the switch is unreachable; stop() then handles the unconfirmed output
+            # as it did before the attempt started.
+            self._automatic_attempt.cancel()
         self.stop_identify()
         self._output_halt.set()
         self._native_release_pending |= self._native_engaged or self.switch.native_uncertain
@@ -872,6 +898,8 @@ class Engine:
         if self._stopping:
             raise TransportError("The lighting session is closing. Reconnect after shutdown completes.")
         if self._native_blocked or self._output_uncertain():
+            if self._recovers_automatically():
+                raise TransportError("Lighting can resume after EE reconnects to the switch and checks its lighting.")
             raise TransportError("Reconnect before resuming lighting; "
                                  "the previous animation could not be confirmed stopped")
         if self._reconnect_blocked or self._loop_failed:
@@ -896,11 +924,22 @@ class Engine:
         finally:
             self._recovering = False
 
-    async def _recover_connection(self) -> None:
-        self.release()
+    async def _recover_connection(self, *, automatic: bool = False) -> None:
+        """Recover owned output. Reconnect switch (`automatic` false) then restarts stopped loops and resumes.
+
+        The connection loop runs the automatic recovery itself, and _recover_automatically decides whether to resume.
+        An automatic attempt re-raises a failure that can be retried and keeps reconnects unblocked.
+        """
+        if automatic:
+            # _lost already halted output. release() would also record a scene revision on every attempt.
+            self.mode = "released"
+            self._output_halt.set()
+        else:
+            self.release()
+            self._auto_recovery = False
+            self._reconnect_blocked = True
         self.connected = False
         self._native_blocked = True
-        self._reconnect_blocked = True
         self._publish(self.state_message())
         await self._write_idle.wait()
         await self._initialization_idle.wait()
@@ -910,6 +949,9 @@ class Engine:
             try:
                 info = await self.switch.recover_output(outputs)
             except BaseException as exc:
+                if automatic and (isinstance(exc, asyncio.CancelledError) or self._retry_allowed(exc)):
+                    raise
+                self._auto_recovery = False
                 self.error = (HOST_KEY_CHANGED_ERROR if isinstance(exc, HostKeyMismatchError)
                               else "Lighting recovery is not confirmed. Check the connection and try Reconnect switch "
                                    "again.")
@@ -918,15 +960,85 @@ class Engine:
                 raise TransportError(self._error) from exc
             self.switch_info = info
             self._native_release_pending = self._native_engaged = False
-            self._native_blocked = self._reconnect_blocked = False
+            self._native_blocked = self._reconnect_blocked = self._auto_recovery = False
             self._reconnect_failures = 0
+            self._lost_at = None
             self.connected, self.error = True, None
             self.sfp_indicators.recovered()
-            if not self._stopping:
+            if not self._stopping and not automatic:
                 self._loop_failed = False
                 self.resume()
-                # The connection loop ends once reconnects are blocked, and any loop can end on an error.
+                # The connection loop ends once reconnects are blocked, and any loop can end on an error. The automatic
+                # path runs inside the connection loop and leaves stopped loops for Reconnect switch.
                 self._tasks = [self._spawn(task.get_name()) if task.done() else task for task in self._tasks]
+
+    async def _recover_automatically(self) -> bool:
+        """Run the Reconnect switch recovery for output that a lost connection left unconfirmed.
+
+        Lighting resumes only if it was running when output was blocked and was not released since. Returns True when
+        the attempt failed in a way that is retried after the reconnect delay. A failure that needs the user leaves
+        reconnect_required and the error that Reconnect switch reports.
+        """
+        self._recovering = True
+        self._automatic_attempt = asyncio.current_task()
+        try:
+            await self._recover_connection(automatic=True)
+        except Exception as exc:
+            if self._reconnect_blocked:
+                log.warning("automatic lighting recovery stopped: %s", exc.__cause__ or exc)
+                return False
+            self._reconnect_failures += 1
+            self.error = LOST_OUTPUT_ERROR
+            log.info("automatic lighting recovery did not finish: %s", exc)
+            self._publish(self.state_message())
+            return True
+        finally:
+            self._recovering = False
+            self._automatic_attempt = None
+        resume, self._resume_after_recovery = self._resume_after_recovery, False
+        log.info("recovered the switch lighting after a lost connection")
+        if resume and not self._stopping and not self._loop_failed:
+            self.resume()
+        else:
+            self._publish(self.state_message())
+        return False
+
+    @staticmethod
+    def _retryable(exc: BaseException) -> bool:
+        """Whether a failed connection or recovery attempt is retried without the user.
+
+        A rejected login or SSH key, a lighting ownership or capability change, and anything that is not a connection
+        error need the user.
+        """
+        return (isinstance(exc, (TransportError, OSError))
+                and not isinstance(exc, (AuthenticationError, HostKeyMismatchError, OutputOwnershipError)))
+
+    def _starting_up(self, exc: BaseException) -> bool:
+        """A capability check failed within STARTUP_GRACE of a lost connection.
+
+        Right after a restart the switch can answer SSH before its lighting service runs, so the capability checks fail
+        although nothing changed. A rejected login or SSH key and a changed ownership record are never treated this way.
+        """
+        return (isinstance(exc, (ValueError, LightingCapabilityError)) and self._lost_at is not None
+                and timing.monotonic() - self._lost_at < self.STARTUP_GRACE)
+
+    def _retry_allowed(self, exc: BaseException) -> bool:
+        return self._retryable(exc) or self._starting_up(exc)
+
+    def _retry_delay(self) -> float:
+        """Exponential backoff with jitter after the latest failure, capped at a minute or the configured interval."""
+        ceiling = max(60.0, self.reconnect_delay)
+        # The bounded exponent keeps the float conversion finite however long the switch stays away.
+        delay = min(ceiling, self.reconnect_delay * 2 ** min(self._reconnect_failures - 1, 16))
+        return min(ceiling, delay * random.uniform(1.0, 1.2))
+
+    def _block_output(self) -> None:
+        """Hold output until recovery confirms the switch lighting, and remember whether lighting was running."""
+        if self.mode == "running":
+            self._resume_after_recovery = True
+        self._native_blocked = True
+        self.mode = "released"
+        self._output_halt.set()
 
     # Scenes (presets, autosave)
 
@@ -1353,6 +1465,8 @@ class Engine:
     def _lost(self, exc: Exception) -> None:
         if self.connected:
             log.warning("lost the switch: %s", exc)
+            if self._lost_at is None:
+                self._lost_at = timing.monotonic()
         self.connected = False
         self.stop_identify()
         self._telemetry_generation = None
@@ -1363,13 +1477,16 @@ class Engine:
         self._meter = TrafficMeter()
         self._output_halt.set()
         self._bandwidth.reset()
-        if self._output_uncertain():
-            self._native_blocked = True
-            self.mode = "released"
-        elif self.mode == "running":
-            self._output_halt = asyncio.Event()
+        # Checked after revoking precision, which makes SFP indicators owned on this connection unconfirmed.
         self.switch.revoke_precision()
         self.error = str(exc)
+        if self._native_blocked or self._output_uncertain():
+            # The connection loop recovers this output as Reconnect switch does, without waiting for the user.
+            self._block_output()
+            self._auto_recovery = True
+            self.error = LOST_OUTPUT_ERROR
+        elif self.mode == "running":
+            self._output_halt = asyncio.Event()
         self._switch_health = None
         self._health_updated_at = None
         self.budget.reset()
@@ -1382,6 +1499,11 @@ class Engine:
         while True:
             if self._stopping or self._reconnect_blocked or self._loop_failed:
                 return
+            if self._auto_recovery and not self._recovering:
+                if await self._recover_automatically():
+                    await asyncio.sleep(self._retry_delay())
+                continue
+            # Output blocked while connected (a release the switch did not confirm) waits for Reconnect switch.
             if self._native_blocked or self._output_uncertain():
                 self.mode = "released"
                 self._output_halt.set()
@@ -1406,19 +1528,25 @@ class Engine:
                     self.switch_info = info
                     self.connected, self.error = True, None
                     self._reconnect_failures = 0
+                    self._lost_at = None
                     self.switch.forget()
                     self._changed()
                 except Exception as exc:
                     self.connected, self.error = False, str(exc)
                     self._reconnect_failures += 1
+                    # A switch that is restarting can take several minutes, so connection errors retry for as long
+                    # as the engine runs.
+                    retryable = self._retry_allowed(exc)
+                    if retryable and not self._retryable(exc):
+                        self.error = SWITCH_STARTING_ERROR
+                        log.info("the switch lighting is not ready after a lost connection: %s", exc)
                     if self._output_uncertain():
-                        self._native_blocked = True
-                        self.mode = "released"
-                        self._output_halt.set()
-                    permanent = isinstance(exc, (AuthenticationError, HostKeyMismatchError))
-                    retryable = isinstance(exc, (TransportError, OSError)) and not permanent
-                    self._reconnect_blocked = (self._native_blocked or not retryable
-                                               or self._reconnect_failures >= self.MAX_RECONNECT_ATTEMPTS)
+                        self._block_output()
+                        if retryable:
+                            # Initialization was interrupted: the next attempts run the Reconnect switch recovery.
+                            self._auto_recovery = True
+                            self.error = LOST_OUTPUT_ERROR
+                    self._reconnect_blocked = not retryable
                     if self._reconnect_blocked:
                         self._output_halt.set()
                         if isinstance(exc, AuthenticationError):
@@ -1426,18 +1554,13 @@ class Engine:
                         elif isinstance(exc, HostKeyMismatchError):
                             self.error = HOST_KEY_CHANGED_ERROR
                         elif not self._native_blocked:
-                            self.error = (
-                                "Automatic reconnect stopped. Reconnect your switch to try again."
-                                if retryable else f"{exc}. Reconnect your switch after checking its settings."
-                            )
+                            self.error = f"{exc}. Reconnect your switch after checking its settings."
                     with contextlib.suppress(Exception):
                         await self.switch.close()
                     self._publish(self.state_message())
                     if self._reconnect_blocked:
                         return
-                    ceiling = max(60.0, self.reconnect_delay)
-                    delay = min(ceiling, self.reconnect_delay * 2 ** (self._reconnect_failures - 1))
-                    await asyncio.sleep(min(ceiling, delay * random.uniform(1.0, 1.2)))
+                    await asyncio.sleep(self._retry_delay())
                     continue
             await asyncio.sleep(1.0)
 

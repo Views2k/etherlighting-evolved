@@ -310,22 +310,126 @@ async def test_connection_does_not_become_ready_until_baseline_is_acknowledged()
 
 
 @pytest.mark.anyio
-async def test_native_uncertainty_stops_automatic_reconnect():
+async def test_native_uncertainty_runs_recovery_instead_of_a_plain_reconnect():
     engine = native_engine()
     engine.connected = True
     engine.switch.uncertain = True
+    recovering, recoveries = asyncio.Event(), []
+
+    async def recover_output(outputs):
+        recoveries.append(outputs)
+        recovering.set()
+        await asyncio.Future()
+
+    engine.switch.recover_output = recover_output
     engine._lost(TransportError("unconfirmed native state"))
     task = asyncio.create_task(engine._keep_connected())
     try:
-        await asyncio.sleep(0)
+        await asyncio.wait_for(recovering.wait(), 1)
         assert engine.mode == "released" and not engine.connected
-        assert not engine.switch.calls
-        with pytest.raises(TransportError):
+        # A plain reconnect would initialize output over the unconfirmed native state.
+        assert not engine.switch.calls and len(recoveries) == 1
+        assert not engine.state()["reconnect_required"]
+        with pytest.raises(TransportError, match="after EE reconnects"):
             engine.resume()
+        with pytest.raises(TransportError, match="already in progress"):
+            await engine.recover_connection()
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+def loop_sleeps(monkeypatch, until):
+    """Replace asyncio.sleep with a recorder that ends the loop with CancelledError once `until()` is true."""
+    waits, sleep = [], asyncio.sleep
+
+    async def recorded(seconds):
+        waits.append(seconds)
+        if until():
+            raise asyncio.CancelledError
+        await sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", recorded)
+    return waits
+
+
+@pytest.mark.anyio
+async def test_failed_release_while_connected_does_not_start_automatic_recovery(monkeypatch):
+    engine = native_engine()
+    engine.connected = True
+    engine._native_engaged = True
+    engine.switch.fail_quiesce = True
+    recoveries = []
+
+    async def recover_output(outputs):
+        recoveries.append(outputs)
+        return {}
+
+    engine.switch.recover_output = recover_output
+    engine.release()
+    with pytest.raises(TransportError, match="not acknowledged"):
+        await engine.wait_for_output_idle()
+    waits = loop_sleeps(monkeypatch, lambda: len(waits) == 3)
+    with pytest.raises(asyncio.CancelledError):
+        await engine._keep_connected()
+    assert waits == [1.0, 1.0, 1.0] and not recoveries and engine.switch.calls == ["quiesce"]
+    assert engine.connected and engine.mode == "released" and engine.state()["reconnect_required"]
+    assert engine.error == "native cleanup was not acknowledged"
+    with pytest.raises(TransportError, match="Reconnect before resuming"):
+        engine.resume()
+
+
+@pytest.mark.anyio
+async def test_release_that_failed_before_a_lost_connection_is_recovered_without_resuming(monkeypatch):
+    engine = native_engine()
+    engine.connected = True
+    engine._native_engaged = True
+    engine.switch.fail_quiesce = True
+    engine.release()
+    with pytest.raises(TransportError):
+        await engine.wait_for_output_idle()
+    recoveries = []
+
+    async def recover_output(outputs):
+        recoveries.append(outputs)
+        engine.switch.uncertain = False
+        return {"port_rgb": True}
+
+    engine.switch.recover_output = recover_output
+    engine._lost(TransportError("fixture connection reset"))
+    assert not engine.state()["reconnect_required"]
+    waits = loop_sleeps(monkeypatch, lambda: engine.connected)
+    with pytest.raises(asyncio.CancelledError):
+        await engine._keep_connected()
+    assert waits == [1.0] and len(recoveries) == 1
+    assert engine.connected and engine.mode == "released" and engine.error is None
+    assert not engine.state()["reconnect_required"]
+    engine.resume()
+    assert engine.mode == "running"
+
+
+@pytest.mark.anyio
+async def test_stop_does_not_wait_for_an_automatic_recovery_attempt():
+    engine = native_engine()
+    engine.connected = True
+    engine.switch.uncertain = True
+    entered, canceled = asyncio.Event(), asyncio.Event()
+
+    async def unreachable(outputs):
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            canceled.set()
+
+    engine.switch.recover_output = unreachable
+    engine._lost(TransportError("fixture connection reset"))
+    engine._tasks = [engine._spawn("ee-connection")]
+    await asyncio.wait_for(entered.wait(), 1)
+    await asyncio.wait_for(engine.stop(), 1)
+    assert canceled.is_set() and engine._tasks == [] and not engine.connected
+    assert engine.switch.calls == ["quiesce", "close"]
 
 
 @pytest.mark.anyio

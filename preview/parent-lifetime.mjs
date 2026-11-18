@@ -1,4 +1,6 @@
-export function watchDesktopParent({input, close, report = () => {}, exhausted = () => {},
+// "exit" comes from a desktop that is quitting after its own close was not confirmed. That attempt was made, so the
+// gateway calls exit instead of retrying, and the input closing afterward starts nothing.
+export function watchDesktopParent({input, close, report = () => {}, exhausted = () => {}, exit = () => {},
   setTimer = setTimeout, maxAttempts = 4, retryMs = 5000}) {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) throw new RangeError('Choose 1–10 cleanup attempts.');
   let task, done = false, attempts = 0;
@@ -14,7 +16,12 @@ export function watchDesktopParent({input, close, report = () => {}, exhausted =
     });
   };
   input.on('end', stop);
-  input.on('data', chunk => { if (String(chunk).includes('quit')) stop(); });
+  input.on('data', chunk => {
+    const text = String(chunk);
+    if (/\bexit\b/.test(text)) {
+      if (!done) { done = true; exit(); }
+    } else if (text.includes('quit')) stop();
+  });
   input.resume();
   return stop;
 }

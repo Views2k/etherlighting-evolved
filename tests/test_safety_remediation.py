@@ -9,12 +9,14 @@ from starlette.websockets import WebSocketDisconnect
 from etherlighting_evolved import api, cli
 from etherlighting_evolved import engine as engine_module
 from etherlighting_evolved.engine import Engine
+from etherlighting_evolved.ownership import OutputOwnershipError
 from etherlighting_evolved.session import LoginError, SessionManager
 from etherlighting_evolved.switch import (
     BOARD_LIGHTING_INFO,
     PORT_FIRMWARE_HASH_COMMAND,
     RUNNING_DAEMON_HASH,
     EtherlightSwitch,
+    LightingCapabilityError,
     parse_mcu_probe,
 )
 from etherlighting_evolved.transport import (
@@ -125,7 +127,8 @@ class ReconnectSwitch(EtherlightSwitch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("error", [AuthenticationError("fixture"), HostKeyMismatchError("fixture"),
-                                  ValueError("invalid configuration"), RuntimeError("unexpected failure")])
+                                  OutputOwnershipError("fixture"), ValueError("invalid configuration"),
+                                  RuntimeError("unexpected failure")])
 async def test_permanent_reconnect_failure_stops_and_requires_manual_connection(error):
     switch = ReconnectSwitch([error])
     engine = Engine(switch, rules=[])
@@ -156,23 +159,103 @@ async def test_removed_rgb_capability_does_not_initialize_or_retry():
     assert "Per-port lighting is unavailable" in engine.error
 
 
+def lost_connection(engine):
+    engine.connected = True
+    engine._lost(UnreachableError("fixture"))
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("error_type", [UnreachableError, TransportError, OSError])
-async def test_transient_retries_back_off_and_stop_after_five_attempts(monkeypatch, error_type):
-    switch = ReconnectSwitch([error_type("fixture") for _ in range(5)])
+async def test_missing_lighting_right_after_a_lost_connection_is_retried(monkeypatch):
+    # A restarting switch can answer SSH before its lighting service runs.
+    switch = ReconnectSwitch([], supported=False)
     engine = Engine(switch, rules=[])
-    waits = []
+    lost_connection(engine)
+    waits, states = [], []
 
     async def sleep(seconds):
         waits.append(seconds)
+        if engine.connected:
+            raise asyncio.CancelledError
+        states.append((engine.state()["reconnect_required"], engine.error))
+        if len(waits) == 2:
+            switch.supported = True
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(engine_module.random, "uniform", lambda low, high: 1.0)
+    with pytest.raises(asyncio.CancelledError):
+        await engine._keep_connected()
+    assert waits == [3, 6, 1]
+    assert states == [(False, engine_module.SWITCH_STARTING_ERROR)] * 2
+    assert switch.attempts == 3 and switch.initialized == 1
+    assert engine.connected and engine.error is None and engine._lost_at is None
+
+
+@pytest.mark.anyio
+async def test_missing_lighting_long_after_a_lost_connection_stops():
+    switch = ReconnectSwitch([], supported=False)
+    engine = Engine(switch, rules=[])
+    lost_connection(engine)
+    engine._lost_at -= Engine.STARTUP_GRACE
+    await engine._keep_connected()
+    assert switch.attempts == 1 and switch.initialized == 0
+    assert engine.state()["reconnect_required"] and "Per-port lighting is unavailable" in engine.error
+
+
+def test_only_missing_lighting_is_retried_while_a_switch_starts():
+    engine = Engine(ReconnectSwitch([]), rules=[])
+    capability = LightingCapabilityError("fixture capabilities changed")
+    unavailable = ValueError("Per-port lighting is unavailable on this switch connection")
+    # Before any connection was lost, missing lighting is a configuration problem.
+    assert not engine._retry_allowed(capability) and not engine._retry_allowed(unavailable)
+    lost_connection(engine)
+    assert engine._retry_allowed(capability) and engine._retry_allowed(unavailable)
+    for error in (OutputOwnershipError("fixture owner changed"), AuthenticationError("fixture"),
+                  HostKeyMismatchError("fixture"), RuntimeError("fixture")):
+        assert not engine._retry_allowed(error)
+    engine._lost_at -= Engine.STARTUP_GRACE
+    assert not engine._retry_allowed(capability) and not engine._retry_allowed(unavailable)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error", [AuthenticationError("fixture"), HostKeyMismatchError("fixture")])
+async def test_rejected_login_right_after_a_lost_connection_still_stops(error):
+    switch = ReconnectSwitch([error])
+    engine = Engine(switch, rules=[])
+    lost_connection(engine)
+    await engine._keep_connected()
+    assert switch.attempts == 1 and engine.state()["reconnect_required"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error_type", [UnreachableError, TransportError, OSError])
+async def test_transient_failures_keep_retrying_with_a_capped_delay(monkeypatch, error_type):
+    # A restarting switch can stay away longer than five attempts and their backoff.
+    switch = ReconnectSwitch([error_type("fixture") for _ in range(8)])
+    engine = Engine(switch, rules=[])
+    waits, states = [], []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+        if engine.connected:
+            raise asyncio.CancelledError
+        states.append((engine.state()["reconnect_required"], engine.error, switch.initialized))
 
     monkeypatch.setattr(engine_module.asyncio, "sleep", sleep)
     monkeypatch.setattr(engine_module.random, "uniform", lambda low, high: 1.1)
-    await engine._keep_connected()
-    assert switch.attempts == switch.closed == 5
-    assert waits == pytest.approx([3.3, 6.6, 13.2, 26.4])
-    assert engine.state()["reconnect_required"] and "Automatic reconnect stopped" in engine.error
-    assert switch.initialized == 0
+    with pytest.raises(asyncio.CancelledError):
+        await engine._keep_connected()
+    assert waits == pytest.approx([3.3, 6.6, 13.2, 26.4, 52.8, 60, 60, 60, 1])
+    assert states == [(False, "fixture", 0)] * 8
+    assert switch.attempts == 9 and switch.closed == 8 and switch.initialized == 1
+    assert engine.connected and engine.error is None and not engine.state()["reconnect_required"]
+
+
+@pytest.mark.parametrize("interval,expected", [(3.0, 60.0), (300.0, 300.0)])
+def test_retry_delay_stays_finite_after_a_long_outage(monkeypatch, interval, expected):
+    engine = Engine(ReconnectSwitch([]), rules=[], reconnect_delay=interval)
+    monkeypatch.setattr(engine_module.random, "uniform", lambda low, high: high)
+    engine._reconnect_failures = 100_000
+    assert engine._retry_delay() == expected
 
 
 @pytest.mark.anyio
