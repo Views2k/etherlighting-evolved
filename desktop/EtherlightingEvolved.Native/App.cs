@@ -96,7 +96,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
     TrayIcon? tray;
     NativeMenu? menu;
     NativeMenuItem? browserItem;
-    bool quitting, forceArmed;
+    bool quitting;
     Task? quitTask;
 
     public void Start()
@@ -273,7 +273,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         }
         menu.Add(new NativeMenuItemSeparator());
         var quitItem = new NativeMenuItem("Quit");
-        quitItem.Click += (_, _) => _ = QuitAsync(force: false);
+        quitItem.Click += (_, _) => _ = QuitAsync();
         menu.Add(quitItem);
         WindowIcon? icon = null;
         try { icon = new WindowIcon(AssetLoader.Open(new Uri("avares://EtherlightingEvolved/Assets/ee.ico"))); }
@@ -333,16 +333,15 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
             ShowWindow();
             return "ok";
         }
-        // The installer must be able to replace the files, so its request ends EE even if cleanup is unconfirmed.
-        await QuitAsync(force: true);
+        await QuitAsync();
         return service?.Running == true ? "service_still_running" : "closed";
     }
 
     /// <summary>
-    /// Quits after returning the switch lighting. A Quit from the tray whose return is not confirmed keeps EE
-    /// running and says so; choosing Quit again, the installer and Windows sign-out end EE anyway.
+    /// Quits after trying to return the switch lighting. EE closes even when the return is not confirmed, for
+    /// example while the switch is restarting; the next start recovers the lighting.
     /// </summary>
-    Task QuitAsync(bool force) => quitTask ??= CloseDesktopAsync(force || forceArmed);
+    Task QuitAsync() => quitTask ??= CloseDesktopAsync();
 
     void PrepareToQuit()
     {
@@ -355,36 +354,21 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         }
     }
 
-    async Task CloseDesktopAsync(bool force)
+    async Task CloseDesktopAsync()
     {
         var code = 0;
-        try { PrepareToQuit(); window?.Shell.Status("Returning the switch lighting…"); }
+        // The window goes away at once; the tray icon stays until the service has stopped.
+        try
+        {
+            PrepareToQuit();
+            window?.Hide();
+            if (tray is not null) tray.ToolTipText = "Etherlighting Evolved is closing";
+        }
         catch (Exception) { code = 1; }
         var confirmed = true;
-        try { confirmed = service is null || await service.StopAsync(force); }
+        try { confirmed = service is null || await service.StopAsync(); }
         catch (Exception) { confirmed = false; }
-        if (!confirmed && !force)
-        {
-            KeepRunning();
-            return;
-        }
         await Finish(confirmed && code == 0 ? 0 : 1);
-    }
-
-    void KeepRunning()
-    {
-        forceArmed = true;
-        quitting = false;
-        quitTask = null;
-        // After the service has stopped, reconnecting cannot succeed; the window keeps offering to start it again.
-        if (workspace is not null && service is { Running: true })
-        {
-            workspace.Closing = false;
-            workspace.ConnectFrames();
-        }
-        ShowWindow();
-        window?.Shell.Notify("EE could not confirm that the switch lighting was returned. Choose Quit again to close anyway; " +
-                             "EE recovers the lighting the next time it connects.", true);
     }
 
     async Task Finish(int code)

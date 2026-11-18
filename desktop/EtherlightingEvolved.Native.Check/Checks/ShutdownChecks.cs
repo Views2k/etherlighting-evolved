@@ -7,8 +7,8 @@ namespace EtherlightingEvolved.Native.Check.Checks;
 internal static class ShutdownChecks
 {
     // A loopback fixture with its own child. It records each request, noting whether it carried the administration
-    // key it was started with, and leaves the recovery journal alone. When its input closes it exits cleanly only if
-    // told to, standing in for the gateway's own cleanup after a desktop exit.
+    // key it was started with, and leaves the recovery journal alone. It records the lines it reads, and on "exit"
+    // ends its child and exits only if told to, standing in for the gateway closing without another release.
     const string Gateway = """
         import http from 'node:http';
         import fs from 'node:fs';
@@ -18,7 +18,10 @@ internal static class ShutdownChecks
         fs.writeFileSync('key', key);
         const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore', windowsHide:true});
         fs.writeFileSync('child.pid', String(worker.pid));
-        process.stdin.on('end', () => { if (fs.existsSync('exit-on-input-close')) { worker.kill(); process.exit(0); } });
+        process.stdin.on('data', chunk => {
+          fs.appendFileSync('input', String(chunk));
+          if (String(chunk).includes('exit') && fs.existsSync('exit-on-request')) { worker.kill(); process.exit(1); }
+        });
         process.stdin.resume();
         const server = http.createServer(async (req, res) => {
           const reply = (code, body) => {res.writeHead(code); res.end(JSON.stringify(body));};
@@ -48,13 +51,13 @@ internal static class ShutdownChecks
     {
         await UnexpectedExit(output, check);
         var keys = new List<string>();
-        foreach (var scenario in new[] { "confirmed", "refused-then-cleaned", "refused-unfinished" })
+        foreach (var scenario in new[] { "confirmed", "refused-then-exited", "refused-unresponsive" })
         {
             var refused = scenario != "confirmed";
             var directory = Directory.CreateDirectory(Path.Combine(output, "quit-" + Guid.NewGuid().ToString("N"))).FullName;
             var script = Path.Combine(directory, "gateway.mjs");
             await File.WriteAllTextAsync(script, Gateway);
-            if (scenario == "refused-then-cleaned") await File.WriteAllTextAsync(Path.Combine(directory, "exit-on-input-close"), "");
+            if (scenario == "refused-then-exited") await File.WriteAllTextAsync(Path.Combine(directory, "exit-on-request"), "");
             var journal = Path.Combine(directory, "recovery.json");
             await File.WriteAllTextAsync(journal, "{\"pending\":true}");
             var receipt = Path.Combine(directory, "last-session.json");
@@ -69,34 +72,35 @@ internal static class ShutdownChecks
                 check(key == host.AdminKey && key.Length == 64 && key.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'),
                     $"{scenario}: the service receives this launch's administration key");
                 using var child = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "child.pid"))));
-                var tray = host.StopAsync(force: false);
+                var tray = host.StopAsync();
                 var requests = Path.Combine(directory, "requests");
                 var deadline = Stopwatch.StartNew();
                 while (!File.Exists(requests) && deadline.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(20);
-                var ipc = host.StopAsync(force: false);
-                var os = host.StopAsync(force: false);
+                var ipc = host.StopAsync();
+                var os = host.StopAsync();
                 check(!tray.IsCompleted && !ipc.IsCompleted && !os.IsCompleted, $"{scenario}: concurrent close requests wait for the first one");
                 await File.WriteAllTextAsync(Path.Combine(directory, "reply"), refused ? "refused" : "accepted");
-                var results = await Task.WhenAll(tray, ipc, os).WaitAsync(TimeSpan.FromSeconds(10));
+                var ending = Stopwatch.StartNew();
+                var results = await Task.WhenAll(tray, ipc, os).WaitAsync(TimeSpan.FromSeconds(30));
                 check(results.All(result => result == !refused), $"{scenario}: every close request gets the same result");
                 check((await File.ReadAllLinesAsync(requests)).SequenceEqual(["POST /api/workspace/close key"]),
                     $"{scenario}: one workspace close, with the administration key, is sent for concurrent requests");
+                check(!host.Running, $"{scenario}: Quit stops the service");
+                var input = Path.Combine(directory, "input");
                 if (!refused)
                 {
-                    check(!host.Running && !File.Exists(receipt), "a confirmed Quit stops the service and records nothing");
+                    check(!File.Exists(receipt) && !File.Exists(input), "a confirmed Quit sends no exit request and records nothing");
                 }
                 else
                 {
-                    check(host.Running && !File.Exists(receipt), $"{scenario}: an unconfirmed Quit from the tray keeps the service running");
-                    var forced = await host.StopAsync(force: true).WaitAsync(TimeSpan.FromSeconds(60));
-                    var cleaned = scenario == "refused-then-cleaned";
-                    check(forced == cleaned && !host.Running, cleaned
-                        ? "Quit again lets the service finish its own cleanup and exit"
-                        : "Quit again ends a service whose cleanup did not finish");
-                    check(cleaned
-                        ? !File.Exists(receipt)
-                        : JsonNode.Parse(await File.ReadAllTextAsync(receipt))?["outcome"]?.GetValue<string>() == "cleanup_unconfirmed",
-                        $"{scenario}: the unconfirmed exit is recorded only when the service had to be ended");
+                    check(File.Exists(input) && File.ReadAllText(input).Contains("exit"),
+                        $"{scenario}: after a refused close the service is told to exit without another attempt");
+                    check(scenario == "refused-then-exited" ? ending.Elapsed < TimeSpan.FromSeconds(10) : ending.Elapsed >= TimeSpan.FromSeconds(14),
+                        scenario == "refused-then-exited"
+                            ? "a service that exits on request is not waited on"
+                            : "a service that ignores the exit request is ended after its time is up");
+                    check(JsonNode.Parse(await File.ReadAllTextAsync(receipt))?["outcome"]?.GetValue<string>() == "cleanup_unconfirmed",
+                        $"{scenario}: the unconfirmed exit is recorded so the next start recovers the lighting");
                 }
                 await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                 check(await File.ReadAllTextAsync(journal) == "{\"pending\":true}", $"{scenario}: the existing recovery journal survives desktop exit");

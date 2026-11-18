@@ -763,7 +763,13 @@ removing the rule.
 ```
 
 `connected` can become false while logged in, for example when the switch reboots. EE reconnects automatically,
-and `error` holds the last connection error until it does.
+and `error` holds the last connection error until it does. Connection errors are retried for as long as EE runs, with
+delays that grow to one minute. For 10 minutes after a lost connection, a switch that answers but does not yet offer
+its lighting is treated as still starting and retried too. When the connection was lost before EE could confirm its
+lighting, EE runs the same checks as [`POST /api/session/recover`](#post-apisessionrecover) on its own when the switch
+answers, and resumes the lighting only if it was running before. A rejected login or SSH key, a changed lighting
+owner, or capabilities that are still missing after 10 minutes stop the automatic attempts and set
+`reconnect_required`.
 
 `pending_scene_choice` is set while a new connection waits for the user to choose its lighting (see
 [`POST /api/session/scene-choice`](#post-apisessionscene-choice)), otherwise `null`. `handoff_state` is `none`,
@@ -1272,7 +1278,8 @@ automatic requests until an explicit user action. Normal successful topology ref
   `switch_health` holds the switch's memory, temperature and storage readings, `health_sample_age_ms` their age and
   `health_error` is `null`, `unavailable` or `invalid_response`.
 - `reconnect_required` is true when an interrupted connection needs
-  [`POST /api/session/recover`](#post-apisessionrecover) before lighting resumes.
+  [`POST /api/session/recover`](#post-apisessionrecover) before lighting resumes. It stays false while EE retries
+  the connection and recovers the lighting on its own.
 - `hardware_profile` describes the detected model and its physical port layout, or `null`.
 - The state also carries `schedule_clock` ([WebSocket](#websocket-apiws)), `identify`
   ([Port identification](#port-identification)), `telemetry` and `poe_summary`

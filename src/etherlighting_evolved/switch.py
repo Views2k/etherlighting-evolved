@@ -38,6 +38,14 @@ from .transport import (
     TransportError,
 )
 
+
+class LightingCapabilityError(OutputOwnershipError):
+    """The switch answered without the lighting capabilities that EE's owned output was recorded with.
+
+    A switch that is still starting answers this way too, so the engine retries it for a while after a lost connection.
+    """
+
+
 WRITE_FAILED = "__EE_LED_WRITE_FAILED__"
 MCU_SCHEMA_EXIT = "__EE_MCU_SCHEMA_EXIT__"
 MCU_SCHEMA_COMMAND = (
@@ -358,7 +366,7 @@ class EtherlightSwitch:
             if (not info.get("port_rgb") or self.sfp_ports != old_sfp_ports
                     or self.hardware_profile is not old_profile or self.num_ports != old_copper_count
                     or not self.native_breathing or (sfp and not self.scoped_sfp)):
-                raise OutputOwnershipError("The switch lighting capabilities changed. Keep output stopped.")
+                raise LightingCapabilityError("The switch lighting capabilities changed. Keep output stopped.")
             generation = self.transport.lighting_generation
             if generation is None:
                 raise OutputOwnershipError("The lighting connection could not be verified.")
