@@ -44,6 +44,8 @@ The EE Quality workflow (`.github/workflows/quality.yml`) runs on every pull req
 
 The `Verify EE` job runs on Windows. It checks the commit authors and messages, installs the hash-pinned Python packages, restores the locked desktop packages and runs `tools/verify.ps1`. It then builds the installer with `packaging/build.ps1` and the Inno Setup release that `tools/ci-inno.ps1` downloads and checks, runs the packaged simulator in a browser, and installs, checks and uninstalls the package. A run started by hand on `main` keeps the verified installer as a workflow artifact for 90 days.
 
+The job runs fewer steps when the changed files allow it. A pull request that changes only Markdown files and the images in `docs/screenshots/` gets the author and message check and `tools/check-repository.py`, without the tests or the installer. `docs/API.md` is an exception, because a test reads it. The installer steps are skipped when every changed file is a test, documentation, an issue or pull request template, or `.github/dependabot.yml`. A run started by hand runs every step.
+
 The `Native client (macos-15)` and `Native client (ubuntu-24.04)` jobs build the desktop check program and run it against the simulator, package the client for x64 and arm64, check both archives, and open the packaged client against a local simulator.
 
 ## Toolchain
