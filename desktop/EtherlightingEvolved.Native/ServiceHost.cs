@@ -167,22 +167,14 @@ public sealed class ServiceHost
     /// <summary>
     /// Asks the gateway to close the workspace, which returns the switch lighting, and waits for the service to
     /// exit. True only when that is confirmed. Concurrent callers share one close request.
-    /// <para>Without <paramref name="force"/> an unconfirmed close leaves the service running, so the user can try
-    /// again. With it (a second Quit, the installer, Windows sign-out) the gateway first gets its own cleanup
-    /// attempts after its input closes, and is ended only if it still has not exited; the unconfirmed exit is then
-    /// recorded so the next start recovers the lighting.</para>
+    /// <para>When the close is not confirmed, for example because the switch is unreachable, the service is ended
+    /// anyway and the unconfirmed exit is recorded, so the next start recovers the lighting.</para>
     /// </summary>
-    public async Task<bool> StopAsync(bool force = true)
+    public async Task<bool> StopAsync()
     {
         Task<bool> close;
         lock (stopLock) close = stopping ??= Task.Run(CloseAsync);
         if (await close.ConfigureAwait(false)) return true;
-        if (!force)
-        {
-            // Let a later request ask the gateway again.
-            lock (stopLock) if (stopping == close) stopping = null;
-            return false;
-        }
         Task<bool> ending;
         lock (stopLock) ending = forcing ??= Task.Run(EndAsync);
         return await ending.ConfigureAwait(false);
@@ -243,13 +235,16 @@ public sealed class ServiceHost
     {
         var running = process;
         if (running is null) return true;
-        // Closing the gateway's input starts its own cleanup: up to four attempts five seconds apart.
-        try { running.StandardInput.Close(); } catch (Exception) { }
+        // "exit" tells the gateway that this close was already tried. It makes no further attempts: it closes
+        // private and LAN access, tells the engine to quit and exits within ten seconds. Closing its input without
+        // "exit" would start the cleanup it runs after a desktop crash, four attempts five seconds apart.
         try
         {
-            await running.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-            if (running.ExitCode == 0) return true;
+            await running.StandardInput.WriteLineAsync("exit").ConfigureAwait(false);
+            running.StandardInput.Close();
         }
+        catch (Exception) { }
+        try { await running.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false); }
         catch (Exception) { }
         Kill();
         if (Address is not null) Locations.RecordUnconfirmedExit(dataDirectory);

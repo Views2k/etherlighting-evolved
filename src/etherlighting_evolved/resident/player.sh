@@ -1,6 +1,17 @@
 #!/bin/sh
 # Runs in the private scene directory on the switch RAM filesystem.
 umask 077
+# BEGIN PORT LAYOUT
+port_count=10
+optical_ports='9 10'
+optical_mask() {
+    case "$1" in
+        9) printf '%s' '0 100';;
+        10) printf '%s' '0 200';;
+        *) return 1;;
+    esac
+}
+# END PORT LAYOUT
 mark() { printf '%s\n' "$1" > status.new && mv -f status.new status; }
 # BusyBox on this firmware supports whole-second sleeps. Count every LED call,
 # including optical acquisition, and reduce the budget when CPU headroom is low.
@@ -18,13 +29,13 @@ set_led() {
 }
 pwm() { set_led "{\"port_pwm\":\"$1 $2 $3 $4 0\"}"; }
 optical() {
-    case "$1" in 9) mask=100;; 10) mask=200;; *) return 1;; esac
-    set_led "{\"mcu_mode\":\"soc_port_map steady 0 $mask\"}"
+    mask=$(optical_mask "$1") || return 1
+    set_led "{\"mcu_mode\":\"soc_port_map steady $mask\"}"
 }
 prepare() {
     set_led '{"behavior":"steady"}' || return 1
-    for p in 9 10; do
-        if { if [ -f scene.active ]; then sed -n '2,11p' scene.active; else cat config; fi; } |
+    for p in $optical_ports; do
+        if { if [ -f scene.active ]; then awk -v n="$port_count" 'NR>1 && NR<=n+1' scene.active; else cat config; fi; } |
             awk -v p="$p" '$1==p && $3>0 {found=1} END{exit !found}'; then
             [ ! -e stop ] && pwm "$p" 0 0 0 && optical "$p" || return 1
         fi
@@ -77,7 +88,7 @@ while [ ! -e stop ]; do
     read -r stamp unused < /proc/uptime || break
     frame=$(awk -v now="$stamp" -v start="$start" -v count="$count" 'BEGIN{print int((now-start)*4)%count}')
     if [ "$reactive" = 1 ] && ! timeout -t 3 swctrl port show > ports; then mark retrying; sleep 3; continue; fi
-    if ! awk -v stamp="$stamp" -v frame="$frame" -f frames.awk config palette previous ports > output; then
+    if ! awk -v port_count="$port_count" -v stamp="$stamp" -v frame="$frame" -f frames.awk config palette previous ports > output; then
         mark retrying; sleep 3; continue
     fi
     mv -f next previous || break
@@ -85,8 +96,7 @@ while [ ! -e stop ]; do
     while read -r port red green blue; do
         [ ! -e stop ] || break
         if ! pwm "$port" "$red" "$green" "$blue"; then ok=0; break; fi
-        # Each write waits for the MCU acknowledgement. The frame delay bounds
-        # traffic to ten per-port updates per second on this ten-port profile.
+        # The command budget includes every selected physical connector.
     done < output
     [ ! -e stop ] || break
     if [ "$ok" = 1 ]; then mark playing; sleep 1; else mark retrying; initialized=0; sleep 3; fi

@@ -38,6 +38,14 @@ from .transport import (
     TransportError,
 )
 
+
+class LightingCapabilityError(OutputOwnershipError):
+    """The switch answered without the lighting capabilities that EE's owned output was recorded with.
+
+    A switch that is still starting answers this way too, so the engine retries it for a while after a lost connection.
+    """
+
+
 WRITE_FAILED = "__EE_LED_WRITE_FAILED__"
 MCU_SCHEMA_EXIT = "__EE_MCU_SCHEMA_EXIT__"
 MCU_SCHEMA_COMMAND = (
@@ -358,7 +366,7 @@ class EtherlightSwitch:
             if (not info.get("port_rgb") or self.sfp_ports != old_sfp_ports
                     or self.hardware_profile is not old_profile or self.num_ports != old_copper_count
                     or not self.native_breathing or (sfp and not self.scoped_sfp)):
-                raise OutputOwnershipError("The switch lighting capabilities changed. Keep output stopped.")
+                raise LightingCapabilityError("The switch lighting capabilities changed. Keep output stopped.")
             generation = self.transport.lighting_generation
             if generation is None:
                 raise OutputOwnershipError("The lighting connection could not be verified.")
@@ -430,15 +438,20 @@ class EtherlightSwitch:
                     digest = (await self.transport.run(RUNNING_DAEMON_HASH, timeout=5)).strip()
                 except TransportError:
                     digest = ""
+                daemon_match = re.fullmatch(r"([0-9a-f]{64})\s+/proc/[1-9][0-9]*/exe", digest)
+                firmware_pairs = profile.firmware_pairs
                 if (generation is not None and generation is self.transport.lighting_generation
-                        and re.fullmatch(profile.daemon_sha256 + r"\s+/proc/[1-9][0-9]*/exe", digest)):
+                        and daemon_match is not None
+                        and any(pair[0] == daemon_match[1] for pair in firmware_pairs)):
                     if self.transport.behavior_supported:
                         try:
                             firmware = (await self.transport.run(PORT_FIRMWARE_HASH_COMMAND, timeout=5)).strip()
                         except TransportError:
                             firmware = ""
-                        if (generation is self.transport.lighting_generation and re.fullmatch(
-                                profile.mcu_sha256 + r"\s+/usr/share/firmware/port_led_fw\.bin", firmware)):
+                        firmware_match = re.fullmatch(
+                            r"([0-9a-f]{64})\s+/usr/share/firmware/port_led_fw\.bin", firmware)
+                        if (generation is self.transport.lighting_generation and firmware_match is not None
+                                and (daemon_match[1], firmware_match[1]) in firmware_pairs):
                             self.transport.configure_lighting_profile(profile)
                             if self.transport.sfp_mode_supported:
                                 self.sfp_ports = profile.optical_ports

@@ -66,6 +66,14 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     if(live&&result.route==='unconfirmed')diagnostics.record('private_route_cleanup_unconfirmed');
   }
   function stop(){workspaceClosing=true;void closePrivate().catch(()=>{});server.close();child.stdin.end('quit\n');}
+  // For a desktop that quits after a close that was not confirmed: no further release is attempted. The engine is told
+  // to quit, private and LAN access close, and the engine's ownership record lets the next start recover the lighting.
+  async function abandon(){
+    workspaceClosing=true;privateRetry.stop();server.close();
+    const engineGone=child.exitCode!==null||child.signalCode!=null?Promise.resolve():new Promise(resolve=>child.once('exit',resolve));
+    try{if(!child.stdin.writableEnded)child.stdin.end('quit\n');}catch{}
+    await Promise.allSettled([closePrivate(),engineGone]);
+  }
   // The engine never receives the administration key or the browser's cookies.
   function engineHeaders(req){
     const headers={...req.headers,host:`127.0.0.1:${backendPort}`,authorization:`Bearer ${token}`};
@@ -220,7 +228,7 @@ export function createWorkspaceServer({root,port,live,backendPort,token,child,di
     });
     upstream.on('error',()=>socket.destroy()); upstream.on('response',()=>socket.destroy()); socket.once('close',()=>upstream.destroy()); upstream.end();
   });
-  return {server,privateRetry,shutDown,readmit,stop,engineExited,closePrivate};
+  return {server,privateRetry,shutDown,readmit,stop,abandon,engineExited,closePrivate};
 }
 
 // The desktop app holds the key and requests its own links. A source run has no other way to give a browser access.
@@ -281,7 +289,10 @@ export async function startWorkspace() {
     diagnostics.record('parent_cleanup_exhausted',{attempts});
     workspace.readmit();
     whenWorkspaceGone(process.stdin,child,()=>finishAfter(workspace.closePrivate,10000,()=>process.exit(1)));
-  }});
+  },exit:()=>finishAfter(workspace.abandon,10000,()=>{
+    if(child.exitCode===null&&child.signalCode==null)child.kill();
+    process.exit(1);
+  })});
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,workspace.stop);
   server.listen(port,'127.0.0.1',()=>{
     for(const line of startupLines({port,desktopHost:process.env.EE_DESKTOP_HOST,admin}))console.log(line);

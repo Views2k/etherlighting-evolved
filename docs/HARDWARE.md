@@ -5,7 +5,10 @@ and system ID, the exact running lighting-daemon hash, the corresponding MCU ima
 method schema on the current SSH lighting connection. A different firmware build requires another review.
 `eectl probe` performs read-only discovery and returns success only when this output gate passes.
 
-## Firmware coverage in 0.4.10
+The [current-lineup qualification record](HARDWARE-QUALIFICATION.md) tracks the November 2026 release
+inventory, firmware evidence, separate playback qualification and remaining public-launch gates.
+
+## Reviewed firmware coverage
 
 The following profiles have been traced through the official firmware's board dispatch, per-port RGB16
 parser, MCU output mapping, native fade code, and scoped optical ownership operations. Offline fixtures
@@ -17,15 +20,15 @@ the reviewed command path; physical appearance and sustained load on additional 
 | Pro XG 8 PoE | 1–8 | 9–10 | USWED72 / 7.5.15+17146 |
 | Pro XG 10 PoE | 1–10 | 11–12 | USWED72 / 7.5.15+17146 |
 | Pro HD 24, Pro HD 24 PoE | 1–24 | 25–28 | USWED72 / 7.5.15+17146 |
-| Pro XG 24, Pro XG 24 PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146 |
-| Pro XG 48, Pro XG 48 PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146 |
-| Pro XG Aggregation | — | 1–32 | USWED42 / 7.5.15+17146 |
-| ECS-24-PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146 |
-| ECS-48-PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146 |
+| Pro XG 24, Pro XG 24 PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146, 7.6.11+17272 |
+| Pro XG 48, Pro XG 48 PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146, 7.6.11+17272 |
+| Pro XG Aggregation | — | 1–32 | USWED42 / 7.5.15+17146, 7.6.11+17272 |
+| ECS-24-PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146, 7.6.11+17272 |
+| ECS-48-PoE | 1–48 | 49–52 | USWED42 / 7.5.15+17146, 7.6.11+17272 |
 | ECS-24S, ECS-24S-PoE | 1–24 | 25–28 | USWF004 / 7.4.119+17363 |
 | ECS-48S, ECS-48S-PoE | 1–48 | 49–52 | USWF004 / 7.4.119+17363 |
-| EAV-XG-24-PoE | 1–24 | 25–28 | USWF001 / 7.5.15+17146 |
-| EAV-Fiber | — | 1–22 | USWF001 / 7.5.15+17146 |
+| EAV-XG-24-PoE | 1–24 | 25–28 | USWF001 / 7.5.15+17146, 7.6.11+17272 |
+| EAV-Fiber | — | 1–22 | USWF001 / 7.5.15+17146, 7.6.11+17272 |
 
 The Pro XG 8 PoE has been tested on hardware for its copper ports and both SFP indicators. The other
 profiles are firmware-qualified candidates that have not been tested on a physical switch. Stacking ports and extra internal MCU records are excluded from output.
