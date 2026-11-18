@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
+
+This release fixes reconnecting after a switch restart and closing EE from the tray, and accepts the current firmware on more models.
 
 - EE reconnects after a switch restart on its own. It used to stop after five attempts within about a minute, before most switches finish restarting, and it waited for Reconnect switch when the connection dropped during an animation. It now retries for as long as it runs, with delays that grow to one minute. When the connection dropped before EE could confirm the switch lighting, EE checks and recovers that lighting itself once the switch answers, and resumes it only if it was running. For 10 minutes after a lost connection, a switch that answers before its lighting is ready is retried as well. A rejected login or SSH key still stops the attempts and asks you to reconnect.
 - Quit closes EE even when it cannot confirm that the switch lighting was returned, for example while the switch restarts. The window closes at once, the tray icon goes away when the service has stopped, and the next start recovers the lighting. Before, EE stayed open and asked you to choose Quit again, and the second Quit took up to 25 more seconds.
 - The lighting player that a switch runs from its memory takes its port layout from the switch's hardware profile, and EE now checks both the player and its renderer before reusing a running player. The first connection after the update replaces a running player once and keeps its saved scene. Switch playback is still available only on the USW-Pro-XG-8-PoE.
+- EE also accepts UniFi switch firmware 7.6.11+17272 on the Pro XG 24, Pro XG 24 PoE, Pro XG 48, Pro XG 48 PoE, Pro XG Aggregation, ECS-24-PoE, ECS-48-PoE, EAV-XG-24-PoE and EAV-Fiber, in addition to 7.5.15+17146. Like the other models besides the Pro XG 8 PoE, these are qualified from their firmware and have not been tested on a physical switch. `docs/HARDWARE-QUALIFICATION.md` tracks the qualification of every current Etherlighting model.
 
 ## 0.6.0
 
