@@ -1,20 +1,77 @@
 name: EE Release
 
-# A pushed version tag (v<major>.<minor>.<patch>) builds the Windows installer and the macOS and Linux client
-# archives and attaches them to a draft GitHub Release. The owner reviews and publishes the draft.
+# When main reaches a version that has no v<major>.<minor>.<patch> tag yet, this workflow tags that commit, builds the
+# Windows installer and the macOS and Linux client archives, and publishes them as a GitHub Release whose text is the
+# version's section of CHANGELOG.md. Before publishing it downloads the files from the draft release and checks each
+# one against SHA256SUMS, its build provenance attestation and package-verification.json. A version tag pushed by
+# hand builds the same draft release without publishing it, for the owner to review.
 on:
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions: {}
 
+# One release run at a time, so two pushes to main cannot tag the same version.
 concurrency:
-  group: ee-release-${{ github.ref }}
+  group: ee-release
   cancel-in-progress: false
 
 jobs:
+  version:
+    name: Choose the release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.choose.outputs.tag }}
+      publish: ${{ steps.choose.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version-file: .python-version
+      # A tag created with the workflow token starts no other workflow run, so this run builds the release itself.
+      - name: Tag a new version on main
+        id: choose
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(python -c "import pathlib, runpy; print(runpy.run_path('tools/check-repository.py')['check_versions'](pathlib.Path('.')))")
+          tag="v$version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+              echo "::error::The tag $GITHUB_REF_NAME does not match version $version."
+              exit 1
+            fi
+            echo "The tag was pushed by hand, so the release stays a draft."
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --silent 2>/dev/null; then
+            echo "Version $version already has its tag, so there is nothing to release."
+            exit 0
+          fi
+          if ! grep -qx "## $version" CHANGELOG.md; then
+            echo "::error::Version $version has no tag and no section in CHANGELOG.md. Run tools/set-version.py to release it."
+            exit 1
+          fi
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$tag" -f message="Etherlighting Evolved $version" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$object" --silent
+          echo "Tagged $GITHUB_SHA as $tag."
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
   windows:
     name: Windows installer
+    needs: version
+    if: needs.version.outputs.tag != ''
     runs-on: windows-2025
     timeout-minutes: 45
     permissions:
@@ -37,10 +94,12 @@ jobs:
         with:
           global-json-file: global.json
       - name: Check that the tag names the application version
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           $version = python -c "import pathlib, runpy; print(runpy.run_path('tools/check-repository.py')['check_versions'](pathlib.Path('.')))"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "The tag $env:GITHUB_REF_NAME does not match version $version." }
+          if ("v$version" -ne $env:RELEASE_TAG) { throw "The tag $env:RELEASE_TAG does not match version $version." }
       - name: Install pinned dependencies
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
@@ -71,6 +130,8 @@ jobs:
 
   clients:
     name: Desktop client (${{ matrix.runner }})
+    needs: version
+    if: needs.version.outputs.tag != ''
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -114,16 +175,23 @@ jobs:
             outputs/native/EtherlightingEvolved-*-osx-*.zip
             outputs/native/EtherlightingEvolved-*-linux-*.tar.gz
 
-  draft:
-    name: Draft release
-    needs: [windows, clients]
+  release:
+    name: Release
+    needs: [version, windows, clients]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
       id-token: write
       attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRIVATE: ${{ github.event.repository.private }}
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
@@ -137,16 +205,52 @@ jobs:
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: release/EtherlightingEvolved-*
+      - name: Write the release text from the changelog
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          # The section's lines without the blank lines around them.
+          awk -v heading="## $version" '$0 == heading {found = 1; next} found && /^## / {exit} found {print}' CHANGELOG.md |
+            sed -e '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no text for $version."
+            exit 1
+          fi
+          footer="Built from $GITHUB_SHA. SHA256SUMS lists the checksum of each file."
+          if [[ "$PRIVATE" != true ]]; then
+            footer+=" Check a download's build provenance with: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+          fi
+          footer+=" The Windows installer is not code-signed, so Windows SmartScreen may warn before it runs."
+          printf '\n%s\n' "$footer" >> notes.md
       - name: Create the draft release
         working-directory: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PRIVATE: ${{ github.event.repository.private }}
         run: |
-          notes="Built from $GITHUB_SHA. SHA256SUMS lists the checksum of each file."
-          if [[ "$PRIVATE" != true ]]; then
-            notes+=" Check a download's build provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
-          fi
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "Etherlighting Evolved ${GITHUB_REF_NAME#v}" --notes "$notes" \
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Etherlighting Evolved ${RELEASE_TAG#v}" --notes-file ../notes.md \
             EtherlightingEvolved-* package-verification.json SHA256SUMS
+      - name: Check the files of the draft release
+        if: needs.version.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          mkdir check
+          cd check
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          sha256sum --check --strict SHA256SUMS
+          listed=$(sed -e 's/^[0-9a-f]\{64\} [ *]//' SHA256SUMS | sort)
+          present=$(ls EtherlightingEvolved-* | sort)
+          if [[ "$listed" != "$present" ]]; then
+            echo "::error::SHA256SUMS and the release files differ."
+            exit 1
+          fi
+          jq -e --arg version "${RELEASE_TAG#v}" --arg commit "$GITHUB_SHA" \
+            '.passed == true and .version == $version and .git_revision == $commit and .working_tree_dirty == false' \
+            package-verification.json > /dev/null
+          if [[ "$PRIVATE" != true ]]; then
+            for file in EtherlightingEvolved-*; do
+              gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" --source-digest "$GITHUB_SHA" > /dev/null
+              echo "Verified $file."
+            done
+          fi
+      - name: Publish the release
+        if: needs.version.outputs.publish == 'true'
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

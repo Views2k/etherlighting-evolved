@@ -6,7 +6,7 @@ Follow [WORKFLOW.md](WORKFLOW.md) for branches, pull request checks and releases
 
 ## Existing tools
 
-- Node.js 22 or newer to run from source. Builds and CI use the version in `.node-version` (24.18.0). The JavaScript project has no package dependencies.
+- Node.js 22 or newer to run from source. Builds and CI use the version in `.node-version`. The JavaScript project has no package dependencies.
 - Python 3.14 (`.python-version`) with the project dependencies in `pyproject.toml`.
 - The `dev` Python extras for tests and linting.
 - The .NET 10 SDK (`global.json`) and the packages pinned by the desktop projects’ lock files. EE Quality restores the check project with `dotnet restore desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Native.Check.csproj --locked-mode`.

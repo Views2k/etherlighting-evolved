@@ -180,7 +180,7 @@ Report security vulnerabilities privately as described in [SECURITY.md](SECURITY
 
 ## Build from source
 
-Builds use Python 3.14 (`.python-version`), Node.js 24.18.0 (`.node-version`; running from source needs Node.js 22 or later), the .NET 10 SDK (`global.json`) and, for the installer, Inno Setup 6.7. To try the simulator from a Windows checkout, with Python 3.14 and Node.js on the path:
+Builds use Python 3.14 (`.python-version`), the Node.js 24 release in `.node-version` (running from source needs Node.js 22 or later), the .NET 10 SDK (`global.json`) and, for the installer, Inno Setup 6.7. To try the simulator from a Windows checkout, with Python 3.14 and Node.js on the path:
 
 [WINDOWS POWERSHELL]
 
