@@ -2,9 +2,10 @@
 
 ## 0.6.2
 
-This release updates the Node.js runtime in the Windows app. Nothing else changes.
+This release updates the Node.js runtime in the Windows app and FastAPI in the lighting service. EE behaves as in 0.6.1.
 
 - The Windows app bundles Node.js 24.22.3 instead of 24.18.0. It includes the three Node.js security releases published since 24.18.0. Node.js runs EE's local gateway, including LAN access.
+- The lighting service uses FastAPI 0.163.0 instead of 0.162.7.
 
 ## 0.6.1
 
