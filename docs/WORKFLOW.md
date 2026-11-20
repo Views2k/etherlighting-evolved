@@ -68,9 +68,10 @@ Dependabot (`.github/dependabot.yml`) opens weekly update pull requests for the 
 ## Releases
 
 1. On a branch, run `python tools/set-version.py <major.minor.patch>`. It renames `## Unreleased` in `CHANGELOG.md` to the version and writes the version into `pyproject.toml`, `package.json`, `src/etherlighting_evolved/__init__.py`, the desktop project and `packaging/installer.iss`. Merge it through a pull request.
-2. Tag the merge commit on `main` as `v<major.minor.patch>` and push the tag.
-3. The EE Release workflow (`.github/workflows/release.yml`) checks that the tag names the application version, builds the installer and the macOS and Linux clients for x64 and arm64, writes `SHA256SUMS`, adds build provenance attestations and creates a draft GitHub Release with these files and `package-verification.json`.
-4. Review the draft and its files, then publish it by hand.
+2. The EE Release workflow (`.github/workflows/release.yml`) runs on every push to `main`. When the application version has no `v<major.minor.patch>` tag yet, it tags the pushed commit, builds the installer and the macOS and Linux clients for x64 and arm64, writes `SHA256SUMS`, adds build provenance attestations and creates a draft GitHub Release with these files and `package-verification.json`. The release text is the version's section of `CHANGELOG.md`, followed by the commit it was built from and how to check a download. A version that already has its tag releases nothing, and an untagged version without a `CHANGELOG.md` section fails the run.
+3. The workflow then downloads the files from the draft and checks them against `SHA256SUMS`, checks that `package-verification.json` passed for that version and commit, and verifies each file's attestation for that commit. Only then does it publish the release as the latest one.
+
+These releases are attested from `refs/heads/main`, so check them with `--source-digest <commit>` rather than `--source-ref refs/tags/<tag>`. A version tag pushed by hand runs the same build but leaves the release as a draft to review and publish by hand.
 
 The Windows installer has no Authenticode signature yet. The macOS clients have an ad hoc signature but no Developer ID signature or notarization. The [README](../README.md#verify-a-download) describes how to verify a download.
 
