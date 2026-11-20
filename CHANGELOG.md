@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
+
+This release updates the Node.js runtime in the Windows app. Nothing else changes.
 
 - The Windows app bundles Node.js 24.22.3 instead of 24.18.0. It includes the three Node.js security releases published since 24.18.0. Node.js runs EE's local gateway, including LAN access.
 
