@@ -341,6 +341,8 @@ public sealed class AppShell : UserControl
         if (unavailable) return ("Controller status unavailable", "is-disconnected");
         if (controller.Bool("connected") == true)
             return controller.Truthy("stale") ? ("Controller connected · Waiting for fresh data", "waiting") : ("Controller connected", "online");
+        // EE retries a controller that does not answer on its own, so that is not an error for the user to fix.
+        if (controller.Str("reconnect_state") == "retrying") return ("Controller reconnecting…", "waiting");
         return controller.Truthy("error") ? ("Controller connection needs attention", "error") : ("Controller not connected", "is-disconnected");
     }
 

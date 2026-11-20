@@ -43,6 +43,8 @@ class ControllerConsoleDiscovery(BaseModel):
 
 
 class ControllerIntegration:
+    # Waits after the first transient failures; later failures repeat the last one. A controller that restarts or
+    # updates can be away for several minutes, so these errors are retried for as long as EE runs.
     RETRY_DELAYS = (5, 15, 60)
     TRANSIENT_ERRORS = {"unreachable", "rate_limited", "controller_error"}
 
@@ -125,13 +127,13 @@ class ControllerIntegration:
     def _failure(self, error):
         self._failures += 1
         self._saved_error = {"code": error["code"], "message": error["message"]}
-        transient = error["code"] in self.TRANSIENT_ERRORS
-        self._blocked = not transient or self._failures > len(self.RETRY_DELAYS)
+        self._blocked = error["code"] not in self.TRANSIENT_ERRORS
         if not self._blocked:
             retry_after = error.get("retry_after_seconds", 0)
             if not isinstance(retry_after, int) or isinstance(retry_after, bool):
                 retry_after = 0
-            self._next_due = self._clock() + max(self.RETRY_DELAYS[self._failures - 1], min(3600, retry_after))
+            delay = self.RETRY_DELAYS[min(self._failures, len(self.RETRY_DELAYS)) - 1]
+            self._next_due = self._clock() + max(delay, min(3600, retry_after))
 
     async def tick(self):
         async with self._lock:

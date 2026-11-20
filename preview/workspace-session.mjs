@@ -31,6 +31,8 @@ export function controllerConnectionStatus(controller, unavailable = false) {
       ? {label:'Controller connected · Waiting for fresh data', tone:'waiting'}
       : {label:'Controller connected', tone:'online'};
   }
+  // EE retries a controller that does not answer on its own, so that is not an error for the user to fix.
+  if (controller?.reconnect_state === 'retrying') return {label:'Controller reconnecting…', tone:'waiting'};
   return controller?.error
     ? {label:'Controller connection needs attention', tone:'error'}
     : {label:'Controller not connected', tone:'is-disconnected'};
