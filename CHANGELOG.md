@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.3
 
 - EE reconnects to UniFi Network on its own after the controller restarts or stops answering for a while. It used to try three more times within about 80 seconds and then wait for you to connect the controller again. It now tries after 5 and 15 seconds and then every minute, for as long as EE runs, and the status bar shows Controller reconnecting… meanwhile. A rejected login, a changed certificate or a missing site or switch still stops the attempts and asks you to reconnect.
 
