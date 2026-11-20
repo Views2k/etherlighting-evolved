@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The Windows app bundles Node.js 24.22.3 instead of 24.18.0. It includes the three Node.js security releases published since 24.18.0. Node.js runs EE's local gateway, including LAN access.
+
 ## 0.6.1
 
 This release fixes reconnecting after a switch restart and closing EE from the tray, and accepts the current firmware on more models.

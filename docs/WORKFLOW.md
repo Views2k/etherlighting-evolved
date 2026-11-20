@@ -53,13 +53,13 @@ The `Native client (macos-15)` and `Native client (ubuntu-24.04)` jobs build the
 | File | What it pins |
 | --- | --- |
 | `.python-version` | Python 3.14, used by CI and bundled in the Windows package |
-| `.node-version` | Node.js 24.18.0, used by CI and bundled in the Windows package |
+| `.node-version` | The Node.js 24 release used by CI and bundled in the Windows package |
 | `global.json` | The .NET 10 SDK (10.0.100 or a later feature band) |
 | `requirements-ci.txt` | Python packages with the SHA-256 hashes of their wheels for the CI runners |
 | `desktop/*/packages.lock.json` | The desktop NuGet packages, restored with `--locked-mode` |
 | `tools/ci-inno.ps1` | Inno Setup 6.7.4 with its SHA-256 hash and publisher; `packaging/installer.iss` accepts any 6.7 release |
 
-After changing a pin in `requirements-ci.txt`, run `python tools/hash-requirements.py` to write the new hashes from PyPI. The Windows package bundles the Python in `.python-version`. Move it to the next minor version when the current one stops receiving binary releases from python.org, then regenerate the hashes.
+After changing a pin in `requirements-ci.txt`, run `python tools/hash-requirements.py` to write the new hashes from PyPI. The Windows package bundles the Python in `.python-version`. Move it to the next minor version when the current one stops receiving binary releases from python.org, then regenerate the hashes. The Windows package also bundles the Node.js in `.node-version`, so move that file to the newest Node.js 24 release after each Node.js security release.
 
 Dependabot (`.github/dependabot.yml`) opens weekly update pull requests for the workflow actions, the Python packages and the NuGet packages. They fail the commit author check, so make each update again on your own branch. Dependabot does not update `.python-version`, `.node-version`, `global.json` or Inno Setup; check those by hand at each release.
 
