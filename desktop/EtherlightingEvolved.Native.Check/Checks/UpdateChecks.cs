@@ -17,6 +17,10 @@ namespace EtherlightingEvolved.Native.Check.Checks;
 internal static class UpdateChecks
 {
     const string Sums = Updates.Repository + "/releases/latest/download/SHA256SUMS";
+
+    // The newer release in these checks. The expected texts take it from here, because tools/check-repository.py
+    // accepts only the current version after "EE " in a source file.
+    const string Newer = "0.7.0";
     static readonly byte[] Installer = Encoding.UTF8.GetBytes("stand-in for the 0.7.0 installer");
 
     static string Hash(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
@@ -124,7 +128,7 @@ internal static class UpdateChecks
         await updates.Tick();
         var target = Path.Combine(rig.Data, "EtherlightingEvolved-Setup-0.7.0.exe");
         check(rig.GitHub.Requests.SequenceEqual([Sums, InstallerUrl("0.7.0")]) && updates.Stage == UpdateStage.Ready && File.Exists(target)
-              && rig.Installers.Length == 1 && rig.Started.Count == 0 && updates.Describe() == "EE 0.7.0 installs after 10 minutes without input.",
+              && rig.Installers.Length == 1 && rig.Started.Count == 0 && updates.Describe() == $"EE {Newer} installs after 10 minutes without input.",
             "updates: a newer release is downloaded and verified, then waits until the window is quiet");
 
         rig.Quiet = true;
@@ -142,13 +146,13 @@ internal static class UpdateChecks
         check(rig.Started.Count == 1, "updates: nothing more happens while setup runs");
 
         started.Exit.SetResult(5);
-        check(updates.Stage == UpdateStage.Failed && updates.Error == $"EE 0.7.0 did not install (setup exit code 5). The setup log is {log}."
+        check(updates.Stage == UpdateStage.Failed && updates.Error == $"EE {Newer} did not install (setup exit code 5). The setup log is {log}."
               && rig.State["attempt"] is null && rig.State.Str("failed.version") == "0.7.0" && !File.Exists(Path.Combine(rig.Data, "restart.json")),
             "updates: setup that ends while EE still runs installed nothing, and that is recorded");
 
         rig.Now += Updates.Interval;
         await updates.Tick();
-        check(updates.Stage == UpdateStage.Failed && updates.Error!.StartsWith("EE 0.7.0 could not be installed. EE tries again after ") && rig.Started.Count == 1
+        check(updates.Stage == UpdateStage.Failed && updates.Error!.StartsWith($"EE {Newer} could not be installed. EE tries again after ") && rig.Started.Count == 1
               && rig.GitHub.Requests.Count == 3,
             "updates: a release that did not install is not tried again within a day");
         rig.Now += Updates.RetryFailed;
@@ -167,7 +171,7 @@ internal static class UpdateChecks
         rig.Now += Updates.FirstCheck;
         await next.Tick();
         check(next.Stage == UpdateStage.Current && rig.GitHub.Requests.Count(url => url.EndsWith(".exe")) == 1
-              && next.Describe().StartsWith("EE was updated from 0.6.4 to 0.7.0. EE 0.7.0 is the latest version. Checked at "),
+              && next.Describe().StartsWith($"EE was updated from 0.6.4 to 0.7.0. EE {Newer} is the latest version. Checked at "),
             "updates: the same version is current and nothing is downloaded");
 
         // Placement only for a start by setup, within 30 minutes.
@@ -192,7 +196,7 @@ internal static class UpdateChecks
             new JsonObject { ["attempt"] = new JsonObject { ["version"] = "0.7.0", ["from"] = "0.6.4", ["at"] = failed.Now.ToString("o") } }.ToJsonString());
         var old = failed.Make();
         var (oldProblem, _) = old.Resume(afterUpdate: false);
-        check(oldProblem == $"EE 0.7.0 did not install. The setup log is in {failed.Data}." && old.Stage == UpdateStage.Failed && failed.State["attempt"] is null
+        check(oldProblem == $"EE {Newer} did not install. The setup log is in {failed.Data}." && old.Stage == UpdateStage.Failed && failed.State["attempt"] is null
               && failed.State.Str("failed.version") == "0.7.0",
             "updates: an older version started after an update records that the update did not install");
     }
@@ -204,7 +208,7 @@ internal static class UpdateChecks
         tampered.GitHub.Serve(InstallerUrl("0.7.0"), Encoding.UTF8.GetBytes("something else"));
         var updates = tampered.Make();
         await updates.CheckNow();
-        check(updates.Stage == UpdateStage.Failed && updates.Error == "Could not download EE 0.7.0. The downloaded installer does not match the release's SHA256SUMS."
+        check(updates.Stage == UpdateStage.Failed && updates.Error == $"Could not download EE {Newer}. The downloaded installer does not match the release's SHA256SUMS."
               && tampered.Installers.Length == 0 && tampered.State.Str("failed.version") == "0.7.0",
             "updates: an installer that does not match SHA256SUMS is deleted and not tried again for a day");
         tampered.Now += Updates.Interval;
@@ -216,7 +220,7 @@ internal static class UpdateChecks
         wrong.GitHub.Serve(InstallerUrl("0.7.0"), Installer);
         updates = wrong.Make();
         await updates.CheckNow();
-        check(updates.Stage == UpdateStage.Failed && updates.Error == "Could not download EE 0.7.0. The downloaded installer is not EE 0.7.0." && wrong.Installers.Length == 0,
+        check(updates.Stage == UpdateStage.Failed && updates.Error == $"Could not download EE {Newer}. The downloaded installer is not EE {Newer}." && wrong.Installers.Length == 0,
             "updates: an installer whose version information names another version is deleted");
 
         var large = new Rig(output);
@@ -283,7 +287,7 @@ internal static class UpdateChecks
         await updates.Tick();
         var silent = off.GitHub.Requests.Count == 0 && updates.Stage == UpdateStage.Off && updates.Describe() == "Automatic updates are off.";
         await updates.CheckNow();
-        var offered = updates.Stage == UpdateStage.Available && updates.Describe() == "EE 0.7.0 is available." && off.GitHub.Requests.Count == 1;
+        var offered = updates.Stage == UpdateStage.Available && updates.Describe() == $"EE {Newer} is available." && off.GitHub.Requests.Count == 1;
         await updates.InstallNow();
         check(silent && offered && off.Started.Count == 1 && off.GitHub.Requests.Count == 2,
             "updates: with automatic updates off nothing is checked; Check for updates offers the release and Install now installs it");
@@ -297,7 +301,7 @@ internal static class UpdateChecks
         await updates.Tick();
         await updates.Tick();
         var waiting = admin.Started.Count == 0 && updates.Stage == UpdateStage.Ready
-            && updates.Describe() == "EE 0.7.0 is ready. Installing it needs administrator approval.";
+            && updates.Describe() == $"EE {Newer} is ready. Installing it needs administrator approval.";
         await updates.InstallNow();
         check(updates.NeedsApproval && waiting && admin.Started.Count == 1,
             "updates: a copy installed for all users downloads the update and runs setup only on Install now");
@@ -309,7 +313,7 @@ internal static class UpdateChecks
         await updates.InstallNow();
         await updates.CheckNow();
         await updates.InstallNow();
-        check(updates.Stage == UpdateStage.Failed && updates.Error == "Could not start the EE 0.7.0 installer. Windows did not start the installer."
+        check(updates.Stage == UpdateStage.Failed && updates.Error == $"Could not start the EE {Newer} installer. Windows did not start the installer."
               && refused.State.Count == 0 && !File.Exists(Path.Combine(refused.Data, "restart.json")),
             "updates: setup that does not start leaves no attempt or placement behind");
     }
@@ -330,11 +334,11 @@ internal static class UpdateChecks
         Wait(updates.CheckNow());
         AvaloniaHeadlessPlatform.ForceRenderTimerTick();
         using (var frame = window.CaptureRenderedFrame()) frame?.Save(Path.Combine(output, "updates-panel.png"));
-        var ready = panel.StatusText == "EE 0.7.0 installs after 10 minutes without input." && panel.InstallButton.IsVisible
-            && panel.InstallButton.Content as string == "Install EE 0.7.0 now" && panel.CheckButton.IsEnabled;
+        var ready = panel.StatusText == $"EE {Newer} installs after 10 minutes without input." && panel.InstallButton.IsVisible
+            && panel.InstallButton.Content as string == $"Install EE {Newer} now" && panel.CheckButton.IsEnabled;
         panel.AutomaticBox.IsChecked = false;
         Dispatcher.UIThread.RunJobs();
-        var saved = Preferences.GetItem(Updates.AutomaticKey) == "false" && !updates.Automatic && panel.StatusText == "EE 0.7.0 is ready to install.";
+        var saved = Preferences.GetItem(Updates.AutomaticKey) == "false" && !updates.Automatic && panel.StatusText == $"EE {Newer} is ready to install.";
         panel.AutomaticBox.IsChecked = true;
         window.Close();
         check(before && ready && saved && updates.Automatic, "updates: Settings shows the update state, offers Install now and saves the automatic update setting");
