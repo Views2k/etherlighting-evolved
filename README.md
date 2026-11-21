@@ -105,6 +105,14 @@ gh attestation verify EtherlightingEvolved-Setup-<version>.exe --repo Views2k/et
 
 Run Setup. It asks whether to install EE for you only or for all users, and it can start EE when you sign in to Windows. Updating EE keeps your data and the Start with Windows setting.
 
+### Automatic updates
+
+EE installed by Setup on Windows updates itself. Two minutes after it starts and then every hour, it reads `SHA256SUMS` of the latest release on GitHub. When that release is newer, EE downloads its installer to `%LOCALAPPDATA%\Etherlighting Evolved\updates` and keeps it only if its SHA-256 checksum matches `SHA256SUMS` and its version information names that release. EE installs it once nobody has used the window for 10 minutes, no dialog is open and no change is being sent. Setup closes EE as Quit does, installs the new version and starts it with its window where it was, shown or in the notification area. Start with Windows stays as you set it.
+
+Settings → About shows what the updater is doing and has **Check for updates** and, once a newer release is found, **Install now**. Turn off **Install updates automatically** there to install releases yourself; EE then contacts GitHub only when you choose Check for updates. An installation for all users needs administrator approval for each update, so EE downloads the update and waits for Install now. An update that did not install is tried again a day later, and its setup log is in the updates folder.
+
+The automatic update checks the installer against `SHA256SUMS` but not against its build provenance attestation; [SECURITY.md](SECURITY.md#automatic-updates) describes what that covers. The macOS and Linux clients do not update themselves.
+
 ### macOS and Linux
 
 Extract the archive. On macOS, open `EtherlightingEvolved.app`. On Linux, run `./EtherlightingEvolved` in the extracted folder. Choose **Change workspace address** and enter the address shown under Tailscale private access or LAN access in Settings → Remote on the Windows computer. The [desktop guide](desktop/README.md) has the details, including LAN pairing and approving a tagged Tailscale device.
@@ -164,7 +172,7 @@ On Windows, EE keeps its data in two folders. The uninstaller removes the progra
 | Folder | Contents |
 | --- | --- |
 | `%USERPROFILE%\.etherlighting-evolved` | Saved switch and UniFi Network logins (encrypted with Windows DPAPI for your account), saved SSH host keys (`known_switches.json`), lighting, profiles, schedules, port names, the fan mode of each switch in `device-fans`, the switch playback record and the output ownership records in `output-ownership` |
-| `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`, and `workspace-keys.json` with the access keys from LAN pairing when the app was opened with `--url` and paired with another computer. `workspace` holds the Tailscale private access setting (`private-access.json`), approved Tailscale devices (`approved-device.json`), the LAN access setting and paired devices (`lan-access.json`) and `service-diagnostics.log`. `demo` holds the demo's data. |
+| `%LOCALAPPDATA%\Etherlighting Evolved` | Desktop app settings and `desktop.log`, and `workspace-keys.json` with the access keys from LAN pairing when the app was opened with `--url` and paired with another computer. `workspace` holds the Tailscale private access setting (`private-access.json`), approved Tailscale devices (`approved-device.json`), the LAN access setting and paired devices (`lan-access.json`) and `service-diagnostics.log`. `updates` holds a downloaded installer until it is installed, the newest setup log and the update records. `demo` holds the demo's data. |
 
 The macOS and Linux clients keep their settings, `desktop.log` and the access keys from LAN pairing (`workspace-keys.json`) in `~/Library/Application Support/Etherlighting Evolved` and `~/.config/etherlighting-evolved`. To remove a client, quit it and delete the app or its extracted folder and that data folder. If you turned on **Start at login** in its tray menu, turn it off first, or delete `~/Library/LaunchAgents/com.views2k.etherlighting-evolved.plist` on macOS or `~/.config/autostart/etherlighting-evolved.desktop` on Linux. On Linux, also delete the files that the [desktop guide](desktop/README.md#add-ee-to-the-linux-applications-menu) adds for the applications menu: `~/.local/bin/EtherlightingEvolved`, `~/.local/share/applications/etherlighting-evolved.desktop` and `~/.local/share/icons/hicolor/256x256/apps/etherlighting-evolved.png`.
 

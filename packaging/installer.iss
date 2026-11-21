@@ -2,7 +2,7 @@
 ; passes the application version with /DAppVersion=... The default below is kept equal to it by tools/set-version.py.
 
 #ifndef AppVersion
-  #define AppVersion "0.6.3"
+  #define AppVersion "0.7.0"
 #endif
 
 #ifndef AppSourceDir
@@ -92,13 +92,17 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --background"; Tasks: autostart
-; Removed only when someone chose so: on the tasks page or with /TASKS. A silent upgrade keeps the current setting,
+; Written and removed only when someone chose so: on the tasks page or with /TASKS. A silent upgrade, such as an
+; automatic update, would otherwise apply the tasks of the first install and keeps the current setting instead,
 ; which the app's notification area menu can also change.
+Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --background"; Tasks: autostart; Check: TasksChosen
 Root: HKCU; Subkey: "{#RunKey}"; ValueType: none; ValueName: "{#AppName}"; Flags: deletevalue; Tasks: not autostart; Check: TasksChosen
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Open lighting controls"; Flags: nowait postinstall skipifsilent
+; The app's automatic update runs setup silently with /EEUPDATE; the new version then opens its window where the
+; previous one had it.
+Filename: "{app}\{#AppExe}"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: StartedByUpdate
 
 [Code]
 const
@@ -118,6 +122,12 @@ end;
 function TasksChosen(): Boolean;
 begin
   Result := (not WizardSilent) or TasksOnCommandLine();
+end;
+
+{ The app's automatic update passes /EEUPDATE. }
+function StartedByUpdate(): Boolean;
+begin
+  Result := Pos(' /EEUPDATE', ' ' + Uppercase(GetCmdTail)) > 0;
 end;
 
 { Every earlier EE release has its program at this path, so a folder without it holds no EE files to replace. }

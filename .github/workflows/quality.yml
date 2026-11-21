@@ -142,6 +142,32 @@ jobs:
           if ($null -eq (Get-ItemProperty -LiteralPath $runKey).'Etherlighting Evolved') { throw 'Setup did not add the sign-in start entry.' }
           python tools/verify-package.py --app $target --node @(Get-Command node -CommandType Application)[0].Source --output outputs/candidate/installed-verification.json
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # The automatic update. The installed app must accept this installer's version information. The silent
+          # upgrade it runs, with the same arguments, must find the installation on its own, leave the sign-in
+          # start entry as the notification area menu set it, and start the new version, which must quit again.
+          dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --installer $setup[0].FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Remove-ItemProperty -LiteralPath $runKey -Name 'Etherlighting Evolved'
+          $updateLog = Join-Path $PWD 'outputs\candidate\update.log'
+          # Start-Process -Wait would also wait for the app that setup starts.
+          $update = Start-Process -FilePath $setup[0].FullName -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/SP-', '/EEUPDATE', "/LOG=$updateLog")
+          $null = $update.Handle
+          if (-not $update.WaitForExit(600000)) { throw 'The update did not finish within 10 minutes.' }
+          if ($update.ExitCode) { throw "The update exited with code $($update.ExitCode)." }
+          if ($null -ne (Get-ItemProperty -LiteralPath $runKey).'Etherlighting Evolved') { throw 'A silent update turned the sign-in start entry back on.' }
+          $app = Join-Path $target 'EtherlightingEvolved.exe'
+          $deadline = (Get-Date).AddSeconds(60)
+          do {
+            $started = @(Get-CimInstance Win32_Process -Filter "Name = 'EtherlightingEvolved.exe'" |
+              Where-Object { $_.ExecutablePath -eq $app -and $_.CommandLine -match '--after-update' })
+            if (-not $started.Count) { Start-Sleep -Seconds 1 }
+          } until ($started.Count -or (Get-Date) -gt $deadline)
+          if (-not $started.Count) { throw 'The update did not start the new version with --after-update.' }
+          $quit = Start-Process -FilePath $app -PassThru -ArgumentList '--quit'
+          $null = $quit.Handle
+          if (-not $quit.WaitForExit(240000)) { throw 'The updated app did not answer --quit within 4 minutes.' }
+          if ($quit.ExitCode) { throw "The updated app did not quit (code $($quit.ExitCode))." }
           $uninstall = Start-Process -FilePath (Join-Path $target 'unins000.exe') -PassThru -Wait -ArgumentList @(
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $PWD 'outputs\candidate\uninstall.log')")
           if ($uninstall.ExitCode) { throw "The uninstaller exited with code $($uninstall.ExitCode)." }

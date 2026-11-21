@@ -11,7 +11,7 @@
     <Company>Views2k</Company>
     <Authors>Views2k</Authors>
     <Description>Lighting controls for UniFi switches</Description>
-    <Version>0.6.3</Version>
+    <Version>0.7.0</Version>
     <ApplicationIcon>../../src/etherlighting_evolved/assets/ee.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>

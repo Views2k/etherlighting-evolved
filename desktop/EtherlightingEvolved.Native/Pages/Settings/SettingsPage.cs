@@ -90,6 +90,7 @@ public sealed class SettingsPage : Page
         var versions = new DetailsList();
         versions.Set([("App version", App.Version), ("Service version", Workspace.About.Str("version") ?? "Unknown")]);
         aboutBody.Children.Add(versions);
+        if (shell.Updates is { } updates) aboutBody.Children.Add(new UpdatesPanel(updates));
         aboutBody.Children.Add(SettingsKit.P(Workspace.Disclaimer, "muted"));
         aboutBody.Children.Add(SettingsKit.ActionButton("Open help", () => Shell.Navigate("Help"), "quiet"));
         aboutBody.Children.Add(SettingsKit.ActionButton("Releases", () => Connect.ConnectionUi.OpenLink(this, ReleasesUrl), "quiet"));

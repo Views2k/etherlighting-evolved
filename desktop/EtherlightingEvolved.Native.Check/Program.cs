@@ -1,5 +1,6 @@
 // Offscreen checks for the native window. Nothing here opens a window on screen.
 // Usage: EtherlightingEvolved.Native.Check [--output dir] [--service [--page-check Lighting|Effects|Automation|Profiles|Fans]]
+//        EtherlightingEvolved.Native.Check --installer EtherlightingEvolved-Setup-<version>.exe
 // --service starts the simulator from this source checkout and changes its lighting; it never contacts a switch.
 using Avalonia;
 using Avalonia.Headless;
@@ -10,6 +11,17 @@ string? Arg(string name)
 {
     var index = Array.IndexOf(args, name);
     return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+}
+
+// --installer FILE: the automatic update must accept the installer built from this checkout, so its version
+// information is read the way the installed app reads a download.
+if (Arg("--installer") is { } installer)
+{
+    var read = EtherlightingEvolved.Native.Core.Updates.ReadInstallerVersion(Path.GetFullPath(installer));
+    var accepted = read is not null && read == Version.Parse(App.Version);
+    Console.WriteLine(accepted ? $"pass  the automatic update accepts this installer as EE {read!.ToString(3)}"
+        : $"FAIL  the automatic update reads {read?.ToString(3) ?? "no EE version"} from this installer and expects {App.Version}");
+    return accepted ? 0 : 1;
 }
 
 var output = Path.GetFullPath(Arg("--output") ?? "native-check");
@@ -36,6 +48,7 @@ await AdminAccessChecks.Transport(Check);
 LanAccessChecks.Contracts(Check);
 await LanAccessChecks.Transport(Check);
 LanAccessChecks.KeyStore(Check);
+await UpdateChecks.Run(output, Check);
 if (args.Contains("--transport-check")) return failures.Count == 0 ? 0 : 1;
 
 ModelChecks.Run(Check);
@@ -53,6 +66,7 @@ PrivateAccessPanelChecks.Run(Check);
 RemoteAccessChecks.Contracts(Check);
 LanAccessChecks.Panel(Check);
 SpinnerChecks.Run(Check);
+UpdateChecks.Panel(output, Check);
 
 // Palettes read from the browser workspace's themes.css
 Check(EtherlightingEvolved.Native.Theme.ThemeTokens.Themes.Count == 12, "all 12 themes are listed");
