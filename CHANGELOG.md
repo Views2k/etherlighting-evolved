@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+This release updates packages in the lighting service. EE behaves as in 0.7.0. It is the first release that copies of 0.7.0 install on their own.
+
+- The lighting service uses FastAPI 0.165.0 instead of 0.163.0 and pydantic 2.14.4 instead of 2.14.3. PyYAML 6.0.4 and annotated-doc 0.0.7 come with them.
+
 ## 0.7.0
 
 - EE installed by Setup on Windows updates itself. It checks the latest GitHub release two minutes after it starts and then every hour, downloads a newer installer, and keeps it only if its SHA-256 matches the release's `SHA256SUMS` and its version information names that release. It installs the update once nobody has used the window for 10 minutes, then starts again with its window where it was. Settings → About shows the update state and has Check for updates, Install now and Install updates automatically, which is on by default. With it off, EE contacts GitHub only when you choose Check for updates. An installation for all users waits for Install now, because each update needs administrator approval. The macOS and Linux clients do not update themselves. SECURITY.md describes what the automatic update verifies.
