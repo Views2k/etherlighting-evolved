@@ -98,6 +98,9 @@ public sealed class AppShell : UserControl
     /// <summary>Opens this workspace in the default browser with administration access. Set only for the service this program started on Windows.</summary>
     public Func<Task>? OpenInBrowser { get; init; }
 
+    /// <summary>Automatic updates, for a copy installed by setup on Windows.</summary>
+    public Core.Updates? Updates { get; init; }
+
     internal async Task ChooseWorkspaceAddress()
     {
         if (OpenWorkspaceAddress is null || current is not null && !await current.CanLeave()) return;

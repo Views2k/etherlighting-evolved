@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- EE installed by Setup on Windows updates itself. It checks the latest GitHub release two minutes after it starts and then every hour, downloads a newer installer, and keeps it only if its SHA-256 matches the release's `SHA256SUMS` and its version information names that release. It installs the update once nobody has used the window for 10 minutes, then starts again with its window where it was. Settings → About shows the update state and has Check for updates, Install now and Install updates automatically, which is on by default. With it off, EE contacts GitHub only when you choose Check for updates. An installation for all users waits for Install now, because each update needs administrator approval. The macOS and Linux clients do not update themselves. SECURITY.md describes what the automatic update verifies.
+- A silent upgrade no longer turns Start with Windows back on. Setup used to apply the choice of the first installation again, even after you had turned the setting off in the notification area menu. It now changes the setting only when you choose it on the tasks page or with `/TASKS`.
+
 ## 0.6.3
 
 - EE reconnects to UniFi Network on its own after the controller restarts or stops answering for a while. It used to try three more times within about 80 seconds and then wait for you to connect the controller again. It now tries after 5 and 15 seconds and then every minute, for as long as EE runs, and the status bar shows Controller reconnecting… meanwhile. A rejected login, a changed certificate or a missing site or switch still stops the attempts and asks you to reconnect.

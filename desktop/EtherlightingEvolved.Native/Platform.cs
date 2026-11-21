@@ -234,6 +234,78 @@ public static class Locations
     }
 }
 
+/// <summary>
+/// The window's rectangle in screen pixels, read and set through Windows. A window takes the scaling of the screen
+/// that holds most of it, and a new window starts with the main screen's scaling, so a size given in window units
+/// comes out wrong on a screen with another scaling: 1280 × 400 on a rack screen at 100% became 2560 × 800 when the
+/// main screen runs at 200%. Setting the pixel rectangle moves the window onto its screen, where it takes that
+/// screen's scaling, and its size in window units is then set to match the rectangle at that scaling.
+/// </summary>
+public static class WindowBounds
+{
+    [StructLayout(LayoutKind.Sequential)]
+    struct Rect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool GetWindowRect(IntPtr window, out Rect rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+
+    const uint NoZOrder = 0x0004, NoActivate = 0x0010;
+
+    static IntPtr Handle(Avalonia.Controls.Window window) =>
+        OperatingSystem.IsWindows() && window.TryGetPlatformHandle()?.Handle is { } handle ? handle : IntPtr.Zero;
+
+    public static Avalonia.PixelRect? Read(Avalonia.Controls.Window window)
+    {
+        if (Handle(window) is var handle && handle != IntPtr.Zero)
+            return GetWindowRect(handle, out var rect) ? new Avalonia.PixelRect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top) : null;
+        return new Avalonia.PixelRect(window.Position, Avalonia.PixelSize.FromSize(window.ClientSize, window.RenderScaling));
+    }
+
+    /// <summary>
+    /// Moves and sizes a window that is not maximized. The smallest window size is lifted meanwhile, because at a
+    /// higher scaling it can exceed the saved size and leave most of the window on a neighboring screen.
+    /// </summary>
+    public static void Apply(Avalonia.Controls.Window window, Avalonia.PixelRect bounds)
+    {
+        window.Position = bounds.Position;
+        var handle = Handle(window);
+        if (handle == IntPtr.Zero)
+        {
+            window.Width = bounds.Width / window.RenderScaling;
+            window.Height = bounds.Height / window.RenderScaling;
+            return;
+        }
+        var (minWidth, minHeight) = (window.MinWidth, window.MinHeight);
+        window.MinWidth = window.MinHeight = 0;
+        try
+        {
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                if (GetWindowRect(handle, out var now) && now.Left == bounds.X && now.Top == bounds.Y && now.Right - now.Left == bounds.Width
+                    && now.Bottom - now.Top == bounds.Height) break;
+                SetWindowPos(handle, IntPtr.Zero, bounds.X, bounds.Y, bounds.Width, bounds.Height, NoZOrder | NoActivate);
+            }
+            // The window's own size is kept in window units and was last set at the earlier scaling. Showing the
+            // window and the next layout apply it again, so it must describe the same rectangle.
+            window.Width = bounds.Width / window.RenderScaling;
+            window.Height = bounds.Height / window.RenderScaling;
+        }
+        finally
+        {
+            window.MinWidth = minWidth;
+            window.MinHeight = minHeight;
+        }
+    }
+}
+
 /// <summary>Asks Windows to wait while the lighting is returned during sign-out or shutdown.</summary>
 public static class SessionEnd
 {

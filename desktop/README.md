@@ -120,7 +120,7 @@ dotnet build desktop/EtherlightingEvolved.Native.Check/EtherlightingEvolved.Nati
 dotnet desktop/EtherlightingEvolved.Native.Check/bin/Release/net10.0/EtherlightingEvolved.Native.Check.dll --service --output outputs/native-check
 ```
 
-The check program renders windows off screen. Its service checks use a simulator with isolated data. To use the app interactively from the same build, launch the source app in demo mode. A demo copy can run beside the installed app; it keeps its workspace data and its preferences, such as the theme and saved palettes, in the `demo` folder of the app's data folder.
+The check program renders windows off screen. Its service checks use a simulator with isolated data. With `--installer <file>` it only checks that the automatic update accepts that installer as this checkout's version, which the package check in CI runs on the installer it built. To use the app interactively from the same build, launch the source app in demo mode. A demo copy can run beside the installed app; it keeps its workspace data and its preferences, such as the theme and saved palettes, in the `demo` folder of the app's data folder.
 
 [WINDOWS POWERSHELL]
 
@@ -136,6 +136,7 @@ dotnet run --project desktop/EtherlightingEvolved.Native -c Release --no-build -
 | `--demo` | Opens the demo with its own data, beside an installed copy |
 | `--background` | Starts in the notification area without showing the window; Start with Windows uses it |
 | `--quit` | Asks a running copy to quit; the installer uses it |
+| `--after-update` | Opens the window where it was before an automatic update, or stays in the notification area if it was hidden; the installer uses it |
 | `--shot <folder> --page <name>` | Renders one page in a window off screen, saves `shot.png` in the folder and exits. `--theme <id>` and `--size <width>x<height>` (default 1440x900) set the look. The run keeps its data in the folder. |
 | `EE_WORKSPACE_URL` | Environment variable with the same effect as `--url`, used when `--url` is not given |
 | `EE_GPU_RENDERING=1` | Environment variable that selects GPU composition on Windows instead of the default software rendering, for comparison |

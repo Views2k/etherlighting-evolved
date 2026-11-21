@@ -3,6 +3,8 @@ using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -31,6 +33,9 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, bool Quit)
     /// <summary>A --url value the address dialog would refuse. The window then says so instead of opening a workspace.</summary>
     public string? RejectedUrl { get; init; }
 
+    /// <summary>--after-update: setup started this copy after an automatic update, so the window opens where it was.</summary>
+    public bool AfterUpdate { get; init; }
+
     /// <summary>
     /// Reads the command line. --url takes precedence over EE_WORKSPACE_URL; an environment value that is not a
     /// workspace address is ignored, since it may be left over from another setup.
@@ -46,6 +51,7 @@ public sealed record Options(bool Background, bool Demo, Uri? Url, bool Quit)
         return new Options(args.Contains("--background"), args.Contains("--demo") || (shot is not null && requested is null && url is null), url, args.Contains("--quit"))
         {
             Shot = shot, ShotPage = Arg("--page") ?? "Lighting", ShotTheme = Arg("--theme"), ShotSize = size, RejectedUrl = rejected,
+            AfterUpdate = args.Contains("--after-update"),
         };
     }
 }
@@ -98,6 +104,11 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
     NativeMenuItem? browserItem;
     bool quitting;
     Task? quitTask;
+    readonly Updates? updates = Updates.ForInstalledCopy(options);
+    WindowPlacement? restorePlacement;
+    string? updateProblem;
+    DateTime lastInput = DateTime.UtcNow;
+    bool shownOnce;
 
     public void Start()
     {
@@ -118,7 +129,26 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         desktop.ShutdownRequested += OnShutdownRequested;
         instance.Listen(command => Dispatcher.UIThread.InvokeAsync(() => HandleAsync(command)));
         if (options.Shot is null) CreateTray();
+        if (updates is not null)
+        {
+            (updateProblem, restorePlacement) = updates.Resume(options.AfterUpdate);
+            updates.Start(QuietForUpdate, Placement);
+        }
         _ = ConnectAsync();
+    }
+
+    /// <summary>Nobody has used the window for ten minutes, no dialog is open and no change is being sent.</summary>
+    bool QuietForUpdate() => !quitting && window is { } shown && DateTime.UtcNow - lastInput >= Updates.Quiet && !shown.Shell.Overlay.HasDialog
+        && shown.Shell.Workspace.Busy == 0;
+
+    /// <summary>Where the window is now, so the updated copy opens it in the same place.</summary>
+    WindowPlacement? Placement()
+    {
+        if (window is null) return null;
+        var hidden = !window.IsVisible || window.WindowState == WindowState.Minimized;
+        // A window that was never shown or placed has no position of its own yet, and a minimized one reports none.
+        if (!shownOnce || window.WindowState == WindowState.Minimized || WindowBounds.Read(window) is not { } bounds) return new WindowPlacement(hidden, false);
+        return new WindowPlacement(hidden, window.WindowState == WindowState.Maximized, bounds.X, bounds.Y, bounds.Width, bounds.Height);
     }
 
     async Task ConnectAsync()
@@ -155,6 +185,8 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         Open(address);
         await window!.Shell.Start();
         if (options.Shot is { } shot) _ = ShotAsync(shot);
+        if (updateProblem is { } problem) window.Shell.Notify(problem, true);
+        else if (updates?.UpdatedFrom is not null) window.Shell.Notify($"EE was updated to {updates.Current.ToString(3)}.");
     }
 
     static readonly Uri DefaultAddress = new("http://127.0.0.1:4180/");
@@ -218,7 +250,22 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
         {
             OpenWorkspaceAddress = service is null && options.Shot is null ? ChangeWorkspace : null,
             OpenInBrowser = owned && OperatingSystem.IsWindows() && options.Shot is null ? OpenInBrowserAsync : null,
+            Updates = updates,
         });
+        // Input in the window postpones an automatic update; a rack screen's taps arrive as pointer presses.
+        void Used(object? sender, RoutedEventArgs e) => lastInput = DateTime.UtcNow;
+        window.AddHandler(InputElement.PointerPressedEvent, Used, RoutingStrategies.Tunnel, handledEventsToo: true);
+        window.AddHandler(InputElement.PointerWheelChangedEvent, Used, RoutingStrategies.Tunnel, handledEventsToo: true);
+        window.AddHandler(InputElement.KeyDownEvent, Used, RoutingStrategies.Tunnel, handledEventsToo: true);
+        window.Opened += (_, _) => shownOnce = true;
+        var hidden = options.Background;
+        if (restorePlacement is { } saved)
+        {
+            // Only the first window after an update.
+            restorePlacement = null;
+            hidden |= saved.Hidden;
+            if (Place(window, saved)) shownOnce = true;
+        }
         if (options.Shot is not null)
         {
             // Screenshots come from a real window placed off screen, so nothing appears on the desktop.
@@ -227,8 +274,35 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
             window.ShowInTaskbar = false;
             window.ShowActivated = false;
         }
-        if (!options.Background) window.Show();
+        if (!hidden) window.Show();
         else _ = window.Shell.SetHidden(true);
+    }
+
+    /// <summary>
+    /// Puts a window that is not shown yet where it was before an update: the same pixel rectangle, maximized if it
+    /// was. A rectangle whose screen is gone is ignored, and the window then opens centered as usual.
+    /// </summary>
+    internal static bool Place(Window window, WindowPlacement saved)
+    {
+        if (saved is not { X: { } x, Y: { } y, Width: >= 100 and var width, Height: >= 100 and var height }
+            || !window.Screens.All.Any(screen => screen.Bounds.Intersects(new PixelRect(x, y, 100, 100)))) return false;
+        var bounds = new PixelRect(x, y, width, height);
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        WindowBounds.Apply(window, bounds);
+        if (saved.Maximized)
+        {
+            // Windows maximizes it on the screen that holds the rectangle.
+            window.WindowState = WindowState.Maximized;
+            return true;
+        }
+        // Showing the window applies its size in window units once more, so the rectangle is set again afterwards.
+        void Opened(object? sender, EventArgs e)
+        {
+            window.Opened -= Opened;
+            WindowBounds.Apply(window, bounds);
+        }
+        window.Opened += Opened;
+        return true;
     }
 
     async Task ChangeWorkspace(Uri address)
@@ -347,6 +421,7 @@ sealed partial class AppHost(Application app, IClassicDesktopStyleApplicationLif
     {
         if (quitting) return;
         quitting = true;
+        updates?.Stop();
         if (workspace is not null)
         {
             workspace.Closing = true;
@@ -446,7 +521,7 @@ internal static class Program
         using var instance = SingleInstance.TryAcquire(suffix);
         if (instance is null)
         {
-            if (!options.Background) SingleInstance.SendAsync(suffix, "show", TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            if (!options.Background && !options.AfterUpdate) SingleInstance.SendAsync(suffix, "show", TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
             return 0;
         }
         App.Options = options;
