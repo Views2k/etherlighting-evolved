@@ -34,6 +34,14 @@ internal static class ShellChecks
         Workspace.MergeFrame(earlier, new JsonObject { ["connected"] = false, ["uplink_bandwidth"] = null });
         check(earlier.Bool("connected") == false && earlier["uplink_bandwidth"] is null, "an explicit disconnect clears bandwidth");
         UplinkBandwidthChecks.Run(check);
+        var unreachable = new JsonObject { ["code"] = "unreachable" };
+        check(AppShell.ControllerStatus(new JsonObject { ["connected"] = false, ["reconnect_state"] = "retrying", ["error"] = unreachable.DeepClone() }, false)
+                  == ("Controller reconnecting…", "waiting")
+              && AppShell.ControllerStatus(new JsonObject { ["connected"] = false, ["reconnect_state"] = "attention", ["error"] = unreachable.DeepClone() }, false)
+                  == ("Controller connection needs attention", "error")
+              && AppShell.ControllerStatus(new JsonObject { ["connected"] = false, ["reconnect_state"] = "retrying" }, true)
+                  == ("Controller status unavailable", "is-disconnected"),
+            "a controller that EE is retrying shows reconnecting, and one that needs the user shows attention");
         check(WorkspaceAddress.Parse("https://example.test:8443") is not null &&
               WorkspaceAddress.Parse("http://127.0.0.1:4180") is not null &&
               WorkspaceAddress.Parse("https://example.test/?token=example") is null &&

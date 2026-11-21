@@ -1227,9 +1227,10 @@ After a live switch session is established, the protected controller login is re
 the next local lifecycle tick. No restore runs for a missing, disconnected, or simulated switch session.
 The controller's usual TLS validation and approved pin comparison remain mandatory.
 
-Transient reachability, busy-controller and controller-service failures get at most three additional attempts
-after 5, 15 and 60 seconds. Authentication, certificate, verification-code, site and switch-match errors stop
-automatic requests until an explicit user action. Normal successful topology refresh remains approximately
+Transient reachability, busy-controller and controller-service failures (`unreachable`, `rate_limited` and
+`controller_error`) are retried after 5 and 15 seconds and then every 60 seconds, or later when the controller asks
+for a longer wait, for as long as EE runs; `reconnect_state` is `retrying` meanwhile. Authentication, certificate,
+verification-code, site and switch-match errors stop automatic requests until an explicit user action. Normal successful topology refresh remains approximately
 15 seconds. An in-flight bounded controller operation drains before shutdown clears its in-memory session.
 
 ## State

@@ -184,10 +184,11 @@ async def test_auth_tls_and_matching_failures_require_explicit_action(tmp_path, 
 
 
 @pytest.mark.anyio
-async def test_transient_retry_backoff_is_finite_and_coalesces_parallel_ticks(tmp_path):
+async def test_transient_failures_keep_retrying_once_a_minute_and_coalesce_parallel_ticks(tmp_path):
+    # A controller that restarts can stay unreachable for longer than the first three waits.
     integration, _, manager, _, now = setup(tmp_path, RECORD)
     manager.error = ControllerError("unreachable", "Could not reach the controller.", 503)
-    for index, delay in enumerate((5, 15, 60), start=1):
+    for index, delay in enumerate((5, 15, 60, 60, 60, 60), start=1):
         await asyncio.gather(integration.tick(), integration.tick())
         assert len(manager.connects) == index
         assert integration.status()["reconnect_state"] == "retrying"
@@ -195,12 +196,26 @@ async def test_transient_retry_backoff_is_finite_and_coalesces_parallel_ticks(tm
         await integration.tick()
         assert len(manager.connects) == index
         now[0] += .1
+    manager.error = None
     await integration.tick()
-    assert len(manager.connects) == 4
-    assert integration.status()["reconnect_state"] == "attention"
-    now[0] += 10000
+    assert len(manager.connects) == 7
+    assert integration.status()["reconnect_state"] == "connected"
+    assert integration.status()["saved_login_error"] is None
+
+
+@pytest.mark.anyio
+async def test_a_controller_that_stops_answering_is_refreshed_until_it_returns(tmp_path):
+    integration, _, manager, _, now = setup(tmp_path, RECORD)
     await integration.tick()
-    assert len(manager.connects) == 4
+    manager.refresh_error = ControllerError("unreachable", "Could not reach the controller over HTTPS.", 503)
+    now[0] += 15
+    for refreshes in range(1, 8):
+        await integration.tick()
+        assert manager.refreshes == refreshes and integration.status()["reconnect_state"] == "retrying"
+        now[0] += 60
+    manager.refresh_error = None
+    await integration.tick()
+    assert manager.refreshes == 8 and integration.status()["reconnect_state"] == "connected"
 
 
 @pytest.mark.anyio

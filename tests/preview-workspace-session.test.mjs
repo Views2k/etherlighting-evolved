@@ -53,6 +53,12 @@ test('controller failures use a fixed label without exposing diagnostic data', (
   assert.deepEqual(controllerConnectionStatus(), {label:'Controller not connected', tone:'is-disconnected'});
 });
 
+test('a controller that EE is retrying shows reconnecting instead of needing attention', () => {
+  assert.deepEqual(controllerConnectionStatus({connected:false, reconnect_state:'retrying', error:{code:'unreachable'}}), {label:'Controller reconnecting…', tone:'waiting'});
+  assert.deepEqual(controllerConnectionStatus({connected:false, reconnect_state:'attention', error:{code:'authentication_failed'}}), {label:'Controller connection needs attention', tone:'error'});
+  assert.deepEqual(controllerConnectionStatus({connected:false, reconnect_state:'retrying'}, true), {label:'Controller status unavailable', tone:'is-disconnected'});
+});
+
 test('an unavailable controller status overrides a cached connection without labeling it disconnected', () => {
   assert.deepEqual(controllerConnectionStatus({connected:true}, true), {label:'Controller status unavailable', tone:'is-disconnected'});
   assert.deepEqual(controllerConnectionStatus({connected:false, error:{code:'unreachable'}}, true), {label:'Controller status unavailable', tone:'is-disconnected'});
