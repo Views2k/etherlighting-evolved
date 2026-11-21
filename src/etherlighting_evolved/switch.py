@@ -338,7 +338,7 @@ class EtherlightSwitch:
         lease = self.output_lease
         if lease is None or lease.closed or not all(lease.owns(path) for path in lease.paths):
             raise OutputOwnershipError("The original lighting owner is unavailable. Keep output stopped.")
-        lease.before_write(getattr(self.transport, "host_key_fingerprint", None))
+        lease.before_write(self.transport.host_key_fingerprint)
         if len(outputs) != self.num_ports:
             raise ValueError("A complete copper frame is required for recovery")
         copper = dict(self._native_active)
@@ -359,7 +359,7 @@ class EtherlightSwitch:
                 await self.close()
             await self.connect()
             info = await self.probe()
-            lease.before_write(getattr(self.transport, "host_key_fingerprint", None))
+            lease.before_write(self.transport.host_key_fingerprint)
             if not all(lease.owns(path) for path in lease.paths):
                 raise OutputOwnershipError("The lighting owner changed during recovery.")
             self.require_output_profile()
@@ -370,7 +370,7 @@ class EtherlightSwitch:
             generation = self.transport.lighting_generation
             if generation is None:
                 raise OutputOwnershipError("The lighting connection could not be verified.")
-            desktop_output = getattr(self.transport, "desktop_output", None)
+            desktop_output = self.transport.desktop_output
             if desktop_output is not None:
                 # The resident player may have resumed while the previous connection was down.
                 await desktop_output.renew()
@@ -500,7 +500,7 @@ class EtherlightSwitch:
         if isinstance(self.transport, SSHTransport) and self.output_lease is None:
             raise OutputOwnershipError("Reserve lighting output before sending switch commands.")
         if self.output_lease is not None:
-            self.output_lease.before_write(getattr(self.transport, "host_key_fingerprint", None))
+            self.output_lease.before_write(self.transport.host_key_fingerprint)
         self._last_attempt_at = timing.monotonic()
         self.stats.attempted_commands += 1
         started = time.perf_counter()

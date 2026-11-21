@@ -71,7 +71,7 @@ Download the files from the [releases page](https://github.com/Views2k/etherligh
 | `SHA256SUMS` | SHA-256 checksums of the installer and the client archives |
 | `package-verification.json` | Record of the checks the release build ran on the Windows package |
 
-GitHub Actions builds each release from a version tag. The Windows installer has no Authenticode signature yet, so Windows SmartScreen can warn before Setup runs. The macOS app has an ad hoc signature but is not signed with a Developer ID or notarized, so macOS blocks it the first time it opens; choose **Open Anyway** in System Settings → Privacy & Security (System Preferences → Security & Privacy on macOS 12). Verify a download before you run it.
+GitHub Actions builds each release from the commit on `main` that sets its version, and tags that commit. The Windows installer has no Authenticode signature yet, so Windows SmartScreen can warn before Setup runs. The macOS app has an ad hoc signature but is not signed with a Developer ID or notarized, so macOS blocks it the first time it opens; choose **Open Anyway** in System Settings → Privacy & Security (System Preferences → Security & Privacy on macOS 12). Verify a download before you run it.
 
 ### Verify a download
 
