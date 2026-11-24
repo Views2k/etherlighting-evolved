@@ -17,7 +17,7 @@ the reviewed command path; physical appearance and sustained load on additional 
 
 | Models | Copper ports | Optical indicators | Firmware family / release |
 | --- | --- | --- | --- |
-| Pro XG 8 PoE | 1–8 | 9–10 | USWED72 / 7.5.15+17146 |
+| Pro XG 8 PoE | 1–8 | 9–10 | USWED72 / 7.5.15+17146, 7.6.11+17272 with the reviewed lighting interface |
 | Pro XG 10 PoE | 1–10 | 11–12 | USWED72 / 7.5.15+17146 |
 | Pro HD 24, Pro HD 24 PoE | 1–24 | 25–28 | USWED72 / 7.5.15+17146 |
 | Pro XG 24, Pro XG 24 PoE | 1–24 | 25–26 | USWED42 / 7.5.15+17146, 7.6.11+17272 |

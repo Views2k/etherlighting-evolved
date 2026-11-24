@@ -24,7 +24,7 @@ All six image hashes were compared with the official release metadata. The two n
 | USW-Pro-Max-48-PoE | USPM16 | 7.5.15+17146 | 48 / 4 / 0 | Adapter open |
 | USW-Pro-HD-24 | USWED72 | 7.5.15+17146 | 24 / 4 / 0 | Reviewed |
 | USW-Pro-HD-24-PoE | USWED72 | 7.5.15+17146 | 24 / 4 / 0 | Reviewed |
-| USW-Pro-XG-8-PoE | USWED72 | 7.5.15+17146 | 8 / 2 / 0 | Reviewed |
+| USW-Pro-XG-8-PoE | USWED72 | 7.6.11+17272 | 8 / 2 / 0 | Reviewed for 7.5.15+17146; 7.6.11+17272 admitted on interface and owner acceptance |
 | USW-Pro-XG-10-PoE | USWED72 | 7.5.15+17146 | 10 / 2 / 0 | Reviewed |
 | USW-Pro-XG-24 | USWED42 | 7.6.11+17272 | 24 / 2 / 0 | Reviewed |
 | USW-Pro-XG-24-PoE | USWED42 | 7.6.11+17272 | 24 / 2 / 0 | Reviewed |
@@ -61,6 +61,23 @@ EE admits the two new daemon hashes only with their corresponding MCU hash. The 
 | --- | --- | --- |
 | USWED42 | `9de90875f77a65c5d3006308ab4e707a79d420cca8f4c4994a3de2896df59109` | `8c79c0050ba28fa933f3b1a71d530665ef560775793f133fae17a85482508322` |
 | USWF001 | `4599de216f558d4425782518a7cfd8fe234bc2d4eba3967c9802951debdb4220` | `8c79c0050ba28fa933f3b1a71d530665ef560775793f133fae17a85482508322` |
+
+## USWED72 7.6.11+17272 on the Pro XG 8 PoE
+
+Ubiquiti published 7.6.11+17272 for USWED72 on November 23, 2026 (11,229,856 bytes, SHA-256 `306148c37c080a58898980fbc0eb379877a1bfafc41d6bed74f31082eff82872`, matching the release metadata). An owner switch installed it automatically, and EE then refused it, because only the 7.5.15+17146 pair was admitted. Microsoft Defender found no threats in the image or its extracted files.
+
+Of the 75 lighting-related files extracted from the image, 59 are byte-identical to 7.5.15+17146:
+
+- The port LED MCU firmware that `/usr/share/firmware/port_led_fw.bin` links to is unchanged (`cb99c14250ed28c77a00d4df46bf699db6b87f5a1094d0b10cfc79f2d5832a8c`, version 1.19.5).
+- `bin/ubus`, `bin/ubusd` and the `ubnt-etherlight.ko` kernel module are unchanged.
+- The lighting daemon changed: `/bin/etherlightd` still links to `/bin/ubntbox`, now 2,084,012 bytes with SHA-256 `bea59c0a3a1c261814a1460b1420639c4e1465effa609d1dbfbbdb226203c85b`. `lib/libubnt.so.1.0.0` changed as well.
+
+The daemon's lighting code was not compared with 7.5.15+17146, unlike the USWED42 and USWF001 updates above. The admission therefore rests on different evidence and is narrower:
+
+- It covers the USW-Pro-XG-8-PoE only, the model with owner-observed lighting acceptance. The Pro HD 24, Pro HD 24 PoE and Pro XG 10 PoE keep 7.5.15+17146 alone.
+- At every connection, the switch must report exactly the 20 arguments and types of the `etherlight.mcu` `set` method reviewed for 7.5.15+17146. Any added, missing or retyped argument keeps output closed, and the refusal names the difference. This checks the command interface, not the daemon's behavior behind it.
+- The daemon hash is admitted only with the unchanged MCU hash, as for every other pair. Saved scenes keep their identity, which uses the 7.5.15+17146 pair.
+- The owner's switch was tested on 7.6.11+17272 before release; the CHANGELOG entry for this version records what was observed.
 
 ## Pro Max adapter work
 

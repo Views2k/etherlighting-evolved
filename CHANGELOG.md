@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+
+- EE controls the USW-Pro-XG-8-PoE again after the switch updates itself to UniFi firmware 7.6.11+17272, which Ubiquiti released on November 23. EE refused that firmware because it accepted only 7.5.15+17146 for this model. The new firmware keeps the port LED controller firmware unchanged and changes the program that receives lighting commands. EE accepts it on the Pro XG 8 PoE only, and only while the switch reports exactly the lighting commands and options EE was verified with; any difference keeps EE from controlling the lighting and names the difference. The Pro HD 24, Pro HD 24 PoE and Pro XG 10 PoE still need 7.5.15+17146. `docs/HARDWARE-QUALIFICATION.md` describes the evidence and its limits.
+
 ## 0.7.1
 
 This release updates packages in the lighting service. EE behaves as in 0.7.0. It is the first release that copies of 0.7.0 install on their own.

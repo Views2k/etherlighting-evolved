@@ -403,6 +403,19 @@ async def test_lookup_requires_exact_object_name_and_unambiguous_string_method_s
 
 
 @pytest.mark.anyio
+async def test_lookup_records_every_set_argument_and_its_type():
+    connection = Connection()
+    signature = named(2, b"set", PORT_SIGNATURE + named(5, b"brightness", b"\0\0\0\5")
+                      + named(5, b"debug", b"\0\0\0\7") + named(3, b"note", b"x\0"))
+    reply = response(2, 1, 0, PATH_ATTRIBUTE + ID_ATTRIBUTE + blob(6, signature + named(2, b"get", b"")))
+    connection.channel(HELLO + reply + LOOKUP_OK)
+    client = await EtherlightUbus.open(connection)
+    assert client.set_fields == {"port_rgb": 3, "brightness": 5, "debug": 7, "note": -1}
+    await client.close()
+    assert client.set_fields is None
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("lookup_replies", [LOOKUP_OK, LOOKUP_REPLY * 2 + LOOKUP_OK])
 async def test_lookup_rejects_missing_or_multiple_object_results(lookup_replies):
     connection = Connection()

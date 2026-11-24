@@ -6,6 +6,7 @@ import pytest
 
 from etherlighting_evolved import timing
 from etherlighting_evolved.color import Color
+from etherlighting_evolved.hardware import USWED72_SET_FIELDS
 from etherlighting_evolved.switch import (
     BOARD_LIGHTING_INFO,
     HOSTNAME_COMMAND,
@@ -56,6 +57,8 @@ class MemoryTransport:
         self.board = "board.shortname=USPXG8P\nboard.name=USW-Pro-XG-8-PoE\nboard.sysid=0xed76"
         self.daemon = PRECISE_DAEMON_HASH + "  /proc/123/exe"
         self.firmware = PORT_FIRMWARE_HASH + "  /usr/share/firmware/port_led_fw.bin"
+        # The reviewed USWED72 interface, which firmware admitted on that condition must report.
+        self.lighting_set_fields = dict(USWED72_SET_FIELDS)
         self.events = []
         self.reads = []
         self.hook = self.read_hook = None

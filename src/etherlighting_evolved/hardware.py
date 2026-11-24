@@ -17,6 +17,22 @@ _FIRMWARE = {
     "USWF004": ("36f84073384f271008f83dd37ac900b2c59e68e8a210de30fb9fa755d1d49ec3",
                 "9d8740e2767cf676822648573d00ec82d07f5903e9ebad197684f5be17267224"),
 }
+# The set method of etherlight.mcu in USWED72 7.5.15+17146, as reviewed: argument names and blobmsg types
+# (3 string, 5 int32, 7 int8).
+USWED72_SET_FIELDS = MappingProxyType({
+    **dict.fromkeys(("mcu_mode", "led_stop", "board_id", "behavior", "port_pwm", "port_rgb", "port_map_rgb",
+                     "mode_color", "led_mode", "link", "reset", "upgrade", "calibrate", "diag"), 3),
+    **dict.fromkeys(("brightness", "info_brightness", "info_behavior"), 5),
+    **dict.fromkeys(("calibration", "info_mode", "debug"), 7),
+})
+# USWED72 7.6.11+17272 changes the lighting daemon and keeps the port LED firmware byte-identical. Its daemon code
+# was not compared with 7.5.15, so the pair is admitted only for the model with owner lighting acceptance, and only
+# while the switch reports exactly the reviewed set interface.
+USWED72_7_6_11_DAEMON = "bea59c0a3a1c261814a1460b1420639c4e1465effa609d1dbfbbdb226203c85b"
+_MODEL_FIRMWARE = {
+    "USPXG8P": ((USWED72_7_6_11_DAEMON, MIPS_MCU),),
+}
+_REQUIRED_SET_FIELDS = {USWED72_7_6_11_DAEMON: USWED72_SET_FIELDS}
 # Retain the original pair above because saved scene identities include it.
 _ADDITIONAL_FIRMWARE = {
     "USWED42": (("9de90875f77a65c5d3006308ab4e707a79d420cca8f4c4994a3de2896df59109",
@@ -45,7 +61,14 @@ class HardwareProfile:
     def firmware_pairs(self) -> tuple[tuple[str, str], ...]:
         if PROFILES.get(self.key) is not self or not self.output_verified:
             return ()
-        return ((self.daemon_sha256, self.mcu_sha256), *_ADDITIONAL_FIRMWARE.get(self.family, ()))
+        return ((self.daemon_sha256, self.mcu_sha256), *_ADDITIONAL_FIRMWARE.get(self.family, ()),
+                *_MODEL_FIRMWARE.get(self.key, ()))
+
+    def required_set_fields(self, daemon_sha256: str):
+        """The exact set interface an admitted daemon must report, or None when its pair needs no such check."""
+        if not any(pair[0] == daemon_sha256 for pair in self.firmware_pairs):
+            return None
+        return _REQUIRED_SET_FIELDS.get(daemon_sha256)
 
     def public_dict(self) -> dict:
         return {

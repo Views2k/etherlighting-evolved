@@ -190,6 +190,8 @@ class Transport(ABC):
     host_key_fingerprint: str | None = None
     host_key_type: str | None = None
     desktop_output = None
+    # The set method's arguments and blobmsg types as the lighting socket reported them, when one is open.
+    lighting_set_fields: dict[str, int] | None = None
 
     def revoke_lighting_profile(self) -> None:
         return None
@@ -374,6 +376,10 @@ class SSHTransport(Transport):
     @property
     def precise_rgb_supported(self) -> bool:
         return bool(self._rgb_client is not None and self._rgb_client.precise_rgb_supported)
+
+    @property
+    def lighting_set_fields(self) -> dict[str, int] | None:
+        return self._rgb_client.set_fields if self._rgb_client is not None else None
 
     def configure_lighting_profile(self, profile) -> None:
         profile.require_output()
