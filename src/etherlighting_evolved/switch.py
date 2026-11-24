@@ -242,6 +242,8 @@ class EtherlightSwitch:
         self.num_ports = num_ports
         self.auto_detect = auto_detect
         self.hardware_profile: HardwareProfile | None = None
+        # Set by probe when admitted firmware reports another lighting interface than its reviewed one.
+        self.interface_difference = ""
         self.sfp_ports: tuple[int, ...] = ()
         self._precise_generation: object | None = None
         self._native_generation: object | None = None
@@ -299,8 +301,33 @@ class EtherlightSwitch:
 
     def require_output_profile(self) -> None:
         if not isinstance(self.transport, SimulatedTransport) and not (self.native_breathing or self.scoped_sfp):
+            if self.interface_difference:
+                raise ValueError("This switch's firmware reports a lighting interface that differs from the one EE "
+                                 f"was verified with ({self.interface_difference}), so EE does not control its "
+                                 "lighting")
             raise ValueError("This switch model or firmware needs compatibility verification before EE can control "
                              "its lighting. Use a verified switch and firmware profile to continue")
+
+    def _reviewed_interface(self, profile, daemon_sha256: str) -> bool:
+        """Firmware admitted on condition of an unchanged set interface must report exactly that interface."""
+        required = profile.required_set_fields(daemon_sha256)
+        if required is None:
+            return True
+        reported = self.transport.lighting_set_fields
+        if reported is not None and dict(reported) == dict(required):
+            return True
+        if reported is None:
+            self.interface_difference = "no set interface was reported"
+            return False
+        parts = []
+        if extra := sorted(reported.keys() - required.keys()):
+            parts.append("unexpected fields: " + ", ".join(extra))
+        if missing := sorted(required.keys() - reported.keys()):
+            parts.append("missing fields: " + ", ".join(missing))
+        if changed := sorted(name for name in reported.keys() & required.keys() if reported[name] != required[name]):
+            parts.append("changed types: " + ", ".join(changed))
+        self.interface_difference = "; ".join(parts)
+        return False
 
     def _validate_precision(self, port: int, channels: tuple[int, int, int]) -> None:
         from .ubus import validate_precise_rgb, validate_sfp_precise_rgb
@@ -410,6 +437,7 @@ class EtherlightSwitch:
         self.revoke_precision()
         self.sfp_ports = ()
         self.hardware_profile = None
+        self.interface_difference = ""
         board = None
         if self.auto_detect:
             board = await self._read_board()
@@ -442,7 +470,8 @@ class EtherlightSwitch:
                 firmware_pairs = profile.firmware_pairs
                 if (generation is not None and generation is self.transport.lighting_generation
                         and daemon_match is not None
-                        and any(pair[0] == daemon_match[1] for pair in firmware_pairs)):
+                        and any(pair[0] == daemon_match[1] for pair in firmware_pairs)
+                        and self._reviewed_interface(profile, daemon_match[1])):
                     if self.transport.behavior_supported:
                         try:
                             firmware = (await self.transport.run(PORT_FIRMWARE_HASH_COMMAND, timeout=5)).strip()

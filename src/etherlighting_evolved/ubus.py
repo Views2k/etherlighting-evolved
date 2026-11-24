@@ -77,6 +77,18 @@ def _supports_port_rgb(signature: bytes, field: bytes = b"port_rgb") -> bool:
     return False
 
 
+def _set_fields(signature: bytes) -> dict[str, int] | None:
+    """The arguments of the set method and their blobmsg types (3 string, 5 int32, 7 int8), or None without one."""
+    for name, kind, value in list(_named_attributes(signature)):
+        if name == b"set" and kind == 2:
+            fields = {}
+            for argument, argument_kind, argument_value in list(_named_attributes(value)):
+                typed = argument_kind == 5 and len(argument_value) == 4
+                fields[argument.decode("utf-8", "replace")] = struct.unpack("!I", argument_value)[0] if typed else -1
+            return fields
+    return None
+
+
 def _port_data(port: int, rgb: str, level: int) -> bytes:
     if type(port) is not int or not 1 <= port <= 64:
         raise ValueError("port must be an integer from 1 to 64")
@@ -162,6 +174,7 @@ class EtherlightUbus:
         self.precise_rgb_supported = False
         self.behavior_supported = False
         self.sfp_mode_supported = False
+        self.set_fields: dict[str, int] | None = None
         self.profile: HardwareProfile | None = None
         self._binding = 0
         self._sequence = 0
@@ -209,6 +222,7 @@ class EtherlightUbus:
         self.precise_rgb_supported = False
         self.behavior_supported = False
         self.sfp_mode_supported = False
+        self.set_fields = None
         self.writer.close()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(self.writer.wait_closed(), 1)
@@ -286,6 +300,7 @@ class EtherlightUbus:
         self.precise_rgb_supported = _supports_port_rgb(result.get(6, b""), b"port_pwm")
         self.behavior_supported = _supports_port_rgb(result.get(6, b""), b"behavior")
         self.sfp_mode_supported = _supports_port_rgb(result.get(6, b""), b"mcu_mode")
+        self.set_fields = _set_fields(result.get(6, b""))
 
     async def set_port(self, port: int, rgb: str, level: int) -> None:
         profile = self._require_profile()

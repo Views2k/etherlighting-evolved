@@ -6,7 +6,15 @@ import pytest
 from test_native_switch import MemoryTransport, clock  # noqa: F401
 
 from etherlighting_evolved.color import Color
-from etherlighting_evolved.hardware import PRO_XG8, PROFILES, identify_profile
+from etherlighting_evolved.hardware import (
+    MIPS_DAEMON,
+    MIPS_MCU,
+    PRO_XG8,
+    PROFILES,
+    USWED72_7_6_11_DAEMON,
+    USWED72_SET_FIELDS,
+    identify_profile,
+)
 from etherlighting_evolved.switch import EtherlightSwitch, PortOutput
 from etherlighting_evolved.ubus import _precise_port_data, _sfp_mode_data, _sfp_precise_data
 
@@ -261,4 +269,74 @@ async def test_firmware_pair_admission_does_not_allow_crossed_pairs(
         assert device.profile is None
         assert not switch.native_breathing and not switch.scoped_sfp
     assert not device.events
+    await switch.close()
+
+
+async def probe_uswed72(profile, daemon, fields):
+    device = MemoryTransport()
+    device.board = identity(profile)
+    device.daemon = daemon + "  /proc/123/exe"
+    device.firmware = MIPS_MCU + "  /usr/share/firmware/port_led_fw.bin"
+    device.lighting_set_fields = fields
+    switch = EtherlightSwitch(device, auto_detect=True)
+    await switch.connect()
+    await switch.probe()
+    return device, switch
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("profile", [p for p in QUALIFIED if p.family == "USWED72"], ids=lambda p: p.key)
+async def test_uswed72_7_6_11_is_admitted_only_for_the_pro_xg8(profile):
+    device, switch = await probe_uswed72(profile, USWED72_7_6_11_DAEMON, dict(USWED72_SET_FIELDS))
+    if profile is PRO_XG8:
+        switch.require_output_profile()
+        assert device.profile is profile and switch.native_breathing and switch.scoped_sfp
+    else:
+        with pytest.raises(ValueError, match="needs compatibility verification"):
+            switch.require_output_profile()
+        assert device.profile is None and not switch.native_breathing and not switch.scoped_sfp
+    assert not device.events
+    await switch.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("change,detail", [
+    ({"port_rgb_v2": 3}, "unexpected fields: port_rgb_v2"),
+    ({"diag": None}, "missing fields: diag"),
+    ({"brightness": 3}, "changed types: brightness"),
+    ({"port_pwm": -1}, "changed types: port_pwm"),
+    (None, "no set interface was reported"),
+])
+async def test_uswed72_7_6_11_requires_the_reviewed_set_interface(change, detail):
+    if change is None:
+        fields = None
+    else:
+        fields = dict(USWED72_SET_FIELDS)
+        for name, kind in change.items():
+            if kind is None:
+                del fields[name]
+            else:
+                fields[name] = kind
+    device, switch = await probe_uswed72(PRO_XG8, USWED72_7_6_11_DAEMON, fields)
+    with pytest.raises(ValueError, match="differs from the one EE was verified with") as refused:
+        switch.require_output_profile()
+    assert detail in str(refused.value)
+    assert device.profile is None and not device.events
+    assert not switch.native_breathing and not switch.scoped_sfp and not switch.precise_rgb
+    # The reviewed interface is admitted on the next probe, and the difference is no longer reported.
+    device.lighting_set_fields = dict(USWED72_SET_FIELDS)
+    await switch.probe()
+    switch.require_output_profile()
+    assert device.profile is PRO_XG8 and switch.interface_difference == ""
+    await switch.close()
+
+
+@pytest.mark.anyio
+async def test_uswed72_7_5_15_needs_no_interface_report():
+    device, switch = await probe_uswed72(PRO_XG8, MIPS_DAEMON, None)
+    switch.require_output_profile()
+    assert device.profile is PRO_XG8 and switch.interface_difference == ""
+    assert PRO_XG8.required_set_fields(MIPS_DAEMON) is None
+    assert PRO_XG8.required_set_fields(USWED72_7_6_11_DAEMON) == USWED72_SET_FIELDS
+    assert PROFILES["USPXG10P"].required_set_fields(USWED72_7_6_11_DAEMON) is None
     await switch.close()
