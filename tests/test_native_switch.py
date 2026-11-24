@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from etherlighting_evolved.hardware import USWED72_SET_FIELDS
 from etherlighting_evolved import timing
 from etherlighting_evolved.color import Color
+from etherlighting_evolved.hardware import USWED72_SET_FIELDS
 from etherlighting_evolved.switch import (
     BOARD_LIGHTING_INFO,
     HOSTNAME_COMMAND,
