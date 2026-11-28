@@ -77,7 +77,7 @@ The daemon's lighting code was not compared with 7.5.15+17146, unlike the USWED4
 - It covers the USW-Pro-XG-8-PoE only, the model with owner-observed lighting acceptance. The Pro HD 24, Pro HD 24 PoE and Pro XG 10 PoE keep 7.5.15+17146 alone.
 - At every connection, the switch must report exactly the 20 arguments and types of the `etherlight.mcu` `set` method reviewed for 7.5.15+17146. Any added, missing or retyped argument keeps output closed, and the refusal names the difference. This checks the command interface, not the daemon's behavior behind it.
 - The daemon hash is admitted only with the unchanged MCU hash, as for every other pair. Saved scenes keep their identity, which uses the 7.5.15+17146 pair.
-- The owner's switch was tested on 7.6.11+17272 before release; the CHANGELOG entry for this version records what was observed.
+- Before release, EE built from the change ran the owner's switch on 7.6.11+17272 for about 17 minutes on November 24, 2026. The switch reported the reviewed interface, the saved scene resumed with native breathing, scoped SFP control and SFP gradients, and the switch acknowledged about 16,000 lighting commands without an error. The owner confirmed that the port and SFP lights looked as they did on 7.5.15+17146. The released 0.7.2 then connected the same way.
 
 ## Pro Max adapter work
 
